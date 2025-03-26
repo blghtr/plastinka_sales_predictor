@@ -1,5 +1,6 @@
 import importlib
 import uuid
+import torch
 from plastinka_sales_predictor import (
     PlastinkaTrainingTSDataset,
     setup_dataset,
@@ -169,7 +170,7 @@ def train_tide(
                 "enable_progress_bar": False,
                 "gradient_clip_val": 0.5,
                 "precision": '32-true',
-                "accelerator": "cpu"
+                "accelerator": get_device 
             },
             lr_scheduler_cls=lr_scheduler_cls,
             lr_scheduler_kwargs=lr_shed_config,
@@ -188,3 +189,11 @@ def train_tide(
         raise
         
     return model
+
+
+def get_device():
+    if torch.cuda.is_available():
+        return 'cuda'
+    else:
+        return 'cpu'
+
