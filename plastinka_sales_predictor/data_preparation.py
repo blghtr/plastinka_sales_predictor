@@ -1,3 +1,4 @@
+from copy import deepcopy
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -110,9 +111,16 @@ class PlastinkaBaseTSDataset(ABC):
         with open(dill_path, 'rb') as f:
             return dill.load(f)
 
-    def save(self, save_dir: Union[str, Path], dataset_name: Optional[str] = None):
+    def save(
+            self, 
+            save_dir: Union[str, Path], 
+            dataset_name: Optional[str] = None
+    ):
         if dataset_name is None:
-            dataset_name = self.__class__.__name__
+            if not self.dataset_name:
+                dataset_name = self.__class__.__name__
+            else:
+                dataset_name = self.dataset_name
 
         save_dir = Path(save_dir)
         save_dir.mkdir(exist_ok=True, parents=True)
@@ -196,23 +204,44 @@ class PlastinkaBaseTSDataset(ABC):
         past_covariates = np.vstack(past_covariates).T
         return past_covariates
 
-
     def set_length(self, input_chunk_length, output_chunk_length):
-        assert input_chunk_length > 1 and output_chunk_length > 0 and (self.end - self.start) >= (input_chunk_length + output_chunk_length)
-        self.input_chunk_length = input_chunk_length
-        self.output_chunk_length = output_chunk_length
-        length = input_chunk_length + output_chunk_length
-        self.outputs_per_array = self.L - length + 1
+        if all(
+            [
+                input_chunk_length > 1,
+                output_chunk_length > 0,
+                ((self.end - self.start) >= 
+                 (input_chunk_length + output_chunk_length))
+            ]
+        ):
+            self.input_chunk_length = input_chunk_length
+            self.output_chunk_length = output_chunk_length
+
+        else:
+            raise ValueError(
+                f'Invalid length: input_chunk_length={input_chunk_length}, '
+                f'output_chunk_length={output_chunk_length}. '
+            )
 
     def set_window(self, start, end):
         if end is None:
             end = self._n_time_steps
         length = self.input_chunk_length + self.output_chunk_length
-        assert start >= 0 and end <= self._n_time_steps and (end - start) >= length
-        self.start = start
-        self.end = end
-        self.L = end - start
-        self.outputs_per_array = self.L - length + 1
+        if all(
+            [
+                start >= 0,
+                end <= self._n_time_steps,
+                (end - start) >= length
+            ]
+        ):
+            self.start = start
+            self.end = end
+            self.L = end - start
+
+        else:
+            raise ValueError(
+                f'Invalid window: start={start}, end={end}, length={length} '
+                'Length must not be greater than the window size'
+            )
 
     def set_scaler(self, scaler):
         if not scaler.is_fit():
@@ -223,6 +252,10 @@ class PlastinkaBaseTSDataset(ABC):
     def monthly_sales(self):
         return self._monthly_sales[self.start:self.end]
 
+    @property
+    def outputs_per_array(self):
+        return self.L - self.input_chunk_length - self.output_chunk_length + 1
+    
     @abstractmethod
     def _get_slice(self, original_array_index, start_index, end_index):
         raise NotImplementedError
@@ -766,10 +799,10 @@ def get_reweight_fn(alpha):
     return reweight_fn
 
 
-def unravel_datasets(
+def unravel_dataset(
         ds, 
         prefix=''
-    ):
+):
     fit_params = defaultdict(list)
     for i in range(len(ds)): 
         (past_target, past_covariates, historic_future_covariates, 
@@ -795,3 +828,36 @@ def unravel_datasets(
         fit_params[f'{prefix}past_covariates'].append(past_covariates)
         
     return fit_params
+
+
+def setup_dataset(
+        ds: PlastinkaBaseTSDataset,
+        window: tuple[int, int] | None = None,
+        input_chunk_length: int | None = None,
+        output_chunk_length: int | None = None,
+        span: int | None = None,
+        weights_alpha: float | None = None,
+        scaler: BaseEstimator | None = None,
+) -> PlastinkaBaseTSDataset:
+    if not ds:
+        raise ValueError("Dataset is not provided")
+    
+    ds = deepcopy(ds)
+    
+    if input_chunk_length and output_chunk_length:
+        ds.set_length(input_chunk_length, output_chunk_length)
+
+    if window:
+        ds.set_window(*window)
+
+    if scaler:
+        ds.set_scaler(scaler)
+
+    if weights_alpha:
+        reweight_fn = get_reweight_fn(weights_alpha)
+        ds.reweight_fn = reweight_fn
+
+    if span:
+        ds.prepare_past_covariates(span)
+
+    return ds
