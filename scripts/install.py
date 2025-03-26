@@ -3,6 +3,8 @@
 
 import subprocess
 import sys
+import os
+from pathlib import Path
 
 
 def run_command(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -19,10 +21,16 @@ def run_command(cmd: list[str], check: bool = True) -> subprocess.CompletedProce
 def main():
     print("Installing Plastinka Sales Predictor...")
     
+    # Get the project root directory
+    project_root = Path(__file__).parent.parent
+    
     # Create virtual environment
     print("Creating virtual environment...")
     run_command(["uv", "venv"])
     
+    print("Change working dir to project root...")
+    os.chdir(project_root)
+
     # Install project in development mode
     print("Installing project dependencies...")
     run_command(["uv", "pip", "install", "-e", "."])
