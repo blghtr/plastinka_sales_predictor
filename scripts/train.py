@@ -38,14 +38,14 @@ def train_fn():
     '--config_path',
     type=click.Path(exists=True, path_type=Path),
     required=True,
-    default='configs/',
+    default=None,
     help='Path to the config file or directory with config files'
 )
 @click.option(
     '--ds_path',
     type=click.Path(exists=True, path_type=Path),
     required=True,
-    default='datasets/train.dill',
+    default=None,
     help='Path to the dataset file'
 )
 @click.option(
@@ -55,6 +55,15 @@ def train_fn():
     help='Path to the output directory'
 )
 def train(config_path, ds_path, output_dir):
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    if ds_path is None:
+        ds_path = DEFAULT_DS_PATH
+
+    if output_dir is None:
+        output_dir = DEFAULT_OUTPUT_DIR
+
     if config_path.is_dir():
         logger.info("Config path is a directory, getting all json files")
         config_path = list(config_path.glob('*.json'))
@@ -73,11 +82,10 @@ def train(config_path, ds_path, output_dir):
 
             model_id = config.setdefault('model_id', str(uuid.uuid4()))
 
-            if not output_dir:
-                output_dir = Path(f'models/{model_id}.pt')
-                output_dir.parent.mkdir(parents=True, exist_ok=True)
-            output_dir = str(output_dir)
-            
+            model_filename = Path(output_dir, f'{model_id}.pt')
+            model_filename.parent.mkdir(parents=True, exist_ok=True)
+            model_filename = str(output_dir)
+
             ds = PlastinkaTrainingTSDataset.from_dill(ds_path)
             ds_copy = deepcopy(ds)
             L = ds_copy.L
@@ -143,8 +151,8 @@ def train(config_path, ds_path, output_dir):
                 )
             )
 
-            model.save(output_dir)
-            logger.info(f"Model saved to {output_dir}")
+            model.save(model_filename)
+            logger.info(f"Model saved to {model_filename}")
 
         except Exception:
             logger.error(
