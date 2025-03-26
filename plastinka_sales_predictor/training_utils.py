@@ -170,7 +170,7 @@ def train_tide(
                 "enable_progress_bar": False,
                 "gradient_clip_val": 0.5,
                 "precision": '32-true',
-                "accelerator": get_device 
+                "accelerator": get_device()
             },
             lr_scheduler_cls=lr_scheduler_cls,
             lr_scheduler_kwargs=lr_shed_config,

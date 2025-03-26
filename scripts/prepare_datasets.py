@@ -20,9 +20,9 @@ filterwarnings('ignore')
 
 logger = configure_logger(child_logger_name='prepare_datasets')
 
-DEFAULT_DATA_PATH = 'datasets/raw_data/sales'
-DEFAULT_STOCKS_PATH = 'datasets/raw_data/stocks.xlsx'
-DEFAULT_OUTPUT_DIR = 'datasets/'
+DEFAULT_DATA_PATH = './datasets/raw_data/sales'
+DEFAULT_STOCKS_PATH = './datasets/raw_data/stocks.xlsx'
+DEFAULT_OUTPUT_DIR = './datasets/'
 DEFAULT_CUTOFF_DATE = '30-09-2022'
 DEFAULT_STATIC_FEATURES = [
     'Конверт',
