@@ -19,9 +19,9 @@ import dill
 import click
 filterwarnings('ignore')
 
-DEFAULT_CONFIG_PATH = '../configs/'
-DEFAULT_DS_PATH = '../datasets/train.dill'
-DEFAULT_OUTPUT_DIR = '../models/'
+DEFAULT_CONFIG_PATH = './configs/'
+DEFAULT_DS_PATH = './datasets/train.dill'
+DEFAULT_OUTPUT_DIR = './models/'
 
 
 logger = configure_logger(
@@ -37,14 +37,12 @@ def train_fn():
 @click.option(
     '--config_path',
     type=click.Path(exists=True, path_type=Path),
-    required=True,
     default=None,
     help='Path to the config file or directory with config files'
 )
 @click.option(
     '--ds_path',
     type=click.Path(exists=True, path_type=Path),
-    required=True,
     default=None,
     help='Path to the dataset file'
 )
@@ -57,6 +55,7 @@ def train_fn():
 def train(config_path, ds_path, output_dir):
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
+    config_path = Path(config_path)
 
     if ds_path is None:
         ds_path = DEFAULT_DS_PATH
