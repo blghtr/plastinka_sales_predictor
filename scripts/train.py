@@ -62,7 +62,8 @@ def train(config_path, ds_path, output_dir):
 
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR
-
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
     if config_path.is_dir():
         logger.info("Config path is a directory, getting all json files")
         config_path = list(config_path.glob('*.json'))
@@ -83,7 +84,7 @@ def train(config_path, ds_path, output_dir):
 
             model_filename = Path(output_dir, f'{model_id}.pt')
             model_filename.parent.mkdir(parents=True, exist_ok=True)
-            model_filename = str(output_dir)
+            model_filename = str(model_filename)
 
             ds = PlastinkaTrainingTSDataset.from_dill(ds_path)
             ds_copy = deepcopy(ds)
