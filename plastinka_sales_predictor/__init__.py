@@ -15,7 +15,14 @@ from .data_preparation import (
     setup_dataset
 )
 from .logger_setup import configure_logger
-from .training_utils import train_tide, prepare_for_training
+from .training_utils import train_model, prepare_for_training, get_model
+from .tuning_utils import (
+    train_model as train_model_tune,
+    train_fn,
+    trial_name_creator,
+    flatten_config,
+    load_fixed_params
+)
 
 __all__ = [
     "MIWS",
@@ -30,6 +37,12 @@ __all__ = [
     "unravel_dataset",
     "setup_dataset",
     "configure_logger",
-    "train_tide",
-    "prepare_for_training"
+    "train_model",
+    "prepare_for_training",
+    "get_model",
+    "train_model_tune",
+    "train_fn",
+    "trial_name_creator",
+    "flatten_config",
+    "load_fixed_params"
 ] 

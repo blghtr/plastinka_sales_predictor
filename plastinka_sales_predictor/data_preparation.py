@@ -800,34 +800,59 @@ def get_reweight_fn(alpha):
 
 
 def unravel_dataset(
-        ds, 
+        ds,
         prefix=''
 ):
-    fit_params = defaultdict(list)
-    for i in range(len(ds)): 
-        (past_target, past_covariates, historic_future_covariates, 
-            future_covariates, static_covariates, sample_weights, 
-            future_target, ts) = ds[i]
+    dataset_dict = defaultdict(list)
+    ds.return_ts = True
+    for i in range(len(ds)):
+        (
+            past_target,
+            past_covariates,
+            historic_future_covariates,
+            future_covariates,
+            static_covariates,
+            sample_weights,
+            future_target,
+            ts
+        ) = ds[i]
         
         time_index = ts.time_index
-        future_sample_weights = ds.reweight_fn(future_target * future_covariates[:, 0:1])
-        future_covariates = np.vstack([historic_future_covariates, future_covariates])
-        sample_weights = np.vstack([sample_weights, future_sample_weights])
-        series = np.vstack([past_target, future_target])
-        
-        sample_weights = TimeSeries.from_times_and_values(time_index, sample_weights)
-        future_covariates = TimeSeries.from_times_and_values(time_index, future_covariates)
+        future_sample_weights = ds.reweight_fn(
+            future_target * future_covariates[:, 0:1]
+        )
+        future_covariates = np.vstack(
+            [historic_future_covariates, future_covariates]
+        )
+        sample_weights = np.vstack(
+            [sample_weights, future_sample_weights]
+        )
+        series = np.vstack(
+            [past_target, future_target]
+        )
+        sample_weights = TimeSeries.from_times_and_values(
+            time_index,
+            sample_weights
+        )
+        future_covariates = TimeSeries.from_times_and_values(
+            time_index,
+            future_covariates
+        )
         past_covariates = TimeSeries.from_times_and_values(
             time_index[:past_covariates.shape[0]], past_covariates
         )
         ts = TimeSeries.with_values(ts, series)
         
-        fit_params[f'{prefix}sample_weight'].append(sample_weights)
-        fit_params[f'{prefix}series'].append(ts)
-        fit_params[f'{prefix}future_covariates'].append(future_covariates)
-        fit_params[f'{prefix}past_covariates'].append(past_covariates)
-        
-    return fit_params
+        labels = ds.ds['ts_names'][i // ds.outputs_per_array]
+
+        dataset_dict[f'{prefix}sample_weight'].append(sample_weights)
+        dataset_dict[f'{prefix}series'].append(ts)
+        dataset_dict[f'{prefix}future_covariates'].append(future_covariates)
+        dataset_dict[f'{prefix}past_covariates'].append(past_covariates)
+        dataset_dict[f'{prefix}labels'].append(labels)
+    
+    ds.return_ts = False
+    return dataset_dict
 
 
 def setup_dataset(

@@ -27,6 +27,7 @@ from typing_extensions import (
     Union,
     List
 )
+from pathlib import Path
 filterwarnings('ignore')
 if TYPE_CHECKING:
     from torchmetrics import Metric, MetricCollection
@@ -39,11 +40,13 @@ logger = configure_logger(
     child_logger_name='train',
 )
 
+THIS_DIR = Path(__file__).parent
 
 def prepare_for_training(
         config: Dict[str, Any],
         ds: 'PlastinkaBaseTSDataset', 
-        val_ds: Optional['PlastinkaBaseTSDataset'] = None
+        val_ds: Optional['PlastinkaBaseTSDataset'] = None,
+        callbacks: Optional[List[pl.Callback]] = None
 ) -> Tuple[
     'PlastinkaBaseTSDataset',
     Optional['PlastinkaBaseTSDataset'],
@@ -59,7 +62,6 @@ def prepare_for_training(
     config = deepcopy(config)
 
     try:
-        model_id = config.get('model_id', None)
         lags = config['lags']
         config['model_config']['input_chunk_length'] = lags
 
@@ -79,8 +81,8 @@ def prepare_for_training(
         lr_scheduler_cls = getattr(lr_shed_module, lr_scheduler_name)
 
         weights_config = config['weights_config']
-        quantiles = config['quantiles']
-        setup_dataset(
+        quantiles = config.pop('quantiles', None)
+        ds = setup_dataset(
             ds=ds,
             input_chunk_length=lags,
             output_chunk_length=1,
@@ -88,14 +90,24 @@ def prepare_for_training(
             weights_alpha=ds_config['alpha']
         )
 
-        callbacks = [
+        if callbacks is None:
+            callbacks = []
+
+        callbacks.extend([
             LearningRateMonitor(logging_interval='step'),
             StochasticWeightAveraging(
                 **swa_config
             )
-        ]
+        ])
         
         if val_ds is not None:
+            val_ds = setup_dataset(
+                ds=val_ds,
+                input_chunk_length=lags,
+                output_chunk_length=1,
+                span=ds_config['span'],
+                weights_alpha=ds_config['alpha']
+            )
             callbacks.extend([
                 EarlyStopping(
                     monitor="val_loss",
@@ -104,12 +116,12 @@ def prepare_for_training(
                     mode="min",
                 ),
             ])
-
         likelihood = WQuantileRegression(
             quantiles=quantiles,
             sigma_left_factor=weights_config['sigma_left'],
             sigma_right_factor=weights_config['sigma_right']
         )
+
     except KeyError:
         logger.error(
             "KeyError in prepare_for_training: "
@@ -135,12 +147,47 @@ def prepare_for_training(
         lr_shed_config,
         optimizer_config,
         model_config,
-        likelihood,
-        model_id
+        likelihood
     )
 
 
-def train_tide(
+def get_model(
+        optimizer_config: Dict[str, Any],
+        callbacks: List[pl.Callback],
+        lr_scheduler_cls: 'LRScheduler',
+        lr_shed_config: Dict[str, Any],
+        random_state: int,
+        work_dir: str,
+        model_name: str,
+        save_checkpoints: bool,
+        likelihood: 'Likelihood',
+        torch_metrics: Union['Metric', 'MetricCollection'],
+        model_config: Dict[str, Any],
+):
+    return TiDEModel(
+        output_chunk_length=1,
+        optimizer_kwargs=optimizer_config,
+        pl_trainer_kwargs={
+            "callbacks": callbacks,
+            "enable_progress_bar": False,
+            "gradient_clip_val": 0.5,
+            "precision": '32-true',
+            "accelerator": get_device()
+        },
+        lr_scheduler_cls=lr_scheduler_cls,
+        lr_scheduler_kwargs=lr_shed_config,
+        random_state=random_state,
+        work_dir=work_dir,
+        model_name=model_name,
+        likelihood=likelihood,
+        log_tensorboard=True,
+        torch_metrics=torch_metrics,
+        save_checkpoints=save_checkpoints,
+        **model_config,
+    )
+
+
+def train_model(
         ds: 'PlastinkaTrainingTSDataset',
         val_ds: Optional['PlastinkaTrainingTSDataset'] = None,
         callbacks: Optional[List[pl.Callback]] = None,
@@ -150,6 +197,7 @@ def train_tide(
         model_config: Optional[Dict[str, Any]] = None,
         likelihood: Optional['Likelihood'] = None,
         model_id: Optional[str] = None,
+        model_name: Optional[str] = 'TiDE',
         random_state: Optional[int] = 42,
         torch_metrics: Optional[Union['Metric', 'MetricCollection']] = None,
 ) -> TiDEModel:
@@ -159,31 +207,24 @@ def train_tide(
     if torch_metrics is None:
         torch_metrics = DEFAULT_METRICS
 
-    full_train = val_ds is None
-
+    save_checkpoints = val_ds is None
+    work_dir = THIS_DIR.parent / f'logs/{model_name}_{model_id}'
     try:
-        model = TiDEModel(
-            output_chunk_length=1,
-            optimizer_kwargs=optimizer_config,
-            pl_trainer_kwargs={
-                "callbacks": callbacks,
-                "enable_progress_bar": False,
-                "gradient_clip_val": 0.5,
-                "precision": '32-true',
-                "accelerator": get_device()
-            },
+        model = get_model(
+            optimizer_config=optimizer_config,
+            callbacks=callbacks,
             lr_scheduler_cls=lr_scheduler_cls,
-            lr_scheduler_kwargs=lr_shed_config,
+            lr_shed_config=lr_shed_config,
             random_state=random_state,
-            work_dir=f'logs/tide_{model_id}_fully_trained={full_train}',
+            work_dir=work_dir,
+            model_name=model_name,
+            save_checkpoints=save_checkpoints,
             likelihood=likelihood,
-            log_tensorboard=True,
             torch_metrics=torch_metrics,
-            save_checkpoints=full_train,
-            **model_config,
+            model_config=model_config,
         )
-
         model = model.fit_from_dataset(ds, val_ds)
+
     except Exception:
         logger.error("Error training model.")
         raise
