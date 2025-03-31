@@ -6,8 +6,7 @@ from plastinka_sales_predictor.data_preparation import (
     get_stock_history,
     get_starting_stocks,
     categorize_prices,
-    get_monthly_sales_pivot,
-    setup_dataset
+    get_monthly_sales_pivot
 )
 from plastinka_sales_predictor import configure_logger
 import pandas as pd
@@ -119,16 +118,15 @@ def prepare_datasets(
         save_dir=output_dir,
         dataset_name='full',
         past_covariates_span=14,
-        past_covariates_fnames=DEFAULT_PAST_COVARIATES_FNAMES
+        past_covariates_fnames=DEFAULT_PAST_COVARIATES_FNAMES,
+        minimum_sales_months=2
     )
 
     logger.info('Creating train dataset...')
-    L = dataset.L
-    train_ds = setup_dataset(
-        dataset,
+    train_ds = dataset.setup_dataset(
         input_chunk_length=input_chunk_length - 1,
         output_chunk_length=output_chunk_length,
-        window=(0, L - 1)
+        window=(0, dataset.L - 1)
     )
     train_ds.dataset_name = 'train'
     train_ds.save(save_dir=output_dir)

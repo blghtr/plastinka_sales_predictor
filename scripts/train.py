@@ -6,7 +6,7 @@ from plastinka_sales_predictor import (
     configure_logger,
     setup_dataset,
     prepare_for_training,
-    train_tide
+    train_model
 )
 from warnings import filterwarnings
 import json
@@ -112,7 +112,7 @@ def train(config_path, ds_path, output_dir):
             )
             
             logger.info("Train first time to determine effective epochs")
-            model = train_tide(
+            model = train_model(
                 *prepare_for_training(
                     config,
                     temp_train,
@@ -144,7 +144,7 @@ def train(config_path, ds_path, output_dir):
 
             logging.info("Train model")
 
-            model = train_tide(
+            model = train_model(
                 *prepare_for_training(
                     config,
                     full_train_ds

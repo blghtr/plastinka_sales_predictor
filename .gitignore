@@ -46,6 +46,7 @@ datasets/
 results/
 logs/
 configs/
+ray/
 
 # Jupyter Notebook
 .ipynb_checkpoints
