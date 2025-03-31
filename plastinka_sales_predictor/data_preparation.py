@@ -4,7 +4,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MultiLabelBinarizer, OrdinalEncoder, minmax_scale
 from pathlib import Path
-from typing_extensions import Callable, Optional, Union, Sequence
+from typing_extensions import Callable, Optional, Union, Sequence, Self
 from darts.timeseries import TimeSeries
 from darts.utils.data.training_dataset import MixedCovariatesTrainingDataset
 from abc import ABC, abstractmethod
@@ -53,8 +53,6 @@ class PlastinkaBaseTSDataset(ABC):
             static_transformer: BaseEstimator = None,
             static_features: Optional[Sequence[str]] = None,
             scaler: BaseEstimator = None,
-            resampling_coef: float = 0.,
-            upsampling_coef: float = 0.,
             weight_coef: float = 0.,
             input_chunk_length: int = 12,
             output_chunk_length: int = 1,
@@ -65,46 +63,38 @@ class PlastinkaBaseTSDataset(ABC):
             save_dir: Optional[str] = None, dataset_name: Optional[str] = None,
             dtype: Union[str, np.dtype] = np.float32
     ):
-        self.start = start
-        self.end = end
         self.stocks = stocks
         self._monthly_sales = monthly_sales
-        self._index_names_mapping = {n: i for i, n in enumerate(self._monthly_sales.columns.names)}
+        self._n_time_steps = self._monthly_sales.shape[0]
+        if end is None:
+            end = self._n_time_steps
+        self.end = end
+        self.start = start
         self._past_covariates_fnames = past_covariates_fnames
-        self._past_covariates_span = past_covariates_span
-        self._past_covariates_cached = {}
-        self.prepare_past_covariates()
+        self.setup_dataset(
+            input_chunk_length=input_chunk_length,
+            output_chunk_length=output_chunk_length,
+            span=past_covariates_span,
+            weights_alpha=weight_coef,
+            scaler=scaler,
+            copy=False
+        )
 
-        self.resampling_coef = resampling_coef
-        self.upsampling_coef = upsampling_coef
-        self.weight_coef = weight_coef
+        self._index_names_mapping = {
+            n: i for i, n in enumerate(self._monthly_sales.columns.names)
+        }
         self.static_transformer = static_transformer
         self.static_features = static_features
-
         self.static_covariates_mapping = self.get_static_covariates()
         self.ds = self.prepare_dataset()
-
-        self._n_time_steps = self._monthly_sales.shape[0]
-
-        self._idx_mapping = None
-        self.input_chunk_length = input_chunk_length
-        self.output_chunk_length = output_chunk_length
-        self.L = 0
-        self.set_window(start, end)
-        self.set_length(input_chunk_length, output_chunk_length)
-        self.set_scaler(scaler)
-
+        self._idx_mapping = self._build_index_mapping()
         self.save_dir = save_dir
         self.dataset_name = dataset_name
-
         self.return_ts = None
-
-        self._signature = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         self.dtype = dtype
 
         if save_dir is not None:
             self.save(save_dir, dataset_name)
-
 
     @classmethod
     def from_dill(cls, dill_path: Union[str, Path]):
@@ -156,7 +146,10 @@ class PlastinkaBaseTSDataset(ABC):
         if self.static_transformer is None:
             return None
 
-        unique_items = self._monthly_sales.columns.to_frame().drop_duplicates(ignore_index=True)
+        unique_items = self._monthly_sales.columns.to_frame().drop_duplicates(
+            ignore_index=True
+        )
+        full_index = unique_items.copy()
         if self.static_features is not None:
             unique_items = unique_items[self.static_features]
 
@@ -169,12 +162,14 @@ class PlastinkaBaseTSDataset(ABC):
             static_covariates = pd.DataFrame(
                 static_covariates,
                 columns=self.static_transformer.get_feature_names(),
-                index=pd.MultiIndex.from_frame(self._monthly_sales.columns.to_frame().drop_duplicates(ignore_index=True))
+                index=pd.MultiIndex.from_frame(
+                    full_index
+                )
             )
 
         else:
             static_covariates = static_covariates.set_index(
-                pd.MultiIndex.from_frame(self._monthly_sales.columns.to_frame().drop_duplicates(ignore_index=True))
+                pd.MultiIndex.from_frame(full_index)
             )
 
         static_covariates = static_covariates.astype('float32')
@@ -182,24 +177,28 @@ class PlastinkaBaseTSDataset(ABC):
         return static_covariates
 
     def get_future_covariates(self, item_multiidx):  # Как переделать для инференса?
-        in_stock = self.stocks[item_multiidx].values
+        #in_stock = self.stocks[item_multiidx].values
         item_sales = self._monthly_sales[item_multiidx]
         is_hot = item_sales.index.map(lambda x: int(x.year)) == item_multiidx[-1]
         msin, mcos = transform_months(item_sales.index.map(lambda x: x.month))
         year = minmax_scale(item_sales.index.map(lambda x: x.year))
 
-        return np.vstack([in_stock, is_hot, msin, mcos, year]).T
+        return np.vstack([is_hot, msin, mcos, year]).T
 
     def get_past_covariates(self, item_multiidx):
         past_covariates = []
         release_year = item_multiidx[self._index_names_mapping['Год записи']]
         for feat_name in self._past_covariates_cached:
             feat_vals = item_multiidx[self._index_names_mapping[feat_name]]
-            feat_df = self._past_covariates_cached[feat_name].loc[pd.IndexSlice[feat_vals, release_year, :]]
+            feat_df = self._past_covariates_cached[feat_name].loc[
+                pd.IndexSlice[feat_vals, release_year, :]
+            ]
             past_covariates.append(feat_df)
 
         past_covariates.append(
-            self._monthly_sales[item_multiidx].ewm(span=self._past_covariates_span, adjust=False).mean()
+            self._monthly_sales[item_multiidx].ewm(
+                span=self._past_covariates_span, adjust=False
+            ).mean()
         )
         past_covariates = np.vstack(past_covariates).T
         return past_covariates
@@ -235,7 +234,6 @@ class PlastinkaBaseTSDataset(ABC):
         ):
             self.start = start
             self.end = end
-            self.L = end - start
 
         else:
             raise ValueError(
@@ -248,6 +246,113 @@ class PlastinkaBaseTSDataset(ABC):
             scaler = scaler.fit(self.monthly_sales)
         self.scaler = scaler
 
+    def setup_dataset(
+            self,
+            window: tuple[int, int] | None = None,
+            input_chunk_length: int | None = None,
+            output_chunk_length: int = None,
+            span: int | None = None,
+            weights_alpha: float | None = None,
+            scaler: BaseEstimator | None = None,
+            copy: bool = True,
+    ) -> Optional[Self]:
+        if copy:
+            ds = deepcopy(self)
+        else:
+            ds = self
+
+        if input_chunk_length and output_chunk_length:
+            ds.set_length(input_chunk_length, output_chunk_length)
+
+        if window:
+            ds.set_window(*window)
+
+        if scaler:
+            ds.set_scaler(scaler)
+
+        if weights_alpha is not None:
+            ds.set_reweight_fn(weights_alpha)
+
+        if span:
+            ds.prepare_past_covariates(span)
+
+        if copy:
+            return ds
+
+    def _build_index_mapping(self):
+        current_index = 0
+        self._index_mapping = {}
+        for i in range(len(self)):
+            if self._validate_sample(i):
+                self._index_mapping[current_index] = i
+                current_index += 1
+
+    def set_reweight_fn(self, alpha):
+        def reweight_fn(array):
+            min_weight = 0.1
+            if alpha == 0.:
+                min_weight = 1.
+            weights = min_weight + alpha * np.log1p(array)
+
+            return weights
+
+        self.reweight_fn = reweight_fn
+
+    def unravel_dataset(
+            self,
+            prefix=''
+    ):
+        dataset_dict = defaultdict(list)
+        self.return_ts = True
+        for i in range(len(self)):
+            (
+                past_target,
+                past_covariates,
+                historic_future_covariates,
+                future_covariates,
+                static_covariates,
+                sample_weights,
+                future_target,
+                ts
+            ) = self[i]
+            
+            time_index = ts.time_index
+            future_sample_weights = self.reweight_fn(
+                future_target * future_covariates[:, 0:1]
+            )
+            future_covariates = np.vstack(
+                [historic_future_covariates, future_covariates]
+            )
+            sample_weights = np.vstack(
+                [sample_weights, future_sample_weights]
+            )
+            series = np.vstack(
+                [past_target, future_target]
+            )
+            sample_weights = TimeSeries.from_times_and_values(
+                time_index,
+                sample_weights
+            )
+            future_covariates = TimeSeries.from_times_and_values(
+                time_index,
+                future_covariates
+            )
+            past_covariates = TimeSeries.from_times_and_values(
+                time_index[:past_covariates.shape[0]], past_covariates
+            )
+            ts = TimeSeries.with_values(ts, series)
+            
+            labels = self.ds['ts_names'][i // self.outputs_per_array]
+
+            dataset_dict[f'{prefix}sample_weight'].append(sample_weights)
+            dataset_dict[f'{prefix}series'].append(ts)
+            dataset_dict[f'{prefix}future_covariates'].append(future_covariates)
+            dataset_dict[f'{prefix}past_covariates'].append(past_covariates)
+            dataset_dict[f'{prefix}labels'].append(labels)
+        
+        self.return_ts = False
+        return dataset_dict
+
     @property
     def monthly_sales(self):
         return self._monthly_sales[self.start:self.end]
@@ -256,14 +361,27 @@ class PlastinkaBaseTSDataset(ABC):
     def outputs_per_array(self):
         return self.L - self.input_chunk_length - self.output_chunk_length + 1
     
+    @property
+    def L(self):
+        return self.end - self.start
+    
     @abstractmethod
     def _get_slice(self, original_array_index, start_index, end_index):
         raise NotImplementedError
 
+    @abstractmethod
+    def _validate_sample(self, index):
+        return True
+
     def __len__(self):
-        return len(self.ds['target_series']) * self.outputs_per_array
+        if self._index_mapping:
+            return len(self._index_mapping)
+        else:
+            return len(self.ds['target_series']) * self.outputs_per_array
 
     def __getitem__(self, item):
+        if self._index_mapping:
+            item = self._index_mapping[item]
         length = self.input_chunk_length + self.output_chunk_length
         original_array_index = item // self.outputs_per_array
         start_index = self.start + item % self.outputs_per_array
@@ -281,15 +399,12 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
                  static_transformer: BaseEstimator = None,
                  static_features: Optional[Sequence[str]] = None,
                  scaler: BaseEstimator = None,
-                 resampling_coef: float = 0.,
-                 upsampling_coef: float = 0.,
                  weight_coef: float = 0.,
                  start: int = 0,
                  end: Optional[int] = None,
                  past_covariates_fnames: Sequence[str] = ('Конверт', 'Стиль', 'Ценовая категория'),
                  past_covariates_span: int = 3,
                  save_ts: bool = True,
-                 reweight_fn: Optional[Callable] = None,
                  save_dir: Optional[str] = None,
                  dataset_name: Optional[str] = None,
                  dtype: Union[str, np.dtype] = np.float32):
@@ -297,13 +412,9 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
 
         self.minimum_sales_months = minimum_sales_months
         self.save_ts = save_ts
-        if reweight_fn is None:
-            reweight_fn = lambda x: x
-        self.reweight_fn = reweight_fn
 
         PlastinkaBaseTSDataset.__init__(self, stocks=stocks, monthly_sales=monthly_sales,
                                         static_transformer=static_transformer, static_features=static_features, scaler=scaler,
-                                        resampling_coef=resampling_coef, upsampling_coef=upsampling_coef,
                                         weight_coef=weight_coef, input_chunk_length=input_chunk_length,
                                         output_chunk_length=output_chunk_length, start=start, end=end,
                                         past_covariates_fnames=past_covariates_fnames,
@@ -324,10 +435,19 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
     def _get_slice(self, original_array_index, start_index, end_index):
         item = original_array_index
         item_multiidx = self.ds['ts_names'][item]
-        series_item = self.ds['target_series'][item][start_index:end_index].astype(self.dtype)
-        future_covariates_item = self.get_future_covariates(item_multiidx)[start_index:end_index].astype(self.dtype)
-        past_covariates_item = self.get_past_covariates(item_multiidx)[start_index:end_index].astype(self.dtype)
-        static_covariates_item = self.static_covariates_mapping.loc[item_multiidx].astype(self.dtype)
+        series_item = self.ds['target_series'][item][
+            start_index:end_index
+        ].astype(self.dtype)
+        in_stock = self.stocks[item_multiidx].values
+        future_covariates_item = self.get_future_covariates(item_multiidx)[
+            start_index:end_index
+        ].astype(self.dtype)
+        past_covariates_item = self.get_past_covariates(item_multiidx)[
+            start_index:end_index
+        ].astype(self.dtype)
+        static_covariates_item = self.static_covariates_mapping.loc[
+            item_multiidx
+        ].astype(self.dtype)
 
         if self.scaler is not None:
             series_item = self.scaler.transform(series_item)
@@ -341,7 +461,7 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
             np.expand_dims(static_covariates_item.values, 1).T,
             self.reweight_fn(
                 series_item[:-self.output_chunk_length] *
-                future_covariates_item[:-self.output_chunk_length, 0:1]
+                in_stock
             ),
             series_item[-self.output_chunk_length:]
         ]
@@ -355,6 +475,11 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
             output.append(time_series)
 
         return output
+
+    def _validate_sample(self, index):
+        item_multiidx = self.ds['ts_names'][index]
+        in_stock = self.stocks[item_multiidx].values
+        return np.any(in_stock[-self.output_chunk_length:])
 
 
 class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
@@ -724,7 +849,7 @@ def get_in_stock_conf(
 
         stocks = stocks.join(shp, how='outer').fillna(0).cumsum(axis=1)
         stocks = stocks.sort_index(axis=1)
-        conf = stocks.clip(0, 6) / 6
+        conf = stocks.clip(0, 5) / 5
         in_stock_frac = conf.iloc[:, 1:].mean(1).rename(month)
 
         cols.append(in_stock_frac)
@@ -790,99 +915,5 @@ def get_past_covariates_df(monthly_sales_df, feature_list, span):
     return pd.concat([pc_df_ema, pc_df_emv], axis=0)
 
 
-def get_reweight_fn(alpha):
-    def reweight_fn(array):
-        weights = 1 + alpha * np.log1p(array)
-
-        return weights
-
-    return reweight_fn
 
 
-def unravel_dataset(
-        ds,
-        prefix=''
-):
-    dataset_dict = defaultdict(list)
-    ds.return_ts = True
-    for i in range(len(ds)):
-        (
-            past_target,
-            past_covariates,
-            historic_future_covariates,
-            future_covariates,
-            static_covariates,
-            sample_weights,
-            future_target,
-            ts
-        ) = ds[i]
-        
-        time_index = ts.time_index
-        future_sample_weights = ds.reweight_fn(
-            future_target * future_covariates[:, 0:1]
-        )
-        future_covariates = np.vstack(
-            [historic_future_covariates, future_covariates]
-        )
-        sample_weights = np.vstack(
-            [sample_weights, future_sample_weights]
-        )
-        series = np.vstack(
-            [past_target, future_target]
-        )
-        sample_weights = TimeSeries.from_times_and_values(
-            time_index,
-            sample_weights
-        )
-        future_covariates = TimeSeries.from_times_and_values(
-            time_index,
-            future_covariates
-        )
-        past_covariates = TimeSeries.from_times_and_values(
-            time_index[:past_covariates.shape[0]], past_covariates
-        )
-        ts = TimeSeries.with_values(ts, series)
-        
-        labels = ds.ds['ts_names'][i // ds.outputs_per_array]
-
-        dataset_dict[f'{prefix}sample_weight'].append(sample_weights)
-        dataset_dict[f'{prefix}series'].append(ts)
-        dataset_dict[f'{prefix}future_covariates'].append(future_covariates)
-        dataset_dict[f'{prefix}past_covariates'].append(past_covariates)
-        dataset_dict[f'{prefix}labels'].append(labels)
-    
-    ds.return_ts = False
-    return dataset_dict
-
-
-def setup_dataset(
-        ds: PlastinkaBaseTSDataset,
-        window: tuple[int, int] | None = None,
-        input_chunk_length: int | None = None,
-        output_chunk_length: int | None = None,
-        span: int | None = None,
-        weights_alpha: float | None = None,
-        scaler: BaseEstimator | None = None,
-) -> PlastinkaBaseTSDataset:
-    if not ds:
-        raise ValueError("Dataset is not provided")
-    
-    ds = deepcopy(ds)
-    
-    if input_chunk_length and output_chunk_length:
-        ds.set_length(input_chunk_length, output_chunk_length)
-
-    if window:
-        ds.set_window(*window)
-
-    if scaler:
-        ds.set_scaler(scaler)
-
-    if weights_alpha:
-        reweight_fn = get_reweight_fn(weights_alpha)
-        ds.reweight_fn = reweight_fn
-
-    if span:
-        ds.prepare_past_covariates(span)
-
-    return ds

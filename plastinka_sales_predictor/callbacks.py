@@ -15,7 +15,9 @@ class DartsCheckpointCallback(ModelCheckpoint):
         filepath_elems = Path(filepath).parts[-3:]
         with tempfile.TemporaryDirectory() as tmpdir:
             tempdir = Path(tmpdir)
-            super()._save_checkpoint(trainer, tempdir / str(Path(*filepath_elems)))
+            super()._save_checkpoint(
+                trainer, tempdir / str(Path(*filepath_elems))
+            )
 
             if trainer.sanity_checking:
                 return
@@ -24,7 +26,9 @@ class DartsCheckpointCallback(ModelCheckpoint):
             if not report_dict:
                 return
 
-            checkpoint = Checkpoint.from_directory(tempdir / str(Path(*filepath_elems[:-1])))
+            checkpoint = Checkpoint.from_directory(
+                tempdir / str(Path(*filepath_elems[:-1]))
+            )
             train.report(report_dict, checkpoint=checkpoint)
 
     def _get_report_dict(self, trainer: Trainer):

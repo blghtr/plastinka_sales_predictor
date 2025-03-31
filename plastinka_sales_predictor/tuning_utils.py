@@ -10,7 +10,6 @@ import ray
 import os
 import torch
 from plastinka_sales_predictor import (
-    setup_dataset,
     DEFAULT_METRICS,
     DartsCheckpointCallback,
     prepare_for_training,
@@ -190,7 +189,7 @@ def train_model(
     (
         ds,
         val_ds,
-        _,
+        callbacks,
         lr_scheduler_cls,
         lr_shed_config,
         optimizer_config,
@@ -213,7 +212,7 @@ def train_model(
         model_config['nr_epochs_val_period'] = 5
         model = get_model(
             optimizer_config=optimizer_config,
-            callbacks=[],
+            callbacks=callbacks,
             lr_scheduler_cls=lr_scheduler_cls,
             lr_shed_config=lr_shed_config,
             random_state=random_state,
@@ -237,14 +236,12 @@ def train_fn(config, fixed_config, ds):
     lags = config['lags']
     length = lags + 1
 
-    temp_train = setup_dataset(
-        ds=ds,
+    temp_train = ds.setup_dataset(
         input_chunk_length=lags,
         output_chunk_length=1,
         window=(0, L - 1)
     )
-    temp_val = setup_dataset(
-        ds=ds,
+    temp_val = ds.setup_dataset(
         input_chunk_length=lags,
         output_chunk_length=1,
         window=(L - length, L)

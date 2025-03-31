@@ -3,7 +3,6 @@ import uuid
 import torch
 from plastinka_sales_predictor import (
     PlastinkaTrainingTSDataset,
-    setup_dataset,
     DEFAULT_METRICS,
     WQuantileRegression,
     configure_logger
@@ -82,12 +81,12 @@ def prepare_for_training(
 
         weights_config = config['weights_config']
         quantiles = config.pop('quantiles', None)
-        ds = setup_dataset(
-            ds=ds,
+        ds.setup_dataset(
             input_chunk_length=lags,
             output_chunk_length=1,
             span=ds_config['span'],
-            weights_alpha=ds_config['alpha']
+            weights_alpha=ds_config['alpha'],
+            copy=False
         )
 
         if callbacks is None:
@@ -101,12 +100,12 @@ def prepare_for_training(
         ])
         
         if val_ds is not None:
-            val_ds = setup_dataset(
-                ds=val_ds,
+            val_ds.setup_dataset(
                 input_chunk_length=lags,
                 output_chunk_length=1,
                 span=ds_config['span'],
-                weights_alpha=ds_config['alpha']
+                weights_alpha=ds_config['alpha'],
+                copy=False
             )
             callbacks.extend([
                 EarlyStopping(
