@@ -4,7 +4,6 @@ from plastinka_sales_predictor import (
     PlastinkaTrainingTSDataset,
     GlobalLogMinMaxScaler,
     configure_logger,
-    setup_dataset,
     prepare_for_training,
     train_model
 )
@@ -77,8 +76,7 @@ def train(config_path, ds_path, output_dir):
             with open(config_file, 'r') as f:
                 config = json.load(f)
 
-            with open(ds_path, 'rb') as f:
-                ds = dill.load(f)
+            ds = PlastinkaTrainingTSDataset.from_dill(ds_path)
 
             model_id = config.setdefault('model_id', str(uuid.uuid4()))
 
@@ -86,28 +84,21 @@ def train(config_path, ds_path, output_dir):
             model_filename.parent.mkdir(parents=True, exist_ok=True)
             model_filename = str(model_filename)
 
-            ds = PlastinkaTrainingTSDataset.from_dill(ds_path)
-            ds_copy = deepcopy(ds)
-            L = ds_copy.L
             lags = config['lags']
             length = lags + 1
-
-            temp_train, temp_val = deepcopy(ds_copy), deepcopy(ds_copy)
             scaler = GlobalLogMinMaxScaler()
             
-            temp_train = setup_dataset(
-                ds=temp_train,
+            temp_train = ds.setup_dataset(
                 input_chunk_length=lags,
                 output_chunk_length=1,
                 window=(0, length),
                 scaler=scaler
             )
 
-            temp_val = setup_dataset(
-                ds=temp_val,
+            temp_val = ds.setup_dataset(
                 input_chunk_length=lags,
                 output_chunk_length=1,
-                window=(L - length, L),
+                window=(ds.L - length, ds.L),
                 scaler=scaler
             )
             
@@ -133,12 +124,10 @@ def train(config_path, ds_path, output_dir):
             config['model_config']['n_epochs'] = effective_epochs
             logger.info(f"Effective epochs: {effective_epochs}")
             
-            full_train_ds = deepcopy(ds_copy)
-            full_train_ds = setup_dataset(
-                ds=full_train_ds,
+            full_train_ds = ds.setup_dataset(
                 input_chunk_length=lags,
                 output_chunk_length=1,
-                window=(0, L),
+                window=(0, ds.L),
                 scaler=scaler
             )
 
