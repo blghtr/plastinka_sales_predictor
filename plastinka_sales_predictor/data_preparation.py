@@ -63,7 +63,7 @@ class PlastinkaBaseTSDataset(ABC):
             save_dir: Optional[str] = None, dataset_name: Optional[str] = None,
             dtype: Union[str, np.dtype] = np.float32
     ):
-        self.stocks = stocks
+        self._stocks = stocks
         self._monthly_sales = monthly_sales
         self._n_time_steps = self._monthly_sales.shape[0]
         if end is None:
@@ -77,7 +77,8 @@ class PlastinkaBaseTSDataset(ABC):
             span=past_covariates_span,
             weights_alpha=weight_coef,
             scaler=scaler,
-            copy=False
+            copy=False,
+            reindex=False
         )
 
         self._index_names_mapping = {
@@ -205,7 +206,7 @@ class PlastinkaBaseTSDataset(ABC):
             past_cov_arr = self.scaler.transform(past_cov_arr)
 
         past_cov_arr = np.vstack(
-            [past_cov_arr, self.stocks.loc[
+            [past_cov_arr, self._stocks.loc[
                 :, pd.IndexSlice[(slice(None),) + tuple(item_multiidx)]
             ].values.T]
         ).T
@@ -264,6 +265,7 @@ class PlastinkaBaseTSDataset(ABC):
             weights_alpha: float | None = None,
             scaler: BaseEstimator | None = None,
             copy: bool = True,
+            reindex: bool = True
     ) -> Optional[Self]:
         if copy:
             ds = deepcopy(self)
@@ -284,6 +286,11 @@ class PlastinkaBaseTSDataset(ABC):
 
         if span:
             ds.prepare_past_covariates(span)
+
+        if reindex:
+            if not ds.ds:
+                raise UserWarning('Dataset is not prepared')
+            ds._idx_mapping = ds._build_index_mapping()
 
         if copy:
             return ds
@@ -356,7 +363,15 @@ class PlastinkaBaseTSDataset(ABC):
 
     @property
     def monthly_sales(self):
-        return self._monthly_sales[self.start:self.end]
+        if self._monthly_sales is not None:
+            return self._monthly_sales[self.start:self.end]
+        return None
+
+    @property
+    def stocks(self):
+        if self._stocks is not None:
+            return self._stocks[self.start:self.end]
+        return None
 
     @property
     def outputs_per_array(self):
