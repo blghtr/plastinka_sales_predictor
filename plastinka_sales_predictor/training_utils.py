@@ -64,6 +64,7 @@ def prepare_for_training(
         lags = config['lags']
         config['model_config']['input_chunk_length'] = lags
 
+        model_id = config.setdefault('model_id', str(uuid.uuid4()))
         model_config = config['model_config']
         optimizer_config = config['optimizer_config']
         ds_config = config['train_ds_config']
@@ -146,7 +147,8 @@ def prepare_for_training(
         lr_shed_config,
         optimizer_config,
         model_config,
-        likelihood
+        likelihood,
+        model_id
     )
 
 
@@ -200,9 +202,6 @@ def train_model(
         random_state: Optional[int] = 42,
         torch_metrics: Optional[Union['Metric', 'MetricCollection']] = None,
 ) -> TiDEModel:
-    if not model_id:
-        model_id = str(uuid.uuid4())
-
     if torch_metrics is None:
         torch_metrics = DEFAULT_METRICS
 

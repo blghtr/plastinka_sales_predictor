@@ -194,7 +194,8 @@ def train_model(
         lr_shed_config,
         optimizer_config,
         model_config,
-        likelihood
+        likelihood,
+        _
     ) = prepare_for_training(
         config=config,
         ds=ds,
