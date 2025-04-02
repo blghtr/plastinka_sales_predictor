@@ -209,7 +209,7 @@ def train_model(
                 print(f"✓ Resumed training from epoch {model.epochs_trained}")
     
     else:
-        model_config['nr_epochs_val_period'] = 5
+        model_config['nr_epochs_val_period'] = 10
         model = get_model(
             optimizer_config=optimizer_config,
             callbacks=callbacks,

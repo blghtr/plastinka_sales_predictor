@@ -2,7 +2,7 @@ from plastinka_sales_predictor.data_preparation import (
     PlastinkaTrainingTSDataset,
     MultiColumnLabelBinarizer,
     GlobalLogMinMaxScaler,
-    get_in_stock_conf,
+    get_stock_features,
     get_stock_history,
     get_starting_stocks,
     categorize_prices,
@@ -79,8 +79,8 @@ def prepare_datasets(
         prices_bins,
         cutoff_date_lower
     )
-    stocks_conf = get_in_stock_conf(processed_stocks, sales_history)
-
+    stock_features = get_stock_features(processed_stocks, sales_history)
+    
     if cutoff_date_upper is None:
         latest_date = sales_history.index.get_level_values('_date').max()
         if (latest_date + timedelta(days=1)).month == latest_date.month:
@@ -94,8 +94,8 @@ def prepare_datasets(
         sales_history.index.get_level_values('_date') <
         pd.to_datetime(cutoff_date_upper, dayfirst=True)
     ]
-    rounded_stocks = stocks_conf[
-        stocks_conf.index <
+    rounded_stocks = stock_features[
+        stock_features.index <
         pd.to_datetime(cutoff_date_upper, dayfirst=True)
     ]
 

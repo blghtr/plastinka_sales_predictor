@@ -101,7 +101,10 @@ def train(config_path, ds_path, output_dir):
                 window=(ds.L - length, ds.L),
                 scaler=scaler
             )
-            
+            config['swa_config']['swa_epoch_start'] = int(
+                config['swa_config']['swa_epoch_start'] * 200
+            )
+            config['model_config']['n_epochs'] = 300
             logger.info("Train first time to determine effective epochs")
             model = train_model(
                 *prepare_for_training(

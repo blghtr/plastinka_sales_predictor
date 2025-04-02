@@ -176,8 +176,7 @@ class PlastinkaBaseTSDataset(ABC):
 
         return static_covariates
 
-    def get_future_covariates(self, item_multiidx):  # Как переделать для инференса?
-        #in_stock = self.stocks[item_multiidx].values
+    def get_future_covariates(self, item_multiidx):  
         item_sales = self._monthly_sales[item_multiidx]
         is_hot = item_sales.index.map(lambda x: int(x.year)) == item_multiidx[-1]
         msin, mcos = transform_months(item_sales.index.map(lambda x: x.month))
@@ -200,8 +199,18 @@ class PlastinkaBaseTSDataset(ABC):
                 span=self._past_covariates_span, adjust=False
             ).mean()
         )
-        past_covariates = np.vstack(past_covariates).T
-        return past_covariates
+
+        past_cov_arr = np.vstack(past_covariates)
+        if self.scaler:
+            past_cov_arr = self.scaler.transform(past_cov_arr)
+
+        past_cov_arr = np.vstack(
+            [past_cov_arr, self.stocks.loc[
+                :, pd.IndexSlice[(slice(None),) + tuple(item_multiidx)]
+            ].values.T]
+        ).T
+
+        return past_cov_arr
 
     def set_length(self, input_chunk_length, output_chunk_length):
         if all(
@@ -310,28 +319,18 @@ class PlastinkaBaseTSDataset(ABC):
                 past_covariates,
                 historic_future_covariates,
                 future_covariates,
-                static_covariates,
-                sample_weights,
+                _,
+                _,
                 future_target,
                 ts
             ) = self[i]
             
             time_index = ts.time_index
-            future_sample_weights = self.reweight_fn(
-                future_target * future_covariates[:, 0:1]
-            )
             future_covariates = np.vstack(
                 [historic_future_covariates, future_covariates]
             )
-            sample_weights = np.vstack(
-                [sample_weights, future_sample_weights]
-            )
             series = np.vstack(
                 [past_target, future_target]
-            )
-            sample_weights = TimeSeries.from_times_and_values(
-                time_index,
-                sample_weights
             )
             future_covariates = TimeSeries.from_times_and_values(
                 time_index,
@@ -342,9 +341,11 @@ class PlastinkaBaseTSDataset(ABC):
             )
             ts = TimeSeries.with_values(ts, series)
             
+            if self._index_mapping:
+                i = self._index_mapping[i]
+                
             labels = self.ds['ts_names'][i // self.outputs_per_array]
 
-            dataset_dict[f'{prefix}sample_weight'].append(sample_weights)
             dataset_dict[f'{prefix}series'].append(ts)
             dataset_dict[f'{prefix}future_covariates'].append(future_covariates)
             dataset_dict[f'{prefix}past_covariates'].append(past_covariates)
@@ -413,14 +414,24 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
         self.minimum_sales_months = minimum_sales_months
         self.save_ts = save_ts
 
-        PlastinkaBaseTSDataset.__init__(self, stocks=stocks, monthly_sales=monthly_sales,
-                                        static_transformer=static_transformer, static_features=static_features, scaler=scaler,
-                                        weight_coef=weight_coef, input_chunk_length=input_chunk_length,
-                                        output_chunk_length=output_chunk_length, start=start, end=end,
-                                        past_covariates_fnames=past_covariates_fnames,
-                                        past_covariates_span=past_covariates_span,
-                                        save_dir=save_dir,
-                                        dataset_name=dataset_name, dtype=dtype)
+        PlastinkaBaseTSDataset.__init__(
+            self, 
+            stocks=stocks, 
+            monthly_sales=monthly_sales,
+            static_transformer=static_transformer, 
+            static_features=static_features, 
+            scaler=scaler,
+            weight_coef=weight_coef, 
+            input_chunk_length=input_chunk_length,
+            output_chunk_length=output_chunk_length, 
+            start=start, 
+            end=end,
+            past_covariates_fnames=past_covariates_fnames,
+            past_covariates_span=past_covariates_span,
+            save_dir=save_dir,
+            dataset_name=dataset_name, 
+            dtype=dtype
+        )
 
     def _process_sample(self, ds, item_multiidx):
         item_sales = self._monthly_sales[item_multiidx]
@@ -438,7 +449,6 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
         series_item = self.ds['target_series'][item][
             start_index:end_index
         ].astype(self.dtype)
-        in_stock = self.stocks[item_multiidx].values
         future_covariates_item = self.get_future_covariates(item_multiidx)[
             start_index:end_index
         ].astype(self.dtype)
@@ -451,8 +461,8 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
 
         if self.scaler is not None:
             series_item = self.scaler.transform(series_item)
-            past_covariates_item = self.scaler.transform(past_covariates_item)
 
+        soft_availability = past_covariates_item[:, -1]
         output = [
             series_item[:-self.output_chunk_length],
             past_covariates_item[:-self.output_chunk_length],
@@ -461,7 +471,7 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
             np.expand_dims(static_covariates_item.values, 1).T,
             self.reweight_fn(
                 series_item[:-self.output_chunk_length] *
-                in_stock
+                soft_availability
             ),
             series_item[-self.output_chunk_length:]
         ]
@@ -477,9 +487,14 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, MixedCovariatesTraining
         return output
 
     def _validate_sample(self, index):
-        item_multiidx = self.ds['ts_names'][index]
-        in_stock = self.stocks[item_multiidx].values
-        return np.any(in_stock[-self.output_chunk_length:])
+        item_multiidx = self.ds['ts_names'][
+            index // self.outputs_per_array
+        ]
+        in_stock = self.stocks.loc[:, pd.IndexSlice[
+            (slice(None),) + tuple(item_multiidx)
+        ]].values
+        in_stock = in_stock[-self.output_chunk_length:]
+        return np.any(in_stock)
 
 
 class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
@@ -827,15 +842,12 @@ def get_stock_history(data_path: str, bins=None, cutoff_date=None) -> pd.DataFra
     return stock_history
 
 
-def get_in_stock_conf(
+def get_stock_features(
         stocks: pd.DataFrame,
         daily_movements: pd.DataFrame,
 ) -> pd.DataFrame:
-    cols = []
+    stock_features = defaultdict(list)
     idx = [i for i in daily_movements.index.names if not i.startswith('_')]
-    #stocks = stocks.reset_index('precise_record_year')
-    #stocks = stocks.groupby(stocks.index.names).sum()
-
     groups = daily_movements.groupby('_month_year')
     for month, daily_data in groups:
         daily_data = daily_data.reset_index()
@@ -846,19 +858,31 @@ def get_in_stock_conf(
             aggfunc='sum',
             fill_value=0,
         )
-
+        
         stocks = stocks.join(shp, how='outer').fillna(0).cumsum(axis=1)
         stocks = stocks.sort_index(axis=1)
         conf = stocks.clip(0, 5) / 5
-        in_stock_frac = conf.iloc[:, 1:].mean(1).rename(month)
+        month_conf = conf.iloc[:, 1:].mean(1).rename(month)
 
-        cols.append(in_stock_frac)
+        in_stock = stocks.clip(0, 1)
+        in_stock_frac = in_stock.iloc[:, 1:].mean(1).rename(month)
 
-        stocks = pd.DataFrame(stocks.iloc[:, -1])
+        stock_features['availability'].append(in_stock_frac)
+        stock_features['confidence'].append(month_conf)
 
-    monthly_in_stock_conf = pd.concat(cols, axis=1).fillna(0).T
-    monthly_in_stock_conf = monthly_in_stock_conf.set_index(monthly_in_stock_conf.index.to_timestamp('ms'))
-    return monthly_in_stock_conf
+        stocks = stocks.iloc[:, -1:]
+
+    for k, v in stock_features.items():
+        k_df = pd.concat(v, axis=1).fillna(0).T
+        k_df = k_df.set_index(k_df.index.to_timestamp('ms'))
+        stock_features[k] = k_df
+
+    stock_features = pd.concat(
+        [stock_features['availability'], stock_features['confidence']],
+        axis=1,
+        keys=['availability', 'confidence']
+    )
+    return stock_features
 
 
 def transform_months(series):
@@ -882,7 +906,9 @@ def get_monthly_sales_pivot(monthly_sales_df, start=None, end=None):
     )
     #sort by index
     monthly_sales_pivot = monthly_sales_pivot.sort_index(axis=1)
-    monthly_sales_pivot = monthly_sales_pivot.set_index(monthly_sales_pivot.index.to_timestamp())
+    monthly_sales_pivot = monthly_sales_pivot.set_index(
+        monthly_sales_pivot.index.to_timestamp()
+    )
     if start is not None and end is not None:
         dt_idx = pd.period_range(start=start, end=end, freq='M').to_timestamp()
         monthly_sales_pivot = monthly_sales_pivot.reindex(dt_idx, fill_value=0.)
@@ -913,7 +939,6 @@ def get_past_covariates_df(monthly_sales_df, feature_list, span):
     pc_df_emv = pc_df_emv.set_index('aggregation', append=True)
 
     return pd.concat([pc_df_ema, pc_df_emv], axis=0)
-
 
 
 
