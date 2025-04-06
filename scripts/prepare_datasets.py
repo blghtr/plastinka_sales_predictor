@@ -2,9 +2,8 @@ from plastinka_sales_predictor.data_preparation import (
     PlastinkaTrainingTSDataset,
     MultiColumnLabelBinarizer,
     GlobalLogMinMaxScaler,
+    process_data,
     get_stock_features,
-    get_stock_history,
-    get_starting_stocks,
     categorize_prices,
     get_monthly_sales_pivot
 )
@@ -68,21 +67,18 @@ def prepare_datasets(
     if prices_bins is None:
         _, prices_bins = categorize_prices(stocks, q=6)
 
-    processed_stocks = get_starting_stocks(
-        stocks,
-        cutoff_date_lower,
+    features = process_data(
+        stocks_path,
         data_path,
+        cutoff_date_lower,
         prices_bins
     )
-    sales_history = get_stock_history(
-        data_path,
-        prices_bins,
-        cutoff_date_lower
+    stock_features = get_stock_features(
+        features['stock'], features['change']
     )
-    stock_features = get_stock_features(processed_stocks, sales_history)
     
     if cutoff_date_upper is None:
-        latest_date = sales_history.index.get_level_values('_date').max()
+        latest_date = features['sales'].index.get_level_values('_date').max()
         if (latest_date + timedelta(days=1)).month == latest_date.month:
             cutoff_date_upper = latest_date.replace(day=1)
         else:
@@ -90,8 +86,8 @@ def prepare_datasets(
         
         cutoff_date_upper = cutoff_date_upper.strftime('%d-%m-%Y')
 
-    rounded_sales = sales_history[
-        sales_history.index.get_level_values('_date') <
+    rounded_sales = features['sales'][
+        features['sales'].index.get_level_values('_date') <
         pd.to_datetime(cutoff_date_upper, dayfirst=True)
     ]
     rounded_stocks = stock_features[
