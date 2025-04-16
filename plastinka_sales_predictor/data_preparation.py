@@ -48,7 +48,7 @@ GROUP_KEYS = [
 class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
     def __init__(
             self,
-            stocks: pd.DataFrame,
+            stock_features: pd.DataFrame,
             monthly_sales: pd.DataFrame,
             static_transformer: BaseEstimator = None,
             static_features: Optional[Sequence[str]] = None,
@@ -58,11 +58,13 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             output_chunk_length: int = 1,
             start: int = 0,
             end: Optional[int] = None,
-            past_covariates_fnames: Sequence[str] = ('Тип', 'Конверт', 'Стиль', 'Ценовая категория'),
+            past_covariates_fnames: Sequence[str] = (
+                'Тип', 'Конверт', 'Стиль', 'Ценовая категория'
+            ),
             past_covariates_span: int = 3,
             save_dir: Optional[str] = None, dataset_name: Optional[str] = None,
             dtype: Union[str, np.dtype] = np.float32,
-            minimum_sales_months: int = 4
+            minimum_sales_months: int = 1
     ):
         super().__init__()
 
@@ -93,7 +95,9 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             self._time_index,
             self._multiidx2idx.keys()
         ].values.astype(self.dtype)
-        self._stocks = self._get_stock_features_values(stocks)
+        self._stock_features = self._get_stock_features_values(
+            stock_features
+        )
         self._n_time_steps = self._monthly_sales.shape[0]
         if end is None:
             end = self._n_time_steps
@@ -113,6 +117,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
         self.static_features = static_features
         self.static_covariates_mapping = self.get_static_covariates()
         self.return_ts = False
+        self._allow_empty_stock = False
         self.minimum_sales_months = minimum_sales_months
         self._idx_mapping = self._build_index_mapping()
         self.save_dir = save_dir
@@ -180,6 +185,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
         self._past_covariates_cached = {
             feat: get_past_covariates_df(
                 self.monthly_sales_df,
+                self.stock_features,
                 (feat,),
                 self._past_covariates_span
             ) for feat in self._past_covariates_fnames
@@ -268,7 +274,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             past_cov_arr = self.scaler.transform(past_cov_arr)
 
         past_cov_arr = np.hstack(
-            [past_cov_arr, self._get_item_stocks(item_multiidx)]
+            [past_cov_arr, self._get_item_stock(item_multiidx)]
         )
 
         past_cov_arr = past_cov_arr.astype(self.dtype)
@@ -378,17 +384,17 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             ].shape[0]
         ) >= self.minimum_sales_months
 
-        target_stocks = self.stocks[
+        target_stock = self.stock_features[
             -self.output_chunk_length:, :, index
         ]
 
         in_stock = np.any(
-            target_stocks
+            target_stock
         )
 
         return (
             enough_sales and
-            in_stock
+            (self._allow_empty_stock or in_stock)
         )
     
     def set_reweight_fn(self, alpha):
@@ -402,12 +408,16 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
 
         self.reweight_fn = reweight_fn
 
-    def unravel_dataset(
+    def to_dict(
             self,
             prefix=''
     ):
         dataset_dict = defaultdict(list)
         self.return_ts = True
+        self._allow_empty_stock = True
+        old_idx_mapping = self._index_mapping
+        self._build_index_mapping()
+
         for i in range(len(self)):
             (
                 past_target,
@@ -449,6 +459,9 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             dataset_dict[f'{prefix}labels'].append(labels)
         
         self.return_ts = False
+        self._allow_empty_stock = False
+        self._index_mapping = old_idx_mapping
+
         return dataset_dict
     
     def _get_item_sales(self, item_multiidx):
@@ -456,8 +469,8 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             :, self._multiidx2idx[item_multiidx]
         ]
     
-    def _get_item_stocks(self, item_multiidx):
-        return self.stocks[
+    def _get_item_stock(self, item_multiidx):
+        return self.stock_features[
             :, :, self._multiidx2idx[item_multiidx]
         ]
     
@@ -481,9 +494,9 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
         return None
     
     @property
-    def stocks(self):
-        if self._stocks is not None:
-            return self._stocks[self.start:self.end]
+    def stock_features(self):
+        if self._stock_features is not None:
+            return self._stock_features[self.start:self.end]
         return None
 
     @property
@@ -533,7 +546,6 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             ],
             axis=1
         )
-        time_index = self.time_index
         item_multiidx = self._idx2multiidx[array_index]
         future_covariates_item = self.get_future_covariates(
             item_multiidx
@@ -568,7 +580,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
 
         if self.return_ts:
             time_series = TimeSeries.from_times_and_values(
-                time_index,
+                self.time_index[start_index:end_index],
                 series_item,
                 static_covariates=static_covariates_item
             )
@@ -799,6 +811,10 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
         idx = validated['Дата создания'] > validated['Дата продажи']
         validated.loc[idx, 'Дата создания'] = validated.loc[idx, 'Дата продажи']
 
+    if 'Дата продажи' in validated.columns:
+        validated['Дата продажи'] = validated['Дата продажи'].dt.floor('D')
+    validated['Дата создания'] = validated['Дата создания'].dt.floor('D')
+
     return validated
 
 
@@ -894,7 +910,7 @@ def process_data(
             )
         })
 
-    def _process_stock_and_prices(
+    def _process_stock(
             preprocessed_df, 
             keys_no_dates
         ):
@@ -930,6 +946,12 @@ def process_data(
             cut_before=True
         )
         
+        prices = sales.groupby(
+            keys_no_dates
+        ).agg(
+            mean_price=('mean_price', 'mean')
+        )
+
         # Process movements for stock history
         sold = sales.groupby(
             [k for k in all_keys if k != 'Дата создания']
@@ -948,7 +970,7 @@ def process_data(
             index={'Дата продажи': '_date'},
             inplace=True
         )
-        
+
         sales = (
             pd.concat(
                 [arrived, sold],
@@ -964,7 +986,7 @@ def process_data(
             sales.loc[:, 'outflow'],
             sales.loc[:, 'change']
         )
-        return sales, change
+        return sales, change, prices
 
     def _concat_series(
             series_list: list[pd.Series],
@@ -1021,18 +1043,23 @@ def process_data(
             bins=bins
         )
         
-        monthly_stock, monthly_prices = _process_stock_and_prices(
+        stock, prices_from_stock = _process_stock(
             preprocessed_df,
             keys_no_dates
         )
 
-        sales, change = _process_sales(
+        sales, change, prices_from_sales = _process_sales(
             preprocessed_df,
             all_keys
         )
 
-        features['stock'].append(monthly_stock)
-        features['prices'].append(monthly_prices)
+        prices = pd.concat(
+            [prices_from_stock, prices_from_sales],
+            axis=1
+        )
+
+        features['stock'].append(stock)
+        features['prices'].append(prices)
         features['sales'].append(sales)
         features['change'].append(change)
 
@@ -1077,7 +1104,7 @@ def process_data(
 
 
 def get_stock_features(
-        stocks: pd.DataFrame,
+        stock: pd.DataFrame,
         daily_movements: pd.DataFrame,
 ) -> pd.DataFrame:
     stock_features = defaultdict(list)
@@ -1108,18 +1135,18 @@ def get_stock_features(
             fill_value=0,
         )
         
-        stocks = stocks.join(shp, how='outer').fillna(0).cumsum(axis=1)
-        stocks = stocks.sort_index(axis=1)
-        conf = stocks.clip(0, 5) / 5
+        stock = stock.join(shp, how='outer').fillna(0).cumsum(axis=1)
+        stock = stock.sort_index(axis=1)
+        conf = stock.clip(0, 5) / 5
         month_conf = conf.iloc[:, 1:].mean(1).rename(month)
 
-        in_stock = stocks.clip(0, 1)
+        in_stock = stock.clip(0, 1)
         in_stock_frac = in_stock.iloc[:, 1:].mean(1).rename(month)
 
         stock_features['availability'].append(in_stock_frac)
         stock_features['confidence'].append(month_conf)
 
-        stocks = stocks.iloc[:, -1:]
+        stock = stock.iloc[:, -1:]
 
     for k, v in stock_features.items():
         k_df = pd.concat(v, axis=1).fillna(0).T
@@ -1165,10 +1192,22 @@ def get_monthly_sales_pivot(monthly_sales_df):
     return monthly_sales_pivot
 
 
-def get_past_covariates_df(monthly_sales_df, feature_list, span):
+def get_past_covariates_df(
+        monthly_sales_df,
+        stock_features,
+        feature_list,
+        span
+    ):
+    boolean_mask = stock_features.T
+    boolean_mask = boolean_mask[:, 0].astype(bool)
     monthly_sales_df = monthly_sales_df.T
-    pc_df = monthly_sales_df.reset_index(
-        [i for i in monthly_sales_df.index.names if not i in [*feature_list, 'Год записи']],
+    masked_data = monthly_sales_df.where(boolean_mask)
+
+    pc_df = masked_data.reset_index(
+        [i for i in masked_data.index.names if i not in [
+            *feature_list, 'Год записи'
+            ]
+        ],
         drop=True
     )
     pc_df = pc_df.reset_index()
@@ -1176,14 +1215,19 @@ def get_past_covariates_df(monthly_sales_df, feature_list, span):
     grouped = pc_df.groupby([*feature_list, 'Год записи'])
 
     pc_df_ema = grouped.apply(
-        lambda x: x.iloc[:, 2:].mean(axis=0).ewm(span=span, adjust=False).mean()
-    )
+        lambda x: x.iloc[:, 2:].mean(axis=0).ewm(
+            span=span, adjust=False
+        ).mean()
+    ).bfill(axis=1, limit=3).fillna(0)
     pc_df_ema['aggregation'] = 'exponentially_weighted_moving_average'
     pc_df_ema = pc_df_ema.set_index('aggregation', append=True)
 
     pc_df_emv = grouped.apply(
-        lambda x: x.iloc[:, 2:].mean(axis=0).ewm(span=span, adjust=False).var()
-    ).bfill(axis=1)
+        lambda x: x.iloc[:, 2:].mean(axis=0).ewm(
+            span=span, 
+            adjust=False
+        ).var()
+    ).bfill(axis=1, limit=3).fillna(0)
     pc_df_emv['aggregation'] = 'exponentially_weighted_moving_variance'
     pc_df_emv = pc_df_emv.set_index('aggregation', append=True)
 

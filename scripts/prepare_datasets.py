@@ -1,3 +1,4 @@
+from pathlib import Path
 from plastinka_sales_predictor.data_preparation import (
     PlastinkaTrainingTSDataset,
     MultiColumnLabelBinarizer,
@@ -38,6 +39,13 @@ DEFAULT_PAST_COVARIATES_FNAMES = [
 ]
 
 
+def save_features(features: dict, path: str):
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    for key, value in features.items():
+        value.to_pickle(path / f'{key}.pkl')
+
+
 @click.command()
 @click.option('--data_path', type=str, default=None)
 @click.option('--stocks_path', type=str, default=None)
@@ -73,10 +81,12 @@ def prepare_datasets(
         cutoff_date_lower,
         prices_bins
     )
-    stock_features = get_stock_features(
+
+    features['stock_features'] = get_stock_features(
         features['stock'], features['change']
     )
-    
+    save_features(features, str(Path(output_dir) / 'features'))
+
     if cutoff_date_upper is None:
         latest_date = features['sales'].index.get_level_values('_date').max()
         if (latest_date + timedelta(days=1)).month == latest_date.month:
@@ -90,8 +100,8 @@ def prepare_datasets(
         features['sales'].index.get_level_values('_date') <
         pd.to_datetime(cutoff_date_upper, dayfirst=True)
     ]
-    rounded_stocks = stock_features[
-        stock_features.index <
+    rounded_stocks = features['stock_features'][
+        features['stock_features'].index <
         pd.to_datetime(cutoff_date_upper, dayfirst=True)
     ]
 
@@ -104,7 +114,7 @@ def prepare_datasets(
 
     logger.info('Creating full dataset...')
     dataset = PlastinkaTrainingTSDataset(
-        stocks=rounded_stocks,
+        stock_features=rounded_stocks,
         monthly_sales=sales_pivot,
         static_transformer=static_transformer,
         static_features=DEFAULT_STATIC_FEATURES,

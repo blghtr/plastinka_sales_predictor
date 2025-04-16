@@ -9,12 +9,10 @@ from plastinka_sales_predictor import (
 )
 from warnings import filterwarnings
 import json
-from copy import deepcopy
 from pytorch_lightning.callbacks import (
     EarlyStopping
 )
 from pathlib import Path
-import dill
 import click
 filterwarnings('ignore')
 
@@ -79,7 +77,6 @@ def train(config_path, ds_path, output_dir):
             ds = PlastinkaTrainingTSDataset.from_dill(ds_path)
 
             model_id = config.setdefault('model_id', str(uuid.uuid4()))
-
             model_filename = Path(output_dir, f'{model_id}.pt')
             model_filename.parent.mkdir(parents=True, exist_ok=True)
             model_filename = str(model_filename)
@@ -101,11 +98,9 @@ def train(config_path, ds_path, output_dir):
                 window=(ds.L - length, ds.L),
                 scaler=scaler
             )
-            config['swa_config']['swa_epoch_start'] = int(
-                config['swa_config']['swa_epoch_start'] * 200
-            )
-            config['model_config']['n_epochs'] = 300
+            config['model_config']['n_epochs'] = 200
             logger.info("Train first time to determine effective epochs")
+            config['model_id'] = model_id + '_n_epochs_search'
             model = train_model(
                 *prepare_for_training(
                     config,
@@ -136,6 +131,7 @@ def train(config_path, ds_path, output_dir):
 
             logging.info("Train model")
 
+            config['model_id'] = model_id
             model = train_model(
                 *prepare_for_training(
                     config,
