@@ -47,6 +47,8 @@ results/
 logs/
 configs/
 ray/
+.cursor/
+MemoryBank/
 
 # Jupyter Notebook
 .ipynb_checkpoints
