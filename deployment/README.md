@@ -1,17 +1,17 @@
 # Plastinka Sales Predictor API
 
-A FastAPI application for predicting vinyl record sales using time series forecasting.
+A FastAPI application for predicting vinyl record sales using time series forecasting, with cloud-based computation via Yandex Cloud Functions.
 
 ## Overview
 
 This API provides endpoints for:
 
 1. **Data Upload** - Process and store raw sales and stock data
-2. **Model Training** - Train time series forecasting models
+2. **Model Training** - Train time series forecasting models in the cloud
 3. **Predictions** - Generate sales predictions using trained models
 4. **Reports** - Generate various analysis reports
 
-All operations are handled as asynchronous jobs with status tracking.
+All operations are handled as asynchronous jobs with status tracking and cloud computation offloading.
 
 ## System Requirements
 
@@ -19,6 +19,7 @@ All operations are handled as asynchronous jobs with status tracking.
 - SQLite3
 - 2GB+ RAM
 - 1GB+ disk space
+- Yandex Cloud account and credentials
 
 ## Setup Instructions
 
@@ -29,7 +30,23 @@ git clone <repository-url>
 cd plastinka_sales_predictor
 ```
 
-### 2. Run the Application
+### 2. Set Environment Variables
+
+```bash
+# Required Variables
+export YANDEX_CLOUD_ACCESS_KEY="your-access-key"
+export YANDEX_CLOUD_SECRET_KEY="your-secret-key"
+export YANDEX_CLOUD_FOLDER_ID="your-folder-id"
+export YANDEX_CLOUD_API_KEY="your-api-key"
+export CLOUD_CALLBACK_AUTH_TOKEN="your-callback-token"
+
+# Optional Variables
+export YANDEX_CLOUD_BUCKET="plastinka-ml-data"
+export YANDEX_CLOUD_STORAGE_ENDPOINT="https://storage.yandexcloud.net"
+export YANDEX_CLOUD_REGION="ru-central1"
+```
+
+### 3. Run the Application
 
 ```bash
 cd deployment
@@ -55,22 +72,24 @@ The API will be available at http://localhost:8000
 - `GET /health` - Health check
 - `GET /docs` - API documentation (SwaggerUI)
 
-## Data Flow
+## Data Flow with Cloud Integration
 
 1. **Data Upload**:
    - Upload Excel files with stock and sales data
    - Data is processed and stored in SQLite database
    - Feature engineering for time series analysis
 
-2. **Training**:
-   - Model is trained using the processed dataset
-   - Training metrics are stored
-   - Model is saved for future prediction
+2. **Training** (Cloud-Based):
+   - Data is prepared and uploaded to Yandex Cloud Storage
+   - Training job is submitted to Yandex Cloud Functions
+   - Model is trained in the cloud and stored in Cloud Storage
+   - Training metrics are retrieved and stored in the database
 
-3. **Prediction**:
-   - Uses stored features and trained model
-   - Generates sales forecast
-   - Saves results to database
+3. **Prediction** (Cloud-Based):
+   - Input data is uploaded to Yandex Cloud Storage
+   - Prediction job is submitted to Yandex Cloud Functions
+   - Predictions are generated in the cloud
+   - Results are downloaded and stored in the database
 
 4. **Reports**:
    - Uses stored data to generate HTML reports
@@ -84,24 +103,49 @@ The application uses SQLite for data storage with the following structure:
 - **Fact tables** - Store measurements (stock, sales, prices)
 - **Job tables** - Track job status and results
 
+## Cloud Integration
+
+This application integrates with Yandex Cloud to offload computation:
+
+- **Cloud Functions** - Execute CPU-intensive model training and prediction tasks
+- **Cloud Storage** - Store datasets, models, and results
+
+### Deploying Cloud Functions
+
+```bash
+python deployment/scripts/deploy_cloud_functions.py --function-type all --folder-id YOUR_FOLDER_ID --service-account-id YOUR_SERVICE_ACCOUNT_ID
+```
+
+Options:
+- `--concurrent` - Deploy functions in parallel
+- `--dry-run` - Test deployment without actual execution
+- `--verify` - Verify function after deployment
+- `--rollback-on-failure` - Enable automatic rollback if deployment fails
+
 ## Directory Structure
 
 ```
 deployment/
 ├── app/
-│   ├── api/             # API routes
-│   ├── db/              # Database utilities
-│   ├── models/          # API models (Pydantic)
-│   ├── services/        # Business logic
-│   └── main.py          # Application entry point
-├── data/                # Data storage (created at runtime)
-│   ├── uploads/         # Temporary storage for uploads
-│   ├── predictions/     # Saved predictions
-│   └── reports/         # Generated reports
-├── logs/                # Application logs
-├── requirements.txt     # Python dependencies
-├── Dockerfile           # Docker configuration
-└── run.py               # Runner script
+│   ├── api/                  # API routes
+│   ├── db/                   # Database utilities
+│   ├── models/               # API models (Pydantic)
+│   ├── services/             # Business logic
+│   ├── cloud_integration/    # Yandex Cloud integration
+│   ├── utils/                # Utility functions
+│   └── main.py               # Application entry point
+├── data/                     # Data storage (created at runtime)
+│   ├── uploads/              # Temporary storage for uploads
+│   ├── predictions/          # Saved predictions
+│   └── reports/              # Generated reports
+├── logs/                     # Application logs
+├── scripts/                  # Deployment scripts
+│   ├── deploy_cloud_functions.py  # Cloud function deployment
+│   └── check_environment.py       # Environment validation
+├── tests/                    # Test suite
+├── requirements.txt          # Python dependencies
+├── Dockerfile                # Docker configuration
+└── run.py                    # Runner script
 ```
 
 ## Troubleshooting
@@ -111,7 +155,17 @@ deployment/
 - **Database errors**: Check that SQLite is available and the `data` directory is writable
 - **Missing dependencies**: Ensure all requirements are installed with `pip install -r requirements.txt`
 - **File permission errors**: Check permissions on the `data` and `logs` directories
+- **Cloud errors**: Verify your Yandex Cloud credentials and network connectivity
+- **Missing environment variables**: Check that all required cloud variables are set
 
 ### Logs
 
-Application logs are stored in `deployment/logs/app.log` 
+Application logs are stored in `deployment/logs/app.log`
+
+### Environment Validation
+
+Run the environment checker to validate your setup:
+
+```bash
+python deployment/scripts/check_environment.py
+``` 
