@@ -1,30 +1,67 @@
 import sqlite3
 import json
 import uuid
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 from pathlib import Path
+import logging
 
-DB_PATH = "deployment/data/plastinka.db"
+# Import configuration
+from app.config import settings
+
+logger = logging.getLogger("plastinka.database")
+
+# Use database path from settings
+DB_PATH = settings.db.path
+
+class DatabaseError(Exception):
+    """Exception raised for database errors."""
+    def __init__(self, message: str, query: str = None, params: tuple = None, original_error: Exception = None):
+        self.message = message
+        self.query = query
+        self.params = params
+        self.original_error = original_error
+        super().__init__(self.message)
 
 def get_db_connection():
     """Get a connection to the SQLite database"""
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {str(e)}", exc_info=True)
+        raise DatabaseError(f"Database connection failed: {str(e)}", original_error=e)
 
 def dict_factory(cursor, row):
     """Convert row to dictionary"""
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
 def execute_query(query: str, params: tuple = (), fetchall: bool = False) -> Union[List[Dict], Dict, None]:
-    """Execute a query and optionally return results"""
-    conn = get_db_connection()
-    conn.row_factory = dict_factory
-    cursor = conn.cursor()
+    """
+    Execute a query and optionally return results
+    
+    Args:
+        query: SQL query with placeholders (?, :name)
+        params: Parameters for the query
+        fetchall: Whether to fetch all results or just one
+        
+    Returns:
+        Query results as dict or list of dicts, or None for operations
+        
+    Raises:
+        DatabaseError: If database operation fails
+    """
+    conn = None
+    cursor = None
     
     try:
+        conn = get_db_connection()
+        conn.row_factory = dict_factory
+        cursor = conn.cursor()
+        
         cursor.execute(query, params)
         
         if query.strip().upper().startswith(("SELECT", "PRAGMA")):
@@ -35,24 +72,69 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False) -> Uni
         else:
             conn.commit()
             result = None
-    finally:
-        conn.close()
+            
+        return result
         
-    return result
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        
+        # Log with limited parameter data for security
+        safe_params = "..." if params else "()"
+        logger.error(f"Database error in query: {query[:100]} with params: {safe_params}: {str(e)}", exc_info=True)
+        
+        raise DatabaseError(
+            message=f"Database operation failed: {str(e)}",
+            query=query,
+            params=params,
+            original_error=e
+        )
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 def execute_many(query: str, params_list: List[tuple]) -> None:
-    """Execute a query with multiple parameter sets"""
+    """
+    Execute a query with multiple parameter sets
+    
+    Args:
+        query: SQL query with placeholders
+        params_list: List of parameter tuples
+        
+    Raises:
+        DatabaseError: If database operation fails
+    """
     if not params_list:
         return
-        
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    
+    conn = None
+    cursor = None
     
     try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
         cursor.executemany(query, params_list)
         conn.commit()
+        
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        
+        logger.error(f"Database error in executemany: {query[:100]}, params count: {len(params_list)}: {str(e)}", exc_info=True)
+        
+        raise DatabaseError(
+            message=f"Batch database operation failed: {str(e)}",
+            query=query,
+            original_error=e
+        )
     finally:
-        conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 # Job-related database functions
 
@@ -61,7 +143,16 @@ def generate_id() -> str:
     return str(uuid.uuid4())
 
 def create_job(job_type: str, parameters: Dict[str, Any] = None) -> str:
-    """Create a new job record and return the job ID"""
+    """
+    Create a new job record and return the job ID
+    
+    Args:
+        job_type: Type of job (from JobType enum)
+        parameters: Dictionary of job parameters
+        
+    Returns:
+        Generated job ID
+    """
     job_id = generate_id()
     now = datetime.now().isoformat()
     
@@ -80,15 +171,29 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None) -> str:
         0
     )
     
-    execute_query(query, params)
-    return job_id
+    try:
+        execute_query(query, params)
+        logger.info(f"Created new job: {job_id} of type {job_type}")
+        return job_id
+    except DatabaseError as e:
+        logger.error(f"Failed to create job: {str(e)}")
+        raise
 
 def update_job_status(job_id: str, status: str, progress: float = None, 
                       result_id: str = None, error_message: str = None) -> None:
-    """Update job status and related fields"""
+    """
+    Update job status and related fields
+    
+    Args:
+        job_id: ID of the job to update
+        status: New job status
+        progress: Optional progress value (0-100)
+        result_id: Optional result ID if job completed
+        error_message: Optional error message if job failed
+    """
     now = datetime.now().isoformat()
     
-    # Build query dynamically based on provided parameters
+    # Build query and parameters list
     query_parts = ["UPDATE jobs SET updated_at = ?"]
     params = [now]
     
@@ -111,37 +216,71 @@ def update_job_status(job_id: str, status: str, progress: float = None,
     query = ", ".join(query_parts) + " WHERE job_id = ?"
     params.append(job_id)
     
-    execute_query(query, tuple(params))
+    try:
+        execute_query(query, tuple(params))
+        logger.info(f"Updated job {job_id}: status={status}, progress={progress}")
+    except DatabaseError as e:
+        logger.error(f"Failed to update job {job_id}: {str(e)}")
+        raise
 
 def get_job(job_id: str) -> Dict:
-    """Get job details by ID"""
+    """
+    Get job details by ID
+    
+    Args:
+        job_id: ID of the job to retrieve
+        
+    Returns:
+        Job record as dictionary or None if not found
+    """
     query = "SELECT * FROM jobs WHERE job_id = ?"
-    return execute_query(query, (job_id,))
+    
+    try:
+        return execute_query(query, (job_id,))
+    except DatabaseError as e:
+        logger.error(f"Failed to retrieve job {job_id}: {str(e)}")
+        raise
 
 def list_jobs(job_type: str = None, status: str = None, limit: int = 100) -> List[Dict]:
-    """List jobs with optional filtering"""
-    query = "SELECT * FROM jobs"
+    """
+    List jobs with optional filtering
+    
+    Args:
+        job_type: Optional job type filter
+        status: Optional status filter
+        limit: Maximum number of jobs to return
+        
+    Returns:
+        List of job records as dictionaries
+    """
+    query_parts = ["SELECT * FROM jobs"]
     params = []
     
     # Add filters
     if job_type or status:
-        query += " WHERE"
+        query_parts.append("WHERE")
         
         if job_type:
-            query += " job_type = ?"
+            query_parts.append("job_type = ?")
             params.append(job_type)
             
         if job_type and status:
-            query += " AND"
+            query_parts.append("AND")
             
         if status:
-            query += " status = ?"
+            query_parts.append("status = ?")
             params.append(status)
     
-    query += " ORDER BY created_at DESC LIMIT ?"
+    query_parts.append("ORDER BY created_at DESC LIMIT ?")
     params.append(limit)
     
-    return execute_query(query, tuple(params), fetchall=True)
+    query = " ".join(query_parts)
+    
+    try:
+        return execute_query(query, tuple(params), fetchall=True)
+    except DatabaseError as e:
+        logger.error(f"Failed to list jobs: {str(e)}")
+        raise
 
 # Result-related functions
 

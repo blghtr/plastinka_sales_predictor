@@ -3,11 +3,20 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 import logging
+import traceback
+import json
+import os
 from typing import Dict, Any, Optional, List, Union
+import uuid
 
 from app.utils.validation import ValidationError as AppValidationError
 
+# Configure more detailed logging
 logger = logging.getLogger("plastinka.errors")
+
+# Enable detailed error responses in development environment
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
+INCLUDE_EXCEPTION_DETAILS = ENVIRONMENT.lower() in ["development", "testing"]
 
 class ErrorDetail:
     """Error detail model for consistent error responses."""
@@ -17,22 +26,69 @@ class ErrorDetail:
         message: str, 
         code: str = "internal_error",
         status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
+        exception: Optional[Exception] = None,
+        request_id: Optional[str] = None
     ):
         self.message = message
         self.code = code
         self.status_code = status_code
         self.details = details or {}
+        self.exception = exception
+        self.request_id = request_id or str(uuid.uuid4())
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON response."""
-        return {
+        error_dict = {
             "error": {
                 "message": self.message,
                 "code": self.code,
+                "request_id": self.request_id,
                 "details": self.details
             }
         }
+        
+        # Add exception details in development mode
+        if INCLUDE_EXCEPTION_DETAILS and self.exception:
+            error_dict["error"]["exception"] = {
+                "type": type(self.exception).__name__,
+                "traceback": traceback.format_exception(
+                    type(self.exception), 
+                    self.exception, 
+                    self.exception.__traceback__
+                ) if self.exception.__traceback__ else None
+            }
+            
+        return error_dict
+        
+    def log_error(self, request: Optional[Request] = None):
+        """Log error with consistent structure."""
+        log_data = {
+            "request_id": self.request_id,
+            "error_code": self.code,
+            "error_message": self.message,
+            "status_code": self.status_code,
+        }
+        
+        # Add request data if available
+        if request:
+            log_data["method"] = request.method
+            log_data["url"] = str(request.url)
+            log_data["client"] = request.client.host if request.client else None
+            log_data["headers"] = dict(request.headers)
+            
+        # Add exception details
+        if self.exception:
+            log_data["exception_type"] = type(self.exception).__name__
+            log_data["exception_msg"] = str(self.exception)
+            
+        # Log the error
+        if self.status_code >= 500:
+            logger.error(json.dumps(log_data), exc_info=self.exception)
+        elif self.status_code >= 400:
+            logger.warning(json.dumps(log_data))
+        else:
+            logger.info(json.dumps(log_data))
 
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -48,16 +104,19 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "type": error.get("type", "")
         })
     
-    logger.warning(f"Validation error: {error_details}")
+    error = ErrorDetail(
+        message="Validation error",
+        code="validation_error",
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        details={"errors": error_details},
+        exception=exc
+    )
+    
+    error.log_error(request)
     
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content=ErrorDetail(
-            message="Validation error",
-            code="validation_error",
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            details={"errors": error_details}
-        ).to_dict()
+        content=error.to_dict()
     )
 
 
@@ -65,33 +124,74 @@ async def app_validation_exception_handler(request: Request, exc: AppValidationE
     """
     Handle application-specific validation errors.
     """
-    logger.warning(f"Application validation error: {exc.message}")
+    error = ErrorDetail(
+        message=exc.message,
+        code="validation_error",
+        status_code=status.HTTP_400_BAD_REQUEST,
+        details=exc.details,
+        exception=exc
+    )
+    
+    error.log_error(request)
     
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
-        content=ErrorDetail(
-            message=exc.message,
-            code="validation_error",
-            status_code=status.HTTP_400_BAD_REQUEST,
-            details=exc.details
-        ).to_dict()
+        content=error.to_dict()
     )
+
+
+async def http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """
+    Handle HTTPException from FastAPI.
+    """
+    from fastapi import HTTPException
+    
+    if isinstance(exc, HTTPException):
+        status_code = exc.status_code
+        detail = exc.detail
+        headers = getattr(exc, "headers", None)
+        
+        error = ErrorDetail(
+            message=str(detail),
+            code=f"http_{status_code}",
+            status_code=status_code,
+            exception=exc
+        )
+        
+        error.log_error(request)
+        
+        response = JSONResponse(
+            status_code=status_code,
+            content=error.to_dict()
+        )
+        
+        if headers:
+            for name, value in headers.items():
+                response.headers[name] = value
+                
+        return response
+        
+    # If it's not an HTTPException, pass to generic handler
+    return await generic_exception_handler(request, exc)
 
 
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """
     Handle all other exceptions.
     """
-    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    error = ErrorDetail(
+        message="Internal server error",
+        code="internal_error",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        details={"error": str(exc)},
+        exception=exc
+    )
+    
+    error.log_error(request)
     
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=ErrorDetail(
-            message="Internal server error",
-            code="internal_error",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details={"error": str(exc)}
-        ).to_dict()
+        content=error.to_dict()
     )
 
 
@@ -99,8 +199,13 @@ def configure_error_handlers(app):
     """
     Configure exception handlers for the FastAPI application.
     """
+    # Import here to avoid circular imports
+    from fastapi import HTTPException
+    
+    # Add exception handlers
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(AppValidationError, app_validation_exception_handler)
+    app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
     
     logger.info("Error handlers configured")
