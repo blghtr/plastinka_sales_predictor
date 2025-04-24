@@ -6,7 +6,7 @@ import logging
 import traceback
 import json
 import os
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Type, Callable
 import uuid
 
 from app.utils.validation import ValidationError as AppValidationError
@@ -18,6 +18,24 @@ logger = logging.getLogger("plastinka.errors")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 INCLUDE_EXCEPTION_DETAILS = ENVIRONMENT.lower() in ["development", "testing"]
 
+class RetryableError(Exception):
+    """Exception class for errors that should be automatically retried."""
+    
+    def __init__(
+        self,
+        message: str,
+        code: str = "retryable_error",
+        retry_after: Optional[int] = None,
+        max_retries: Optional[int] = None,
+        original_exception: Optional[Exception] = None
+    ):
+        self.message = message
+        self.code = code
+        self.retry_after = retry_after  # Seconds to wait before retry
+        self.max_retries = max_retries  # Maximum number of retries
+        self.original_exception = original_exception
+        super().__init__(message)
+
 class ErrorDetail:
     """Error detail model for consistent error responses."""
     
@@ -28,7 +46,8 @@ class ErrorDetail:
         status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
         details: Optional[Dict[str, Any]] = None,
         exception: Optional[Exception] = None,
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        retry_info: Optional[Dict[str, Any]] = None
     ):
         self.message = message
         self.code = code
@@ -36,6 +55,7 @@ class ErrorDetail:
         self.details = details or {}
         self.exception = exception
         self.request_id = request_id or str(uuid.uuid4())
+        self.retry_info = retry_info
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON response."""
@@ -47,6 +67,10 @@ class ErrorDetail:
                 "details": self.details
             }
         }
+        
+        # Add retry information if available
+        if self.retry_info:
+            error_dict["error"]["retry_info"] = self.retry_info
         
         # Add exception details in development mode
         if INCLUDE_EXCEPTION_DETAILS and self.exception:
@@ -81,6 +105,10 @@ class ErrorDetail:
         if self.exception:
             log_data["exception_type"] = type(self.exception).__name__
             log_data["exception_msg"] = str(self.exception)
+            
+        # Add retry information if available
+        if self.retry_info:
+            log_data["retry_info"] = self.retry_info
             
         # Log the error
         if self.status_code >= 500:
@@ -195,6 +223,37 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     )
 
 
+async def retryable_exception_handler(request: Request, exc: RetryableError) -> JSONResponse:
+    """
+    Handle retryable errors.
+    """
+    retry_info = {}
+    if exc.retry_after is not None:
+        retry_info["retry_after"] = exc.retry_after
+    if exc.max_retries is not None:
+        retry_info["max_retries"] = exc.max_retries
+    
+    error = ErrorDetail(
+        message=exc.message,
+        code=exc.code,
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        exception=exc.original_exception or exc,
+        retry_info=retry_info
+    )
+    
+    error.log_error(request)
+    
+    response = JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=error.to_dict()
+    )
+    
+    if exc.retry_after is not None:
+        response.headers["Retry-After"] = str(exc.retry_after)
+        
+    return response
+
+
 def configure_error_handlers(app):
     """
     Configure exception handlers for the FastAPI application.
@@ -206,6 +265,7 @@ def configure_error_handlers(app):
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(AppValidationError, app_validation_exception_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
+    app.add_exception_handler(RetryableError, retryable_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
     
     logger.info("Error handlers configured")

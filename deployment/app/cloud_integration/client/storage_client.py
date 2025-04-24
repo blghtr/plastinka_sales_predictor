@@ -13,6 +13,7 @@ from botocore.exceptions import ClientError
 
 from deployment.app.cloud_integration.config.cloud_config import cloud_settings
 from deployment.app.db.database import get_db_connection
+from app.utils.retry import retry_cloud_operation, is_retryable_cloud_error, RetryContext, RetryableError
 
 logger = logging.getLogger(__name__)
 
@@ -60,41 +61,61 @@ class CloudStorageClient:
         # Set content type based on file extension
         content_type = self._get_content_type(file_path)
         
-        # Upload file
-        try:
-            extra_args = {
-                'ContentType': content_type
-            }
+        # Use retry context for robust error handling
+        with RetryContext(max_tries=5, base_delay=2.0, max_delay=60.0,
+                         exceptions=(ClientError,), 
+                         giveup_func=lambda e: not is_retryable_cloud_error(e)) as retry:
             
-            if metadata:
-                extra_args['Metadata'] = metadata
-            
-            self.s3_client.upload_file(
-                file_path, 
-                self.bucket_name, 
-                object_key,
-                ExtraArgs=extra_args
-            )
-            
-            # Get file size and md5 hash
-            file_stats = os.stat(file_path)
-            file_size = file_stats.st_size
-            
-            # Store object metadata in database
-            self._store_object_metadata(
-                object_key=object_key,
-                content_type=content_type,
-                size_bytes=file_size,
-                job_id=job_id,
-                object_type=object_type
-            )
-            
-            logger.info(f"Uploaded file {file_path} to {object_key}")
-            return object_key
-            
-        except ClientError as e:
-            logger.error(f"Error uploading file to cloud storage: {str(e)}")
-            raise
+            while retry.attempts():
+                try:
+                    # Prepare upload parameters
+                    extra_args = {
+                        'ContentType': content_type
+                    }
+                    
+                    if metadata:
+                        extra_args['Metadata'] = metadata
+                    
+                    # Upload file
+                    self.s3_client.upload_file(
+                        file_path, 
+                        self.bucket_name, 
+                        object_key,
+                        ExtraArgs=extra_args
+                    )
+                    
+                    # Get file size and md5 hash
+                    file_stats = os.stat(file_path)
+                    file_size = file_stats.st_size
+                    
+                    # Store object metadata in database
+                    self._store_object_metadata(
+                        object_key=object_key,
+                        content_type=content_type,
+                        size_bytes=file_size,
+                        job_id=job_id,
+                        object_type=object_type
+                    )
+                    
+                    logger.info(f"Uploaded file {file_path} to {object_key}")
+                    retry.success()
+                    return object_key
+                    
+                except ClientError as e:
+                    error_code = e.response.get('Error', {}).get('Code', '')
+                    error_msg = e.response.get('Error', {}).get('Message', str(e))
+                    
+                    # Log the error
+                    logger.warning(
+                        f"Error uploading file {file_path} to {object_key}: "
+                        f"{error_code} - {error_msg}. Attempt {retry._attempt}"
+                    )
+                    
+                    # Handle the error through retry mechanism
+                    retry.failed(e)
+        
+        # If we exit the retry context without returning, it means all retries failed
+        raise RuntimeError(f"Failed to upload file {file_path} after multiple attempts")
     
     def upload_data(self, data: Union[str, bytes, BinaryIO], 
                     object_key: Optional[str] = None,
@@ -128,50 +149,71 @@ class CloudStorageClient:
             if content_type == 'application/octet-stream':
                 content_type = 'text/plain'
         
-        # Upload data
-        try:
-            extra_args = {
-                'ContentType': content_type
-            }
+        # Get size of data
+        if isinstance(data, bytes):
+            size_bytes = len(data)
+        elif hasattr(data, 'seek') and hasattr(data, 'tell'):
+            current_pos = data.tell()
+            data.seek(0, os.SEEK_END)
+            size_bytes = data.tell()
+            data.seek(current_pos)
+        else:
+            size_bytes = 0
             
-            if metadata:
-                extra_args['Metadata'] = metadata
+        # Use retry context for robust error handling
+        with RetryContext(max_tries=5, base_delay=2.0, max_delay=60.0,
+                         exceptions=(ClientError,), 
+                         giveup_func=lambda e: not is_retryable_cloud_error(e)) as retry:
             
-            response = self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=object_key,
-                Body=data,
-                **extra_args
-            )
-            
-            # Get size of data
-            if isinstance(data, bytes):
-                size_bytes = len(data)
-            elif hasattr(data, 'seek') and hasattr(data, 'tell'):
-                current_pos = data.tell()
-                data.seek(0, os.SEEK_END)
-                size_bytes = data.tell()
-                data.seek(current_pos)
-            else:
-                size_bytes = 0
-            
-            # Store object metadata in database
-            self._store_object_metadata(
-                object_key=object_key,
-                content_type=content_type,
-                size_bytes=size_bytes,
-                job_id=job_id,
-                object_type=object_type,
-                md5_hash=response.get('ETag', '').strip('"')
-            )
-            
-            logger.info(f"Uploaded data to {object_key}")
-            return object_key
-            
-        except ClientError as e:
-            logger.error(f"Error uploading data to cloud storage: {str(e)}")
-            raise
+            while retry.attempts():
+                try:
+                    # Prepare upload parameters
+                    extra_args = {
+                        'ContentType': content_type
+                    }
+                    
+                    if metadata:
+                        extra_args['Metadata'] = metadata
+                    
+                    # Upload data
+                    response = self.s3_client.put_object(
+                        Bucket=self.bucket_name,
+                        Key=object_key,
+                        Body=data,
+                        **extra_args
+                    )
+                    
+                    # Store object metadata in database
+                    self._store_object_metadata(
+                        object_key=object_key,
+                        content_type=content_type,
+                        size_bytes=size_bytes,
+                        job_id=job_id,
+                        object_type=object_type,
+                        md5_hash=response.get('ETag', '').strip('"')
+                    )
+                    
+                    logger.info(f"Uploaded data to {object_key}")
+                    retry.success()
+                    return object_key
+                    
+                except ClientError as e:
+                    error_code = e.response.get('Error', {}).get('Code', '')
+                    error_msg = e.response.get('Error', {}).get('Message', str(e))
+                    
+                    # Log the error
+                    logger.warning(
+                        f"Error uploading data to {object_key}: "
+                        f"{error_code} - {error_msg}. Attempt {retry._attempt}"
+                    )
+                    
+                    # Handle the error through retry mechanism
+                    retry.failed(e)
+        
+        # If we exit the retry context without returning, it means all retries failed
+        raise RuntimeError(f"Failed to upload data to {object_key} after multiple attempts")
     
+    @retry_cloud_operation(max_tries=5, base_delay=2.0, max_delay=30.0)
     def download_file(self, object_key: str, file_path: str) -> None:
         """
         Download a file from cloud storage.
@@ -185,9 +227,19 @@ class CloudStorageClient:
             self.s3_client.download_file(self.bucket_name, object_key, file_path)
             logger.info(f"Downloaded {object_key} to {file_path}")
         except ClientError as e:
-            logger.error(f"Error downloading file from cloud storage: {str(e)}")
+            error_code = e.response.get('Error', {}).get('Code', '')
+            error_msg = e.response.get('Error', {}).get('Message', str(e))
+            
+            if error_code == 'NoSuchKey':
+                raise FileNotFoundError(f"Object {object_key} not found in bucket {self.bucket_name}")
+            
+            logger.error(f"Error downloading file from cloud storage: {error_code} - {error_msg}")
+            raise
+        except OSError as e:
+            logger.error(f"OS error while saving file to {file_path}: {str(e)}")
             raise
     
+    @retry_cloud_operation(max_tries=5, base_delay=1.0, max_delay=20.0)
     def download_data(self, object_key: str) -> bytes:
         """
         Download data from cloud storage.
@@ -200,11 +252,19 @@ class CloudStorageClient:
         """
         try:
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=object_key)
-            return response['Body'].read()
+            data = response['Body'].read()
+            logger.info(f"Downloaded data from {object_key}, size: {len(data)} bytes")
+            return data
         except ClientError as e:
-            logger.error(f"Error downloading data from cloud storage: {str(e)}")
+            error_code = e.response.get('Error', {}).get('Code', '')
+            
+            if error_code == 'NoSuchKey':
+                raise FileNotFoundError(f"Object {object_key} not found in bucket {self.bucket_name}")
+            
+            logger.error(f"Error downloading data from {object_key}: {str(e)}")
             raise
     
+    @retry_cloud_operation(max_tries=3, base_delay=1.0, max_delay=10.0)
     def get_presigned_url(self, object_key: str, expiration: int = None, 
                           operation: str = 'get_object') -> str:
         """
@@ -212,14 +272,14 @@ class CloudStorageClient:
         
         Args:
             object_key: Cloud storage object key
-            expiration: URL expiration time in seconds
+            expiration: URL expiration time in seconds (default: 1 hour)
             operation: S3 operation ('get_object' or 'put_object')
             
         Returns:
             Presigned URL
         """
         if expiration is None:
-            expiration = cloud_settings.storage.presigned_url_expiration
+            expiration = 3600  # Default: 1 hour
         
         try:
             url = self.s3_client.generate_presigned_url(
@@ -230,11 +290,14 @@ class CloudStorageClient:
                 },
                 ExpiresIn=expiration
             )
+            
+            logger.info(f"Generated presigned URL for {object_key}, expiration: {expiration}s")
             return url
         except ClientError as e:
-            logger.error(f"Error generating presigned URL: {str(e)}")
+            logger.error(f"Error generating presigned URL for {object_key}: {str(e)}")
             raise
     
+    @retry_cloud_operation(max_tries=3, base_delay=1.0, max_delay=10.0)
     def delete_object(self, object_key: str) -> None:
         """
         Delete an object from cloud storage.
@@ -243,26 +306,30 @@ class CloudStorageClient:
             object_key: Cloud storage object key
         """
         try:
-            self.s3_client.delete_object(Bucket=self.bucket_name, Key=object_key)
+            self.s3_client.delete_object(
+                Bucket=self.bucket_name,
+                Key=object_key
+            )
             
             # Delete from database
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute(
-                "DELETE FROM cloud_storage_objects WHERE bucket_name = ? AND object_path = ?",
-                (self.bucket_name, object_key)
+                "DELETE FROM cloud_storage_objects WHERE object_key = ?",
+                (object_key,)
             )
             conn.commit()
             conn.close()
             
             logger.info(f"Deleted object {object_key}")
         except ClientError as e:
-            logger.error(f"Error deleting object from cloud storage: {str(e)}")
+            logger.error(f"Error deleting object {object_key}: {str(e)}")
             raise
     
+    @retry_cloud_operation(max_tries=3, base_delay=1.0, max_delay=10.0)
     def list_objects(self, prefix: str = '', max_keys: int = 1000) -> List[Dict[str, Any]]:
         """
-        List objects in cloud storage.
+        List objects in cloud storage with a given prefix.
         
         Args:
             prefix: Object key prefix
@@ -279,18 +346,18 @@ class CloudStorageClient:
             )
             
             objects = []
-            if 'Contents' in response:
-                for obj in response['Contents']:
-                    objects.append({
-                        'key': obj['Key'],
-                        'size': obj['Size'],
-                        'last_modified': obj['LastModified'],
-                        'etag': obj['ETag'].strip('"')
-                    })
+            for obj in response.get('Contents', []):
+                objects.append({
+                    'key': obj.get('Key'),
+                    'size': obj.get('Size'),
+                    'last_modified': obj.get('LastModified'),
+                    'etag': obj.get('ETag', '').strip('"')
+                })
             
+            logger.info(f"Listed {len(objects)} objects with prefix '{prefix}'")
             return objects
         except ClientError as e:
-            logger.error(f"Error listing objects in cloud storage: {str(e)}")
+            logger.error(f"Error listing objects with prefix '{prefix}': {str(e)}")
             raise
     
     def _get_content_type(self, file_path: str) -> str:

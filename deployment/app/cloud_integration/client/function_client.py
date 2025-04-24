@@ -10,10 +10,10 @@ import logging
 import requests
 from typing import Dict, Any, Optional, Union, List
 from datetime import datetime
-import backoff
 
 from deployment.app.cloud_integration.config.cloud_config import cloud_settings
 from deployment.app.db.database import get_db_connection
+from app.utils.retry import retry_http_request, is_retryable_http_error, RetryableError
 
 logger = logging.getLogger(__name__)
 
@@ -406,10 +406,7 @@ class CloudFunctionClient:
         logger.info(f"Updated status for execution {execution_id} to {status}")
         return True
     
-    @backoff.on_exception(backoff.expo,
-                         (requests.exceptions.RequestException,),
-                         max_tries=3,
-                         giveup=lambda e: isinstance(e, requests.exceptions.HTTPError) and e.response.status_code < 500)
+    @retry_http_request(max_tries=5, base_delay=2.0, max_delay=60.0)
     def _invoke_function(self, function_type: str, payload: Dict[str, Any], 
                         execution_id: str) -> Dict[str, Any]:
         """
@@ -448,21 +445,61 @@ class CloudFunctionClient:
             start_time=start_time
         )
         
-        # Make the request
-        response = requests.post(
-            function_url,
-            headers=headers,
-            json=payload,
-            timeout=self.request_timeout
-        )
-        
-        # Handle errors
-        response.raise_for_status()
-        
-        # Parse response
-        response_data = response.json()
-        
-        return response_data
+        try:
+            # Make the request
+            response = requests.post(
+                function_url,
+                headers=headers,
+                json=payload,
+                timeout=self.request_timeout
+            )
+            
+            # Handle specific error codes
+            if response.status_code == 429:  # Too Many Requests
+                retry_after = int(response.headers.get('Retry-After', 30))
+                raise RetryableError(
+                    message="Function service rate limit exceeded",
+                    code="rate_limit_exceeded",
+                    retry_after=retry_after,
+                    max_retries=3
+                )
+                
+            elif response.status_code >= 500:  # Server errors
+                raise RetryableError(
+                    message=f"Function service error: {response.status_code}",
+                    code="server_error",
+                    retry_after=5,
+                    max_retries=5,
+                    original_exception=requests.HTTPError(
+                        f"Server error: {response.status_code}", response=response
+                    )
+                )
+                
+            # For other errors, raise HTTPError normally
+            response.raise_for_status()
+            
+            # Parse response
+            return response.json()
+            
+        except requests.Timeout:
+            # Handle timeouts specifically
+            raise RetryableError(
+                message="Function request timed out",
+                code="request_timeout",
+                retry_after=10,
+                max_retries=3,
+                original_exception=requests.Timeout("Request timed out")
+            )
+            
+        except requests.ConnectionError:
+            # Handle connection errors
+            raise RetryableError(
+                message="Connection error while calling function",
+                code="connection_error",
+                retry_after=5,
+                max_retries=5,
+                original_exception=requests.ConnectionError("Connection failed")
+            )
     
     def _ensure_function_registered(self, function_type: str) -> str:
         """

@@ -1,10 +1,57 @@
 """
 Central configuration module for the Plastinka Sales Predictor API.
-Loads configuration from environment variables with sensible defaults.
+Loads configuration from environment variables or config files.
 """
 import os
-from typing import List
+import json
+import yaml
+from typing import List, Dict, Any, Optional
 from pydantic import BaseSettings, Field, validator
+
+def load_config_file(file_path: str) -> Dict[str, Any]:
+    """
+    Load configuration from a JSON or YAML file.
+    
+    Args:
+        file_path: Path to the config file
+        
+    Returns:
+        Dict containing configuration values
+    """
+    if not os.path.exists(file_path):
+        return {}
+        
+    with open(file_path, 'r') as f:
+        if file_path.endswith('.json'):
+            return json.load(f)
+        elif file_path.endswith(('.yaml', '.yml')):
+            return yaml.safe_load(f)
+        else:
+            raise ValueError(f"Unsupported config file format: {file_path}")
+
+
+class ConfigFileSettings(BaseSettings):
+    """Configuration for loading config files."""
+    config_file_path: Optional[str] = Field(
+        default=os.environ.get("CONFIG_FILE_PATH", None),
+        description="Path to configuration file (JSON or YAML)"
+    )
+
+    @property
+    def config_values(self) -> Dict[str, Any]:
+        """Load values from the config file if specified."""
+        if not self.config_file_path:
+            return {}
+        
+        try:
+            return load_config_file(self.config_file_path)
+        except Exception as e:
+            print(f"Error loading config file: {str(e)}")
+            return {}
+
+
+# Global config file settings instance
+config_file = ConfigFileSettings()
 
 
 class APISettings(BaseSettings):
@@ -40,6 +87,24 @@ class APISettings(BaseSettings):
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
+    
+    class Config:
+        """Pydantic config for APISettings."""
+        # Load configuration from config file if available
+        @classmethod
+        def customise_sources(
+            cls,
+            init_settings,
+            env_settings,
+            file_secret_settings,
+        ):
+            return (
+                init_settings,
+                # Insert config file values before environment variables
+                lambda settings: config_file.config_values.get("api", {}),
+                env_settings,
+                file_secret_settings,
+            )
 
 
 class DatabaseSettings(BaseSettings):
@@ -49,6 +114,24 @@ class DatabaseSettings(BaseSettings):
         description="Path to SQLite database file"
     )
     
+    class Config:
+        """Pydantic config for DatabaseSettings."""
+        # Load configuration from config file if available
+        @classmethod
+        def customise_sources(
+            cls,
+            init_settings,
+            env_settings,
+            file_secret_settings,
+        ):
+            return (
+                init_settings,
+                # Insert config file values before environment variables
+                lambda settings: config_file.config_values.get("db", {}),
+                env_settings,
+                file_secret_settings,
+            )
+
 
 class AppSettings(BaseSettings):
     """Main application settings container."""
@@ -94,6 +177,25 @@ class AppSettings(BaseSettings):
     def is_testing(self) -> bool:
         """Check if the application is running in testing mode."""
         return self.env.lower() == "testing"
+    
+    class Config:
+        """Pydantic config for AppSettings."""
+        # Load configuration from config file if available
+        @classmethod
+        def customise_sources(
+            cls,
+            init_settings,
+            env_settings,
+            file_secret_settings,
+        ):
+            return (
+                init_settings,
+                # Insert config file values before environment variables
+                lambda settings: {k: v for k, v in config_file.config_values.items() 
+                                 if k not in ("api", "db")},
+                env_settings,
+                file_secret_settings,
+            )
 
 
 # Create a global instance of the settings

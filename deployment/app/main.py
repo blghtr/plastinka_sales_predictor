@@ -15,6 +15,7 @@ from app.db.schema import init_db
 
 # Import API routers
 from app.api.jobs import router as jobs_router
+from app.api.health import router as health_router
 
 # Import utils
 from app.utils.error_handling import configure_error_handlers
@@ -83,6 +84,7 @@ app = configure_error_handlers(app)
 
 # Include API routers
 app.include_router(jobs_router)
+app.include_router(health_router)
 
 # Root endpoint
 @app.get("/")
@@ -92,41 +94,6 @@ async def root():
         "docs": "/docs",
         "version": "0.1.0"
     }
-
-# Health check endpoint
-@app.get("/health")
-async def health_check():
-    health_status = {
-        "status": "healthy",
-        "components": {
-            "api": "healthy",
-            "database": "unknown",
-            "config": "degraded" if not check_environment() else "healthy"
-        },
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    # Check database connection
-    try:
-        import sqlite3
-        conn = sqlite3.connect(settings.db.path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1")
-        cursor.fetchone()
-        conn.close()
-        health_status["components"]["database"] = "healthy"
-    except Exception as e:
-        logger.error(f"Database health check failed: {str(e)}", exc_info=True)
-        health_status["components"]["database"] = "unhealthy"
-        health_status["status"] = "degraded"
-    
-    # Update overall status
-    if any(status == "unhealthy" for status in health_status["components"].values()):
-        health_status["status"] = "unhealthy"
-    elif any(status == "degraded" for status in health_status["components"].values()):
-        health_status["status"] = "degraded"
-    
-    return health_status
 
 # Startup event
 @app.on_event("startup")
