@@ -72,6 +72,7 @@ def is_retryable_cloud_error(exception: Exception) -> bool:
         
         # Common retryable cloud service errors
         retryable_codes = {
+            # AWS/Generic cloud errors
             'ThrottlingException',
             'Throttling',
             'TooManyRequestsException',
@@ -84,7 +85,20 @@ def is_retryable_cloud_error(exception: Exception) -> bool:
             'ServiceUnavailable',
             'ServerUnavailable',
             'ServiceFailure',
-            'InternalFailure'
+            'InternalFailure',
+            
+            # Yandex.Cloud specific errors
+            'RESOURCE_EXHAUSTED',
+            'UNAVAILABLE',
+            'DEADLINE_EXCEEDED',
+            'INTERNAL',
+            'UNAUTHENTICATED',
+            'SERVICE_UNAVAILABLE',
+            'TIMEOUT',
+            'CONNECTION_FAILURE',
+            'TOO_MANY_REQUESTS',
+            'INSTANCE_UNAVAILABLE',
+            'THROTTLING'
         }
         
         return (
@@ -92,6 +106,28 @@ def is_retryable_cloud_error(exception: Exception) -> bool:
             status_code >= 500 or
             status_code == 429
         )
+    
+    # Check for Yandex.Cloud SDK exceptions (assuming specific exception types)
+    # These would be different from AWS ClientError
+    if hasattr(exception, 'code') and hasattr(exception, 'message'):
+        # Common pattern in many cloud SDKs
+        error_code = getattr(exception, 'code', '')
+        
+        yandex_retryable_codes = {
+            'RESOURCE_EXHAUSTED',
+            'UNAVAILABLE',
+            'DEADLINE_EXCEEDED',
+            'INTERNAL',
+            'UNAUTHENTICATED',
+            'SERVICE_UNAVAILABLE',
+            'TIMEOUT',
+            'CONNECTION_FAILURE',
+            'TOO_MANY_REQUESTS'
+        }
+        
+        return error_code in yandex_retryable_codes
+    
+    # Add any other cloud service exception types here
     
     return False
 
@@ -232,7 +268,8 @@ async def retry_async_with_backoff(
     base_delay: float = 1.0,
     max_delay: float = 30.0,
     retryable_exceptions: Optional[Tuple[Type[Exception], ...]] = None,
-    giveup_func: Optional[Callable[[Exception], bool]] = None
+    giveup_func: Optional[Callable[[Exception], bool]] = None,
+    component: str = "async"
 ) -> Callable[[Callable[..., Coroutine[Any, Any, T]]], Callable[..., Coroutine[Any, Any, T]]]:
     """
     Decorator for retrying async functions with exponential backoff.
@@ -243,6 +280,7 @@ async def retry_async_with_backoff(
         max_delay: Maximum delay between retries in seconds
         retryable_exceptions: Tuple of exceptions that trigger retry
         giveup_func: Function that determines when to give up retrying
+        component: Component name for monitoring purposes
         
     Returns:
         Decorated async function with retry logic
@@ -253,13 +291,34 @@ async def retry_async_with_backoff(
     def decorator(func: Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., Coroutine[Any, Any, T]]:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> T:
+            operation = func.__name__
             attempt = 0
+            last_exception = None
+            start_time = time.time()
             
             while True:
                 try:
                     attempt += 1
-                    return await func(*args, **kwargs)
+                    result = await func(*args, **kwargs)
+                    
+                    # Record successful retry if this was a retry attempt
+                    if attempt > 1 and last_exception is not None:
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        record_retry(
+                            operation=operation,
+                            exception=last_exception,
+                            attempt=attempt,
+                            max_attempts=max_tries,
+                            successful=True,
+                            component=component,
+                            duration_ms=duration_ms
+                        )
+                    
+                    return result
                 except retryable_exceptions as e:
+                    last_exception = e
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    
                     # Check if we should give up
                     if (attempt >= max_tries or 
                         (giveup_func is not None and giveup_func(e))):
@@ -267,6 +326,18 @@ async def retry_async_with_backoff(
                             f"Giving up on {func.__name__} after {attempt} attempts. "
                             f"Last error: {str(e)}"
                         )
+                        
+                        # Record failed retry
+                        record_retry(
+                            operation=operation,
+                            exception=e,
+                            attempt=attempt,
+                            max_attempts=max_tries,
+                            successful=False,
+                            component=component,
+                            duration_ms=duration_ms
+                        )
+                        
                         raise
                     
                     # Calculate backoff time
@@ -279,6 +350,17 @@ async def retry_async_with_backoff(
                     logger.info(
                         f"Retrying {func.__name__} after error: {str(e)}. "
                         f"Attempt {attempt}/{max_tries}, waiting {delay:.2f}s"
+                    )
+                    
+                    # Record retry attempt
+                    record_retry(
+                        operation=operation,
+                        exception=e,
+                        attempt=attempt,
+                        max_attempts=max_tries,
+                        successful=False,  # Not yet successful
+                        component=component,
+                        duration_ms=duration_ms
                     )
                     
                     await asyncio.sleep(delay)
@@ -327,6 +409,52 @@ def retry_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max_delay
         Decorated function with cloud operation retry logic
     """
     return retry_with_backoff(
+        max_tries=max_tries,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retryable_exceptions=(ClientError, RequestException),
+        giveup_func=lambda e: not (is_retryable_cloud_error(e) or is_retryable_http_error(e)),
+        component=component
+    )
+
+
+def retry_async_http_request(max_tries: int = 3, base_delay: float = 2.0, max_delay: float = 30.0, component: str = "async_http"):
+    """
+    Decorator specifically for retrying async HTTP requests.
+    
+    Args:
+        max_tries: Maximum number of attempts
+        base_delay: Base delay between retries in seconds
+        max_delay: Maximum delay between retries in seconds
+        component: Component name for monitoring purposes
+        
+    Returns:
+        Decorated async function with HTTP request retry logic
+    """
+    return retry_async_with_backoff(
+        max_tries=max_tries,
+        base_delay=base_delay,
+        max_delay=max_delay,
+        retryable_exceptions=(RequestException,),
+        giveup_func=lambda e: not is_retryable_http_error(e),
+        component=component
+    )
+
+
+def retry_async_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max_delay: float = 60.0, component: str = "async_cloud"):
+    """
+    Decorator specifically for retrying async cloud operations.
+    
+    Args:
+        max_tries: Maximum number of attempts
+        base_delay: Base delay between retries in seconds
+        max_delay: Maximum delay between retries in seconds
+        component: Component name for monitoring purposes
+        
+    Returns:
+        Decorated async function with cloud operation retry logic
+    """
+    return retry_async_with_backoff(
         max_tries=max_tries,
         base_delay=base_delay,
         max_delay=max_delay,
@@ -506,23 +634,44 @@ class RetryContext:
     def _get_caller_name(self) -> str:
         """Get the name of the calling function or module."""
         import inspect
-        frame = inspect.currentframe()
-        try:
-            # Go up 3 frames to get the caller of the RetryContext
-            if frame:
-                frame = frame.f_back  # Inside __init__
-                if frame:
-                    frame = frame.f_back  # Inside caller
-                    if frame:
-                        if 'self' in frame.f_locals:
-                            # Method call
-                            instance = frame.f_locals['self']
-                            method_name = frame.f_code.co_name
-                            return f"{instance.__class__.__name__}.{method_name}"
-                        else:
-                            # Function call
-                            return frame.f_code.co_name
-        finally:
-            del frame  # Avoid reference cycles
         
-        return "unknown_operation" 
+        try:
+            # Create a stack of frames
+            frames = inspect.stack()
+            
+            # We need to find the caller of RetryContext
+            # frames[0] is this function (_get_caller_name)
+            # frames[1] is the __init__ method of RetryContext
+            # We need to look further back to get proper caller
+            
+            # Position in the stack where the actual caller is likely to be
+            LIKELY_CALLER_FRAME = 3
+            
+            if len(frames) <= LIKELY_CALLER_FRAME:
+                return "unknown_operation"
+            
+            # First, try at the most likely position where actual business logic calls RetryContext
+            frame = frames[LIKELY_CALLER_FRAME]
+            
+            # Capture information from frame
+            module_name = frame.frame.f_globals.get('__name__', 'unknown_module')
+            function_name = frame.function
+            
+            # Check if frame has 'self' in locals (instance method)
+            if 'self' in frame.frame.f_locals:
+                instance = frame.frame.f_locals['self']
+                try:
+                    class_name = instance.__class__.__name__
+                    return f"{module_name}.{class_name}.{function_name}"
+                except:
+                    pass
+            
+            # Return module.function_name
+            return f"{module_name}.{function_name}"
+        
+        except Exception as e:
+            logger.debug(f"Error getting caller name: {str(e)}")
+            return "unknown_operation"
+        finally:
+            # Prevent memory leaks by explicitly cleaning up
+            del frames 
