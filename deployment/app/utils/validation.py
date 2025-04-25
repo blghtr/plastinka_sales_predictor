@@ -45,7 +45,7 @@ def validate_excel_file(file_content: bytes, expected_columns: List[str] = None)
         return False, f"Invalid Excel file: {str(e)}"
 
 
-def validate_date_format(date_str: str, format_str: str = "%d.%m.%Y") -> Tuple[bool, Optional[datetime]]:
+def  validate_date_format(date_str: str, format_str: str = "%d.%m.%Y") -> Tuple[bool, Optional[datetime]]:
     """
     Validate that the provided string is a valid date in the expected format.
     
@@ -165,7 +165,7 @@ def validate_historical_date_range(start_date: Union[str, datetime],
         Tuple of (is_valid, error_message, parsed_start_date, parsed_end_date)
     """
     # Set historical data specific constraints
-    min_date = datetime(2000, 1, 1)  # Reasonable minimum date
+    min_date = datetime(1950, 1, 1)  # Reasonable minimum date
     max_date = datetime.now()  # Can't be in the future
     max_range_days = 365 * 5  # Max 5 years of historical data at once
     
@@ -189,7 +189,13 @@ def validate_stock_file(file_content: bytes) -> Tuple[bool, str]:
     Returns:
         Tuple of (is_valid, error_message)
     """
-    expected_columns = ["Штрихкод", "Исполнитель", "Альбом", "Остаток", "Дата"]
+    expected_columns = [
+        "Штрихкод", 
+        "Исполнитель", 
+        "Альбом", 
+        "Дата создания", 
+        "Экземпляры"
+    ]
     return validate_excel_file(file_content, expected_columns)
 
 
@@ -203,7 +209,13 @@ def validate_sales_file(file_content: bytes) -> Tuple[bool, str]:
     Returns:
         Tuple of (is_valid, error_message)
     """
-    expected_columns = ["Штрихкод", "Исполнитель", "Альбом", "Продажи", "Дата"]
+    expected_columns = [
+        "Штрихкод", 
+        "Исполнитель", 
+        "Альбом", 
+        "Дата создания", 
+        "Дата продажи"
+    ]
     return validate_excel_file(file_content, expected_columns)
 
 

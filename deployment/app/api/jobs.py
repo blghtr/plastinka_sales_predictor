@@ -157,7 +157,7 @@ async def create_training_job(
         # Create a new job
         job_id = create_job(
             JobType.TRAINING,
-            parameters=params.dict()
+            parameters=params.model_dump()
         )
         
         # Start the background task
@@ -167,7 +167,7 @@ async def create_training_job(
             params=params
         )
         
-        logger.info(f"Created training job {job_id} with parameters: {params.dict()}")
+        logger.info(f"Created training job {job_id} with parameters: {params.model_dump()}")
         return TrainingResponse(job_id=job_id, status=JobStatus.PENDING)
         
     except DatabaseError as e:
@@ -213,7 +213,7 @@ async def create_prediction_job(
         # Create a new job
         job_id = create_job(
             JobType.PREDICTION,
-            parameters=params.dict()
+            parameters=params.model_dump()
         )
         
         # Start the background task
@@ -269,7 +269,7 @@ async def create_report_job(
         # Create a new job
         job_id = create_job(
             JobType.REPORT,
-            parameters=params.dict()
+            parameters=params.model_dump()
         )
         
         # Start the background task

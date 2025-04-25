@@ -5,7 +5,8 @@ Contains settings for cloud functions and storage.
 import os
 import logging
 from typing import Dict, Any
-from pydantic import BaseSettings, Field, validator
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Import app configuration
 from app.config import settings as app_settings
@@ -56,9 +57,17 @@ class CloudStorageSettings(BaseSettings):
         description="Expiration time for presigned URLs in seconds"
     )
     
-    @validator('access_key', 'secret_key', pre=True)
-    def validate_credentials(cls, v, values, **kwargs):
-        field_name = kwargs['field'].name
+    # Update config for Pydantic v2
+    model_config = SettingsConfigDict(
+        env_prefix="YANDEX_CLOUD_",
+        env_file=".env",
+        extra="ignore"
+    )
+    
+    @field_validator('access_key', 'secret_key', mode='before')
+    @classmethod
+    def validate_credentials(cls, v, info):
+        field_name = info.field_name
         env_var = f"YANDEX_CLOUD_{field_name.upper()}"
         value = os.environ.get(env_var, v)
         
@@ -107,9 +116,17 @@ class CloudFunctionSettings(BaseSettings):
         description="API key for authentication with Yandex Cloud API"
     )
     
-    @validator('function_service_account_id', 'folder_id', 'api_gateway_url', 'api_key', pre=True)
-    def validate_cloud_settings(cls, v, values, **kwargs):
-        field_name = kwargs['field'].name
+    # Update config for Pydantic v2
+    model_config = SettingsConfigDict(
+        env_prefix="YANDEX_CLOUD_",
+        env_file=".env",
+        extra="ignore"
+    )
+    
+    @field_validator('function_service_account_id', 'folder_id', 'api_gateway_url', 'api_key', mode='before')
+    @classmethod
+    def validate_cloud_settings(cls, v, info):
+        field_name = info.field_name
         env_var = f"YANDEX_CLOUD_{field_name.upper()}"
         value = os.environ.get(env_var, v)
         
@@ -121,8 +138,9 @@ class CloudFunctionSettings(BaseSettings):
 
 class CloudIntegrationSettings(BaseSettings):
     """Main settings container for cloud integration."""
-    storage: CloudStorageSettings = CloudStorageSettings()
-    functions: CloudFunctionSettings = CloudFunctionSettings()
+    # Explicitly declare nested settings objects as fields
+    storage: CloudStorageSettings = Field(default_factory=CloudStorageSettings)
+    functions: CloudFunctionSettings = Field(default_factory=CloudFunctionSettings)
     
     # Get callback settings from app configuration
     callback_base_url: str = Field(
@@ -140,6 +158,12 @@ class CloudIntegrationSettings(BaseSettings):
     max_upload_size: int = Field(
         default=app_settings.max_upload_size,
         description="Maximum size for direct uploads in bytes"
+    )
+    
+    # Update config for Pydantic v2
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore"
     )
     
     @property

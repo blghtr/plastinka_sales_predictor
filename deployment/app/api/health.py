@@ -3,7 +3,7 @@ Health and monitoring endpoints.
 """
 from fastapi import APIRouter, Depends
 from typing import Dict, Any, List
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import logging
 import os
 import time
@@ -29,6 +29,8 @@ class ComponentHealth(BaseModel):
     """Component health status."""
     status: str
     details: Dict[str, Any] = {}
+    
+    model_config = ConfigDict(from_attributes=True)
 
 class HealthResponse(BaseModel):
     """Health check response model."""
@@ -37,6 +39,8 @@ class HealthResponse(BaseModel):
     timestamp: str
     uptime_seconds: int
     components: Dict[str, ComponentHealth]
+    
+    model_config = ConfigDict(from_attributes=True)
 
 class SystemStatsResponse(BaseModel):
     """System statistics response model."""
@@ -47,6 +51,8 @@ class SystemStatsResponse(BaseModel):
     open_files: int
     active_threads: int
     timestamp: str
+    
+    model_config = ConfigDict(from_attributes=True)
 
 class RetryStatsResponse(BaseModel):
     """Retry statistics response model."""
@@ -58,6 +64,8 @@ class RetryStatsResponse(BaseModel):
     operation_stats: Dict[str, Dict[str, Any]]
     exception_stats: Dict[str, Dict[str, Any]]
     timestamp: str
+    
+    model_config = ConfigDict(from_attributes=True)
 
 # Track application start time
 start_time = time.time()

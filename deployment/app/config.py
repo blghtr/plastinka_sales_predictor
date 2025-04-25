@@ -5,8 +5,10 @@ Loads configuration from environment variables or config files.
 import os
 import json
 import yaml
-from typing import List, Dict, Any, Optional
-from pydantic import BaseSettings, Field, validator
+from typing import List, Dict, Any, Optional, Callable
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from functools import lru_cache
 
 def load_config_file(file_path: str) -> Dict[str, Any]:
     """
@@ -30,28 +32,36 @@ def load_config_file(file_path: str) -> Dict[str, Any]:
             raise ValueError(f"Unsupported config file format: {file_path}")
 
 
-class ConfigFileSettings(BaseSettings):
-    """Configuration for loading config files."""
-    config_file_path: Optional[str] = Field(
-        default=os.environ.get("CONFIG_FILE_PATH", None),
-        description="Path to configuration file (JSON or YAML)"
-    )
-
-    @property
-    def config_values(self) -> Dict[str, Any]:
-        """Load values from the config file if specified."""
-        if not self.config_file_path:
-            return {}
-        
-        try:
-            return load_config_file(self.config_file_path)
-        except Exception as e:
-            print(f"Error loading config file: {str(e)}")
-            return {}
+# Load config file once and cache it
+@lru_cache()
+def get_config_values() -> Dict[str, Any]:
+    """Load values from the config file if specified."""
+    config_file_path = os.environ.get("CONFIG_FILE_PATH")
+    if not config_file_path:
+        return {}
+    
+    try:
+        return load_config_file(config_file_path)
+    except Exception as e:
+        print(f"Error loading config file: {str(e)}")
+        return {}
 
 
-# Global config file settings instance
-config_file = ConfigFileSettings()
+# Get config for specific sections
+def get_api_config() -> Dict[str, Any]:
+    """Get API specific configuration."""
+    return get_config_values().get("api", {})
+
+
+def get_db_config() -> Dict[str, Any]:
+    """Get database specific configuration."""
+    return get_config_values().get("db", {})
+
+
+def get_app_config() -> Dict[str, Any]:
+    """Get application-level configuration."""
+    config = get_config_values()
+    return {k: v for k, v in config.items() if k not in ("api", "db")}
 
 
 class APISettings(BaseSettings):
@@ -81,30 +91,28 @@ class APISettings(BaseSettings):
         description="Log level"
     )
     
-    @validator('allowed_origins', pre=True)
+    @field_validator('allowed_origins', mode='before')
+    @classmethod
     def validate_allowed_origins(cls, v):
         """Validate and parse allowed origins."""
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
     
-    class Config:
-        """Pydantic config for APISettings."""
-        # Load configuration from config file if available
-        @classmethod
-        def customise_sources(
-            cls,
-            init_settings,
-            env_settings,
-            file_secret_settings,
-        ):
-            return (
-                init_settings,
-                # Insert config file values before environment variables
-                lambda settings: config_file.config_values.get("api", {}),
-                env_settings,
-                file_secret_settings,
-            )
+    # Use SettingsConfigDict for Pydantic v2 settings configuration
+    model_config = SettingsConfigDict(
+        env_prefix="API_",
+        env_file=".env",
+        extra="ignore",
+        # Configure so that values from config file take precedence over environment variables
+        env_nested_delimiter="__"
+    )
+    
+    def __init__(self, **data):
+        # Merge config file values with the incoming data
+        config_values = get_api_config()
+        merged_data = {**config_values, **data}
+        super().__init__(**merged_data)
 
 
 class DatabaseSettings(BaseSettings):
@@ -114,29 +122,27 @@ class DatabaseSettings(BaseSettings):
         description="Path to SQLite database file"
     )
     
-    class Config:
-        """Pydantic config for DatabaseSettings."""
-        # Load configuration from config file if available
-        @classmethod
-        def customise_sources(
-            cls,
-            init_settings,
-            env_settings,
-            file_secret_settings,
-        ):
-            return (
-                init_settings,
-                # Insert config file values before environment variables
-                lambda settings: config_file.config_values.get("db", {}),
-                env_settings,
-                file_secret_settings,
-            )
+    # Use SettingsConfigDict for Pydantic v2 settings configuration
+    model_config = SettingsConfigDict(
+        env_prefix="DB_",
+        env_file=".env",
+        extra="ignore",
+        env_nested_delimiter="__"
+    )
+    
+    def __init__(self, **data):
+        # Merge config file values with the incoming data
+        config_values = get_db_config()
+        merged_data = {**config_values, **data}
+        super().__init__(**merged_data)
 
 
 class AppSettings(BaseSettings):
     """Main application settings container."""
-    api: APISettings = APISettings()
-    db: DatabaseSettings = DatabaseSettings()
+    # Explicitly declare API and DB settings as fields
+    api: APISettings = Field(default_factory=APISettings)
+    db: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    
     env: str = Field(
         default=os.environ.get("APP_ENV", "development"),
         description="Application environment (development, testing, production)"
@@ -158,6 +164,21 @@ class AppSettings(BaseSettings):
         description="Maximum upload size in bytes"
     )
     
+    # Use SettingsConfigDict for Pydantic v2 settings configuration
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        env_nested_delimiter="__"
+    )
+    
+    def __init__(self, **data):
+        # Merge config file values with the incoming data
+        config_values = get_app_config()
+        merged_data = {**config_values, **data}
+        
+        # Let Pydantic handle field initialization
+        super().__init__(**merged_data)
+    
     @property
     def callback_url(self) -> str:
         """Get the full callback URL."""
@@ -177,25 +198,6 @@ class AppSettings(BaseSettings):
     def is_testing(self) -> bool:
         """Check if the application is running in testing mode."""
         return self.env.lower() == "testing"
-    
-    class Config:
-        """Pydantic config for AppSettings."""
-        # Load configuration from config file if available
-        @classmethod
-        def customise_sources(
-            cls,
-            init_settings,
-            env_settings,
-            file_secret_settings,
-        ):
-            return (
-                init_settings,
-                # Insert config file values before environment variables
-                lambda settings: {k: v for k, v in config_file.config_values.items() 
-                                 if k not in ("api", "db")},
-                env_settings,
-                file_secret_settings,
-            )
 
 
 # Create a global instance of the settings
