@@ -111,7 +111,11 @@ def check_database() -> ComponentHealth:
             ")"
         )
         tables = [row[0] for row in cursor.fetchall()]
-        required_tables = ['cloud_functions', 'cloud_function_executions', 'cloud_storage_objects']
+        required_tables = [
+            'cloud_functions', 
+            'cloud_function_executions', 
+            'cloud_storage_objects'
+        ]
         missing_tables = [table for table in required_tables if table not in tables]
         
         conn.close()
