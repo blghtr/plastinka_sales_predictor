@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 # Import configuration
 from app.config import settings
@@ -63,11 +64,38 @@ def check_environment():
     
     return not missing
 
-# Create FastAPI application
+# Define lifespan event handler
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    logger.info("Initializing application")
+    
+    # Check environment variables
+    check_environment()
+    
+    # Initialize database
+    try:
+        if init_db():
+            logger.info("Database initialized successfully")
+        else:
+            logger.warning("Database initialization completed with warnings")
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}", exc_info=True)
+        raise
+
+    logger.info("Application started successfully")
+    
+    yield  # Application running
+    
+    # Shutdown logic (if any)
+    logger.info("Application shutting down")
+
+# Create FastAPI application with lifespan
 app = FastAPI(
     title="Plastinka Sales Predictor API",
     description="API for predicting vinyl record sales",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan
 )
 
 # Add CORS middleware with restricted origins
@@ -94,25 +122,6 @@ async def root():
         "docs": "/docs",
         "version": "0.1.0"
     }
-
-# Startup event
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Initializing application")
-    
-    # Check environment variables
-    check_environment()
-    
-    # Initialize database
-    try:
-        init_db()
-        logger.info("Database initialized successfully")
-    except Exception as e:
-        logger.error(f"Error initializing database: {str(e)}", exc_info=True)
-        raise
-
-    logger.info("Application started successfully")
-
 
 # Run the application with uvicorn
 if __name__ == "__main__":

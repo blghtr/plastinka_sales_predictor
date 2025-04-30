@@ -80,17 +80,6 @@ CREATE TABLE IF NOT EXISTS processing_runs (
     source_files TEXT
 );
 
-CREATE TABLE IF NOT EXISTS computed_features (
-    multiindex_id INTEGER,
-    feature_date DATE,
-    feature_type TEXT, -- 'availability' or 'confidence'
-    feature_value FLOAT,
-    run_id INTEGER,
-    PRIMARY KEY (multiindex_id, feature_date, feature_type),
-    FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id),
-    FOREIGN KEY (run_id) REFERENCES processing_runs(run_id)
-);
-
 -- Job Tables
 CREATE TABLE IF NOT EXISTS jobs (
     job_id TEXT PRIMARY KEY,
@@ -210,7 +199,6 @@ CREATE INDEX IF NOT EXISTS idx_stock_date ON fact_stock(snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_sales_date ON fact_sales(sale_date);
 CREATE INDEX IF NOT EXISTS idx_changes_date ON fact_stock_changes(change_date);
 
-CREATE INDEX IF NOT EXISTS idx_features_date_type ON computed_features(feature_date, feature_type);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type);
 
@@ -224,22 +212,45 @@ CREATE INDEX IF NOT EXISTS idx_cloud_storage_type ON cloud_storage_objects(objec
 """
 
 def init_db(db_path: str = "deployment/data/plastinka.db"):
-    """Initialize the database with schema"""
-    # Create directory if it doesn't exist
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    """
+    Initialize the database with schema.
     
-    # Connect to database
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    This function is idempotent - running it multiple times is safe.
+    Tables and indexes are created only if they don't already exist.
     
-    # Execute schema creation SQL
-    cursor.executescript(SCHEMA_SQL)
-    
-    # Commit changes and close connection
-    conn.commit()
-    conn.close()
-    
-    print(f"Database initialized at {db_path}")
+    Args:
+        db_path: Path to SQLite database file
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Create directory if it doesn't exist
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Check if database already exists
+        db_exists = Path(db_path).exists()
+        
+        # Connect to database
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Execute schema creation SQL
+        cursor.executescript(SCHEMA_SQL)
+        
+        # Commit changes and close connection
+        conn.commit()
+        conn.close()
+        
+        if db_exists:
+            print(f"Database schema validated at {db_path}")
+        else:
+            print(f"Database initialized at {db_path}")
+        
+        return True
+    except Exception as e:
+        print(f"Error initializing database: {str(e)}")
+        return False
 
 if __name__ == "__main__":
     init_db() 

@@ -6,6 +6,9 @@ from datetime import datetime
 import uuid
 import json
 import logging
+from pathlib import Path
+import aiofiles
+import shutil
 
 from app.models.api_models import (
     JobResponse, JobDetails, JobsList, JobStatus, JobType,
@@ -25,10 +28,29 @@ from app.services.report_service import generate_report
 from app.utils.validation import validate_stock_file, validate_sales_file, validate_date_format, ValidationError
 from app.utils.file_validation import validate_excel_file_upload
 from app.utils.error_handling import ErrorDetail
+import debugpy
+from app.config import settings
 
 logger = logging.getLogger("plastinka.api")
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
+
+
+async def _save_uploaded_file(uploaded_file: UploadFile, directory: Path) -> Path:
+    """Helper function to save UploadFile asynchronously."""
+    file_path = directory / uploaded_file.filename
+    try:
+        async with aiofiles.open(file_path, 'wb') as out_file:
+            while content := await uploaded_file.read(1024 * 1024):  # Read in chunks
+                await out_file.write(content)
+        await uploaded_file.seek(0) # Reset pointer if needed elsewhere (though likely not)
+    except Exception as e:
+        logger.error(f"Failed to save file {uploaded_file.filename} to {directory}: {e}", exc_info=True)
+        # Optionally remove partially saved file
+        if file_path.exists():
+            os.remove(file_path)
+        raise # Re-raise the exception to be caught by the main handler
+    return file_path
 
 
 @router.post("/data-upload", response_model=DataUploadResponse)
@@ -49,6 +71,8 @@ async def create_data_upload_job(
     
     Returns a job ID that can be used to check the job status.
     """
+    job_id = None
+    temp_job_dir = None
     try:
         # Validate cutoff date
         is_valid_date, parsed_date = validate_date_format(cutoff_date)
@@ -89,7 +113,7 @@ async def create_data_upload_job(
             # Reset file position
             await sales_file.seek(0)
         
-        # Create a new job
+        # Create a new job *before* creating the temp directory
         job_id = create_job(
             JobType.DATA_UPLOAD,
             parameters={
@@ -99,13 +123,32 @@ async def create_data_upload_job(
             }
         )
         
-        # Start the background task
+        # Создаем уникальную временную директорию для этого задания
+        # Используем базовую директорию из настроек
+        base_temp_dir = Path(settings.temp_upload_dir)
+        base_temp_dir.mkdir(parents=True, exist_ok=True) # Убедимся, что базовая директория существует
+        temp_job_dir = base_temp_dir / job_id
+        temp_job_dir.mkdir(exist_ok=False) # Создаем уникальную директорию задания
+        
+        # Создаем поддиректорию для файлов продаж
+        sales_dir = temp_job_dir / "sales"
+        sales_dir.mkdir(exist_ok=True)
+
+        # Сохраняем файлы асинхронно
+        saved_stock_path = await _save_uploaded_file(stock_file, temp_job_dir)
+        saved_sales_paths = []
+        for sales_file in sales_files:
+            saved_path = await _save_uploaded_file(sales_file, sales_dir)
+            saved_sales_paths.append(str(saved_path))
+
+        # Start the background task with file paths
         background_tasks.add_task(
             process_data_files,
             job_id=job_id,
-            stock_file=stock_file,
-            sales_files=sales_files,
-            cutoff_date=cutoff_date
+            stock_file_path=str(saved_stock_path),
+            sales_files_paths=saved_sales_paths,
+            cutoff_date=cutoff_date,
+            temp_dir_path=str(temp_job_dir) # Передаем путь для очистки
         )
         
         logger.info(f"Created data upload job {job_id} with files: {stock_file.filename} and {len(sales_files)} sales files")
@@ -124,8 +167,23 @@ async def create_data_upload_job(
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
+    except FileExistsError as e:
+        logger.error(f"Temporary directory for job {job_id} already exists: {e}", exc_info=True)
+        # Если задание уже создано, но директорию создать не удалось, возможно, стоит отменить задание
+        if job_id: update_job_status(job_id, JobStatus.FAILED.value, error_message="Failed to create temporary directory")
+        error = ErrorDetail(message="Failed to initialize job resources", code="internal_error", status_code=500, details={"error": str(e)})
+        error.log_error(request)
+        return JSONResponse(status_code=500, content=error.to_dict())
     except Exception as e:
-        logger.error(f"Unexpected error in data-upload: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error in data-upload for job {job_id or 'unknown'}: {str(e)}", exc_info=True)
+        # Если ошибка произошла после создания задания, помечаем его как FAILED
+        if job_id and not get_job(job_id)['status'] == JobStatus.FAILED.value:
+             update_job_status(job_id, JobStatus.FAILED.value, error_message=f"Unexpected error during setup: {str(e)}")
+        # Очищаем временную директорию, если она была создана
+        if temp_job_dir and temp_job_dir.exists():
+            shutil.rmtree(temp_job_dir, ignore_errors=True)
+            logger.info(f"Cleaned up temporary directory {temp_job_dir} after error.")
+            
         error = ErrorDetail(
             message="Failed to create data upload job",
             code="internal_error",

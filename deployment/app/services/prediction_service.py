@@ -203,6 +203,5 @@ async def generate_predictions(job_id: str, params: PredictionParams) -> None:
             job_id,
             JobStatus.FAILED.value,
             error_message=str(e)
-        )
-        # Re-raise for logging
+        )        # Re-raise for logging
         raise 

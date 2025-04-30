@@ -163,6 +163,10 @@ class AppSettings(BaseSettings):
         default=int(os.environ.get("MAX_UPLOAD_SIZE", 50 * 1024 * 1024)),  # 50 MB default
         description="Maximum upload size in bytes"
     )
+    temp_upload_dir: str = Field(
+        default=os.environ.get("TEMP_UPLOAD_DIR", "./temp_uploads"),
+        description="Directory for temporary file uploads"
+    )
     
     # Use SettingsConfigDict for Pydantic v2 settings configuration
     model_config = SettingsConfigDict(

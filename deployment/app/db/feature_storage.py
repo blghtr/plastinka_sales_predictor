@@ -74,8 +74,6 @@ class SQLFeatureStore:
             self._save_sales_feature(df, append)
         elif feature_type == 'change':
             self._save_change_feature(df, append)
-        elif feature_type == 'availability' or feature_type == 'confidence':
-            self._save_computed_feature(feature_type, df, append)
         else:
             print(f"Warning: Unknown feature type '{feature_type}'")
     
@@ -162,23 +160,26 @@ class SQLFeatureStore:
             
             # Получаем значение и конвертируем его в правильный тип
             if feature_type == 'stock':
-                # Для stock итерируемся по всем столбцам (датам)
-                results = []
-                for col, value in row.items():
-                    # Дата колонки (для stock дата хранится в колонках)
-                    col_date_str = self._convert_to_date_str(col)
-                    
-                    # Конвертируем значение в int для stock
-                    value_int = self._convert_to_int(value)
-                    
-                    results.append((
+                # Упрощенная логика для stock с одной колонкой-датой (согласно JSON)
+                if not row.empty:
+                    col_date = row.index[0]  # Имя единственной колонки (это Timestamp)
+                    value = row.iloc[0]      # Значение в этой колонке
+
+                    col_date_str = self._convert_to_date_str(col_date)
+                    # Конвертируем значение в float, как указано в JSON
+                    value_float = self._convert_to_float(value)
+
+                    # Возвращаем список из одного кортежа
+                    return [(
                         multiindex_id,
                         col_date_str,
-                        value_int
-                    ))
-                return results
+                        value_float
+                    )]
+                else:
+                    # Обработка случая пустой строки, если необходимо
+                    return []
             else:
-                # Для других типов данных
+                # Для других типов данных (prices, sales, change)
                 if value_col:
                     # Получаем значение из указанного столбца
                     if value_conversion == 'int':
@@ -199,10 +200,6 @@ class SQLFeatureStore:
     
     def _save_stock_feature(self, df: pd.DataFrame, append: bool = False) -> None:
         """Save stock feature to fact_stock table"""
-        # If not appending, clear existing data for this run
-        if not append and self.run_id:
-            execute_query("DELETE FROM fact_stock WHERE 1=1", connection=self.db_conn) # Pass connection
-            
         # Convert MultiIndex DataFrame to list of tuples for batch insert
         params_list = []
         
@@ -228,9 +225,6 @@ class SQLFeatureStore:
     
     def _save_prices_feature(self, df: pd.DataFrame, append: bool = False) -> None:
         """Save prices feature to fact_prices table"""
-        if not append and self.run_id:
-            execute_query("DELETE FROM fact_prices WHERE 1=1", connection=self.db_conn) # Pass connection
-            
         params_list = []
         
         process_prices_row = self._create_row_processor(
@@ -254,9 +248,6 @@ class SQLFeatureStore:
             
     def _save_sales_feature(self, df: pd.DataFrame, append: bool = False) -> None:
         """Save sales feature to fact_sales table"""
-        if not append and self.run_id:
-            execute_query("DELETE FROM fact_sales WHERE 1=1", connection=self.db_conn) # Pass connection
-            
         params_list = []
         
         # Sales data has date in the first level of the index
@@ -264,7 +255,7 @@ class SQLFeatureStore:
             feature_type='sales',
             value_col='sales', # Assuming the column name is 'sales'
             is_date_in_index=True,
-            value_conversion='int'
+            value_conversion='float'
         )
         
         for idx, row in df.iterrows():
@@ -281,9 +272,6 @@ class SQLFeatureStore:
             
     def _save_change_feature(self, df: pd.DataFrame, append: bool = False) -> None:
         """Save stock change feature to fact_stock_changes table"""
-        if not append and self.run_id:
-            execute_query("DELETE FROM fact_stock_changes WHERE 1=1", connection=self.db_conn) # Pass connection
-            
         params_list = []
         
         # Stock change data also has date in the first level of the index
@@ -291,7 +279,7 @@ class SQLFeatureStore:
             feature_type='change',
             value_col='change', # Assuming the column name is 'change'
             is_date_in_index=True,
-            value_conversion='int'
+            value_conversion='float'
         )
         
         for idx, row in df.iterrows():
@@ -306,49 +294,6 @@ class SQLFeatureStore:
                 connection=self.db_conn # Pass connection
             )
             
-    def _save_computed_feature(self, feature_type: str, df: pd.DataFrame, append: bool = False) -> None:
-        """Save computed features (availability, confidence) to computed_features table"""
-        # If not appending, clear existing data for this feature type and run_id
-        if not append and self.run_id:
-            execute_query(
-                "DELETE FROM computed_features WHERE feature_type = ? AND run_id = ?", 
-                (feature_type, self.run_id),
-                connection=self.db_conn # Pass connection
-            )
-        
-        # Prepare data for batch insert
-        params_list = []
-        
-        for idx, row in df.iterrows():
-            # Computed features should have (multiindex_id, date) in the index
-            try:
-                if len(idx) == 2:
-                    multiindex_id_val, date_val = idx
-                    multiindex_id = self._get_multiindex_id(multiindex_id_val)
-                    feature_date = self._convert_to_date_str(date_val)
-                    
-                    # Assuming the value is in the first column
-                    feature_value = self._convert_to_float(row.iloc[0]) 
-                    
-                    params_list.append((
-                        multiindex_id,
-                        feature_date,
-                        feature_type,
-                        feature_value,
-                        self.run_id
-                    ))
-                else:
-                     print(f"Warning: Skipping row with unexpected index structure: {idx}")
-            except Exception as e:
-                print(f"Error processing computed feature row: {idx}, {row} - {e}")
-                
-        # Batch insert data
-        if params_list:
-            execute_many(
-                "INSERT OR REPLACE INTO computed_features (multiindex_id, feature_date, feature_type, feature_value, run_id) VALUES (?, ?, ?, ?, ?)",
-                params_list,
-                connection=self.db_conn # Pass connection
-            )
     
     def _get_multiindex_id(self, idx) -> int:
         """Retrieve or create multiindex_id based on index values"""
@@ -389,8 +334,6 @@ class SQLFeatureStore:
             'prices': self._load_prices_feature(cutoff_date, target_run_id),
             'sales': self._load_sales_feature(cutoff_date, target_run_id),
             'change': self._load_change_feature(cutoff_date, target_run_id),
-            'availability': self._load_computed_feature('availability', cutoff_date, target_run_id),
-            'confidence': self._load_computed_feature('confidence', cutoff_date, target_run_id)
         }
         
         # Remove empty DataFrames
@@ -566,48 +509,6 @@ class SQLFeatureStore:
         )
         
         result_df = pd.DataFrame({'change': stacked_df['change'].values}, index=final_index)
-        
-        return result_df
-
-    def _load_computed_feature(self, feature_type: str, cutoff_date: Optional[str] = None, 
-                              run_id: Optional[int] = None) -> Optional[pd.DataFrame]:
-        """Load computed features (availability, confidence) from computed_features table"""
-        query = "SELECT multiindex_id, feature_date, feature_value FROM computed_features WHERE feature_type = ?"
-        params = [feature_type]
-        
-        if run_id:
-            query += " AND run_id = ?"
-            params.append(run_id)
-            
-        if cutoff_date:
-            query += " AND feature_date <= ?"
-            params.append(cutoff_date)
-            
-        data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
-        
-        if not data:
-            return None
-            
-        df = pd.DataFrame(data)
-        df['feature_date'] = pd.to_datetime(df['feature_date'])
-        
-        # Rebuild the original MultiIndex
-        all_ids = df['multiindex_id'].unique().tolist()
-        full_index = self._build_multiindex_from_mapping(all_ids)
-        id_to_tuple_map = {id_val: index_tuple for id_val, index_tuple in zip(all_ids, full_index)}
-        df['full_index'] = df['multiindex_id'].map(id_to_tuple_map)
-        
-        # Create the final MultiIndex (full_index_tuple, date)
-        final_index = pd.MultiIndex.from_tuples(
-            [(row['full_index'], row['feature_date']) for idx, row in df.iterrows()],
-            names=list(full_index.names) + ['date']
-        )
-        
-        # Create result DataFrame
-        result_df = pd.DataFrame({feature_type: df['feature_value'].values}, index=final_index)
-        
-        # Sort index for consistency
-        result_df.sort_index(inplace=True)
         
         return result_df
 

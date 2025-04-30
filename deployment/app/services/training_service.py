@@ -11,10 +11,6 @@ from deployment.app.models.api_models import JobStatus, TrainingParams
 from deployment.app.cloud_integration.client.function_client import CloudFunctionClient
 from deployment.app.cloud_integration.client.storage_client import CloudStorageClient
 
-# Import from the original codebase
-from plastinka_sales_predictor.training_utils import (
-    train_model_wrapper
-)
 
 # Set up logger
 logger = logging.getLogger(__name__)

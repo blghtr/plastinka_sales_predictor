@@ -210,10 +210,10 @@ def validate_sales_file(file_content: bytes) -> Tuple[bool, str]:
         Tuple of (is_valid, error_message)
     """
     expected_columns = [
-        "Штрихкод", 
+        "Barcode", 
         "Исполнитель", 
         "Альбом", 
-        "Дата создания", 
+        "Дата добавления", 
         "Дата продажи"
     ]
     return validate_excel_file(file_content, expected_columns)
