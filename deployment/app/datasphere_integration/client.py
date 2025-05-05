@@ -2,6 +2,7 @@ import subprocess
 import logging
 import re
 import json
+import time # Added for potential delay
 
 logger = logging.getLogger(__name__)
 
@@ -65,100 +66,123 @@ class DataSphereClient:
         if not self._sdk:
             raise DataSphereClientError("DataSphere SDK is not available or failed to initialize.")
 
-    def submit_job_cli(self, config_path: str, params: dict = None) -> str:
-        """
-        Submits a DataSphere Job using the 'datasphere' CLI tool.
-
-        Args:
-            config_path: Path to the job configuration YAML file.
-            params: Optional dictionary of parameters. NOTE: The 'datasphere' CLI doesn't directly accept
-                    key-value params via flags. These would typically be handled by modifying the
-                    config.yaml or passing input files defined within it. This argument is currently ignored.
-
-        Returns:
-            The submitted job ID.
-
-        Raises:
-            DataSphereClientError: If the CLI command fails or the job ID cannot be parsed.
-            FileNotFoundError: If the config_path does not exist.
-            ValueError: If params dict is provided but currently unsupported by this method.
-        """
-        # TODO: Revisit parameter handling. Options:
-        # 1. Modify config.yaml dynamically before execution (complex, error-prone).
-        # 2. Enforce parameters are handled via input files defined in config.yaml.
-        # 3. Investigate if 'datasphere job execute' has hidden param options.
-        if params:
-            # For now, raise error if params are provided, as they aren't used.
-            logger.warning("'params' argument provided to submit_job_cli but is currently ignored by the 'datasphere' CLI wrapper.")
-            # Or raise ValueError("Parameter passing via dict is not supported by the datasphere CLI wrapper.")
-
-        # Command uses 'datasphere' CLI tool, not 'yc datasphere'
-        cmd = [
-            'datasphere', # Use the specific tool
-            'project', 'job', 'execute',
-            '-p', self.project_id, # Use -p for project ID
-            '-c', config_path,
-            # No apparent flags for folder, format, async, or direct params
-        ]
-
+    def _run_cli_command(self, cmd: list) -> tuple[int, str, str]:
+        """Runs a CLI command and returns return code, stdout, stderr."""
         logger.info(f"Running DataSphere CLI command: {' '.join(cmd)}")
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                check=False,
+                check=False, # Don't raise CalledProcessError automatically
                 text=False
             )
-
             stdout = result.stdout.decode('utf-8', errors='replace').strip()
             stderr = result.stderr.decode('utf-8', errors='replace').strip()
-
-            if result.returncode != 0:
-                # datasphere CLI errors might not be JSON
-                error_message = f"DataSphere CLI command failed with exit code {result.returncode}."
-                error_details = stderr or stdout # Prioritize stderr
-                logger.error(f"{error_message}\nDetails:\n{error_details}")
-                raise DataSphereClientError(f"{error_message} Error: {error_details}")
-
-            # Parse Job ID from stdout - Reverting to brittle parsing
-            # Assumption: The CLI outputs the Job ID on a line, possibly the last one.
-            # We need to run the actual command or find better docs to confirm output.
-            job_id = None
-            lines = stdout.splitlines()
-            # Try finding a line that looks like an ID (common YC format: c1q*********)
-            id_pattern = r"^[a-zA-Z0-9]{20}$" # Typical YC ID format
-            job_id_match = re.search(r"Job ID:\s*(\S+)", stdout, re.IGNORECASE) # Check specific text first
-
-            if job_id_match:
-                 job_id = job_id_match.group(1)
-            else:
-                # Look for likely ID on the last lines
-                for line in reversed(lines):
-                    potential_id = line.strip()
-                    if re.match(id_pattern, potential_id):
-                        job_id = potential_id
-                        logger.info(f"Parsed potential Job ID from output line: {job_id}")
-                        break
-
-            if not job_id:
-                error_message = "Failed to parse Job ID from DataSphere CLI output."
-                logger.error(f"{error_message}\nSTDOUT:\n{stdout}")
-                raise DataSphereClientError(f"{error_message} Output: {stdout}")
-
-            logger.info(f"Successfully submitted DataSphere Job via CLI. ID: {job_id}")
-            return job_id
-
+            return result.returncode, stdout, stderr
         except FileNotFoundError:
-            logger.error("'datasphere' command not found. Ensure datasphere CLI (pip install datasphere) is installed and in PATH.")
-            raise DataSphereClientError("'datasphere' command not found. Is the datasphere library installed?")
+            logger.error(f"'{cmd[0]}' command not found. Is it installed and in PATH?")
+            raise DataSphereClientError(f"'{cmd[0]}' command not found. Is the datasphere library installed?")
         except Exception as e:
-            # logger.exception handles including exception info automatically
-            logger.exception("An unexpected error occurred during DataSphere CLI execution.")
-            # Re-raise specific client error or the original exception depending on desired handling
-            if isinstance(e, DataSphereClientError):
-                raise
-            # Wrap the original exception for context
-            raise DataSphereClientError(f"An unexpected error occurred: {e}") from e
+            logger.exception("An unexpected error occurred during CLI execution.")
+            raise DataSphereClientError(f"An unexpected error occurred during CLI execution: {e}") from e
+
+    def _list_job_ids_cli(self) -> set[str]:
+        """Lists DataSphere Job IDs for the project using the CLI."""
+        cmd = [
+            'datasphere', 'project', 'job', 'list',
+            '-p', self.project_id,
+            '--format', 'json' # Request JSON output for easier parsing
+        ]
+        returncode, stdout, stderr = self._run_cli_command(cmd)
+
+        if returncode != 0:
+            error_message = f"Failed to list DataSphere jobs. Exit code {returncode}."
+            error_details = stderr or stdout
+            logger.error(f"{error_message}\nDetails:\n{error_details}")
+            raise DataSphereClientError(f"{error_message} Error: {error_details}")
+
+        try:
+            # Parse JSON output
+            jobs_data = json.loads(stdout)
+            if not isinstance(jobs_data, list):
+                raise ValueError("Expected a list of jobs from CLI output")
+            
+            job_ids = set(job['id'] for job in jobs_data if isinstance(job, dict) and 'id' in job)
+            logger.debug(f"Found {len(job_ids)} job IDs: {job_ids}")
+            return job_ids
+        except json.JSONDecodeError as e:
+            error_message = "Failed to parse JSON output from 'datasphere project job list' command."
+            logger.error(f"{error_message}\nSTDOUT:\n{stdout}\nError: {e}")
+            raise DataSphereClientError(f"{error_message} Error: {e}") from e
+        except (KeyError, TypeError, ValueError) as e:
+            error_message = "Unexpected format in JSON output from 'datasphere project job list' command."
+            logger.error(f"{error_message}\nSTDOUT:\n{stdout}\nError: {e}")
+            raise DataSphereClientError(f"{error_message} Error: {e}") from e
+
+    def submit_job_cli(self, config_path: str) -> str:
+        """
+        Submits a DataSphere Job using the 'datasphere' CLI tool.
+        Determines the new job ID by comparing job lists before and after execution.
+
+        Args:
+            config_path: Path to the job configuration YAML file.
+
+        Returns:
+            The submitted job ID.
+
+        Raises:
+            DataSphereClientError: If the CLI command fails, job ID cannot be determined,
+                                   or multiple new jobs appear.
+        """
+        logger.info("Attempting to submit job and determine ID via list comparison.")
+        
+        # 1. Get job IDs before execution
+        try:
+            ids_before = self._list_job_ids_cli()
+        except DataSphereClientError as e:
+            logger.error(f"Failed to list jobs before execution: {e}")
+            raise DataSphereClientError(f"Could not list jobs before submission: {e}") from e
+
+        # 2. Execute the job
+        execute_cmd = [
+            'datasphere', 'project', 'job', 'execute',
+            '-p', self.project_id,
+            '-c', config_path,
+        ]
+        returncode, stdout, stderr = self._run_cli_command(execute_cmd)
+
+        if returncode != 0:
+            error_message = f"DataSphere job execution command failed. Exit code {returncode}."
+            error_details = stderr or stdout
+            logger.error(f"{error_message}\nDetails:\n{error_details}")
+            raise DataSphereClientError(f"{error_message} Error: {error_details}")
+
+        logger.info(f"Job execution command succeeded. Output:\n{stdout}")
+        
+        # 3. Get job IDs after execution (with potential delay)
+        # Sometimes the list might not update instantly
+        time.sleep(2) # Add a small delay
+        try:
+            ids_after = self._list_job_ids_cli()
+        except DataSphereClientError as e:
+            logger.error(f"Failed to list jobs after execution: {e}")
+            raise DataSphereClientError(f"Could not list jobs after submission: {e}") from e
+            
+        # 4. Find the difference
+        new_ids = ids_after - ids_before
+
+        if len(new_ids) == 1:
+            new_job_id = new_ids.pop()
+            logger.info(f"Successfully submitted DataSphere Job via CLI. Determined ID: {new_job_id}")
+            return new_job_id
+        elif len(new_ids) == 0:
+            error_message = "Failed to determine new Job ID: No new job found after execution."
+            logger.error(f"{error_message} Before: {ids_before}, After: {ids_after}")
+            raise DataSphereClientError(error_message)
+        else:
+            error_message = f"Failed to determine unique Job ID: Found multiple new jobs ({len(new_ids)}): {new_ids}"
+            logger.error(f"{error_message} Before: {ids_before}, After: {ids_after}")
+            raise DataSphereClientError(error_message)
 
     def get_job_status(self, job_id: str) -> str:
         """Gets the status of a DataSphere Job using the SDK."""

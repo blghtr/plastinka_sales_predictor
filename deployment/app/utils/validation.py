@@ -26,8 +26,8 @@ def validate_excel_file(file_content: bytes, expected_columns: List[str] = None)
         Tuple of (is_valid, error_message)
     """
     try:
-        # Try to read as Excel file
-        df = pd.read_excel(io.BytesIO(file_content))
+        # Try to read as Excel file, specify engine
+        df = pd.read_excel(io.BytesIO(file_content), engine='openpyxl')
         
         # Check if dataframe is empty
         if df.empty:

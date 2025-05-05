@@ -1,10 +1,10 @@
 import pytest
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, UploadFile
 from fastapi.testclient import TestClient
-from starlette.datastructures import UploadFile
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock, AsyncMock, PropertyMock
 from io import BytesIO
 import uuid
+from pathlib import Path
 
 # Adjust imports based on your project structure
 from app.main import app 
@@ -22,6 +22,8 @@ def client():
 
 # --- Test /api/v1/jobs/data-upload ---
 
+@patch("app.api.jobs.settings.temp_upload_dir", new_callable=PropertyMock(return_value="./temp_test_uploads"))
+@patch("app.api.jobs._save_uploaded_file", new_callable=AsyncMock)
 @patch("app.api.jobs.validate_date_format", return_value=(True, "2022-09-30"))
 @patch("app.api.jobs.validate_excel_file_upload", new_callable=AsyncMock)
 @patch("app.api.jobs.validate_stock_file", return_value=(True, None))
@@ -29,13 +31,33 @@ def client():
 @patch("app.api.jobs.create_job")
 @patch("app.api.jobs.BackgroundTasks.add_task")
 async def test_create_data_upload_job_success(
-    mock_add_task, mock_create_job, mock_validate_sales, mock_validate_stock, 
-    mock_validate_excel, mock_validate_date, client
+    mock_add_task, mock_create_job, mock_validate_sales, mock_validate_stock,
+    mock_validate_excel, mock_validate_date, mock_save_file, 
+    mock_settings_temp_dir,
+    client
 ):
     """Test successful creation of a data upload job."""
+    test_client = TestClient(app)
     job_id = str(uuid.uuid4())
     mock_create_job.return_value = job_id
     
+    base_temp_dir = Path(mock_settings_temp_dir)
+    temp_job_dir = base_temp_dir / job_id
+    saved_stock_path = temp_job_dir / "stock.xlsx"
+    sales_dir = temp_job_dir / "sales"
+    saved_sales_path1 = sales_dir / "sales1.xlsx"
+    saved_sales_path2 = sales_dir / "sales2.xlsx"
+    
+    async def save_file_side_effect(uploaded_file, directory):
+        if uploaded_file.filename == "stock.xlsx":
+            return saved_stock_path
+        elif uploaded_file.filename == "sales1.xlsx":
+            return saved_sales_path1
+        elif uploaded_file.filename == "sales2.xlsx":
+            return saved_sales_path2
+        return None
+    mock_save_file.side_effect = save_file_side_effect
+
     stock_content = b"stock data"
     sales_content1 = b"sales data 1"
     sales_content2 = b"sales data 2"
@@ -47,22 +69,21 @@ async def test_create_data_upload_job_success(
     ]
     data = {"cutoff_date": "30.09.2022"}
     
-    response = client.post("/api/v1/jobs/data-upload", files=files, data=data)
-    
+    with patch('pathlib.Path.mkdir') as mock_mkdir:
+        response = test_client.post("/api/v1/jobs/data-upload", files=files, data=data)
+
     assert response.status_code == 200
     resp_data = response.json()
     assert resp_data["job_id"] == job_id
     assert resp_data["status"] == JobStatus.PENDING.value
     
-    # Check validations were called
     mock_validate_date.assert_called_once_with("30.09.2022")
-    assert mock_validate_excel.call_count == 3 # 1 stock + 2 sales
+    assert mock_validate_excel.call_count == 3
     mock_validate_stock.assert_called_once_with(stock_content)
     assert mock_validate_sales.call_count == 2
     mock_validate_sales.assert_any_call(sales_content1)
     mock_validate_sales.assert_any_call(sales_content2)
     
-    # Check job creation
     mock_create_job.assert_called_once_with(
         JobType.DATA_UPLOAD,
         parameters={
@@ -72,16 +93,19 @@ async def test_create_data_upload_job_success(
         }
     )
     
-    # Check background task scheduling
+    assert mock_save_file.call_count == 3
+    mock_mkdir.assert_any_call(parents=True, exist_ok=True)
+    mock_mkdir.assert_any_call(exist_ok=False)
+    mock_mkdir.assert_any_call(exist_ok=True)
+
     assert mock_add_task.call_count == 1
     args, kwargs = mock_add_task.call_args
-    assert args[0].__name__ == 'process_data_files' # Check the function passed
+    assert args[0].__name__ == 'process_data_files'
     assert kwargs['job_id'] == job_id
     assert kwargs['cutoff_date'] == "30.09.2022"
-    assert isinstance(kwargs['stock_file'], UploadFile)
-    assert isinstance(kwargs['sales_files'], list)
-    assert len(kwargs['sales_files']) == 2
-    assert isinstance(kwargs['sales_files'][0], UploadFile)
+    assert kwargs['stock_file_path'] == str(saved_stock_path)
+    assert kwargs['sales_files_paths'] == [str(saved_sales_path1), str(saved_sales_path2)]
+    assert kwargs['temp_dir_path'] == str(temp_job_dir)
 
 @patch("app.api.jobs.validate_date_format", return_value=(False, None))
 async def test_create_data_upload_job_invalid_date(mock_validate_date, client):
