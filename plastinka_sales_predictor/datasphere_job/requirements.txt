@@ -1,0 +1,10 @@
+# Requirements for the DataSphere Job environment
+# This file lists packages needed ONLY for executing train_and_predict.py within DataSphere.
+# It should be kept minimal to reduce job startup time and potential conflicts.
+
+pandas>=2.2.0
+psycopg2-binary>=2.9.9
+darts[pytorch]>=0.34.0 # Includes torch
+scikit-learn>=1.6.0
+
+# Add other direct dependencies of train_and_predict.py if any 
