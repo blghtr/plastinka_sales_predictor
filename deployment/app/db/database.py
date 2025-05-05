@@ -6,9 +6,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 from pathlib import Path
 import logging
+from contextlib import contextmanager
 
-# Import configuration
-from app.config import settings
+# from app.config import settings
+from deployment.app.config import settings # Corrected absolute import
 
 logger = logging.getLogger("plastinka.database")
 
