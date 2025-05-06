@@ -324,16 +324,18 @@ class SQLFeatureStore:
             connection=self.db_conn # Pass connection
         )
 
-    def load_features(self, cutoff_date: Optional[str] = None, 
-                     run_id: Optional[int] = None) -> Dict[str, pd.DataFrame]:
-        """Load all features from SQL database up to a cutoff date or for a specific run"""
-        target_run_id = run_id if run_id is not None else self.run_id
-        
+    def load_features(
+            self, 
+            start_date: Optional[str] = None, 
+            end_date: Optional[str] = None
+    ) -> Dict[str, pd.DataFrame]:
+        """Load all features from SQL database up to a cutoff date"""
+            
         features = {
-            'stock': self._load_stock_feature(cutoff_date, target_run_id),
-            'prices': self._load_prices_feature(cutoff_date, target_run_id),
-            'sales': self._load_sales_feature(cutoff_date, target_run_id),
-            'change': self._load_change_feature(cutoff_date, target_run_id),
+            'stock': self._load_stock_feature(start_date, end_date),
+            'prices': self._load_prices_feature(start_date, end_date),
+            'sales': self._load_sales_feature(start_date, end_date),
+            'change': self._load_change_feature(start_date, end_date),
         }
         
         # Remove empty DataFrames
@@ -374,15 +376,22 @@ class SQLFeatureStore:
             'release_type', 'recording_decade', 'release_decade', 'style', 'record_year'
         ])
 
-    def _load_stock_feature(self, cutoff_date: Optional[str] = None, 
-                           run_id: Optional[int] = None) -> Optional[pd.DataFrame]:
+    def _load_stock_feature(
+            self, 
+            start_date: Optional[str] = None, 
+            end_date: Optional[str] = None
+    ) -> Optional[pd.DataFrame]:
         """Load stock feature from fact_stock table"""
         query = "SELECT multiindex_id, snapshot_date, quantity FROM fact_stock"
         params = []
         
-        if cutoff_date:
-            query += " WHERE snapshot_date <= ?"
-            params.append(cutoff_date)
+        if start_date:
+            query += " WHERE snapshot_date >= ?"
+            params.append(start_date)
+            
+        if end_date:
+            query += " AND snapshot_date <= ?"
+            params.append(end_date)
             
         data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
         
@@ -401,15 +410,28 @@ class SQLFeatureStore:
         
         return pivot_df
 
-    def _load_prices_feature(self, cutoff_date: Optional[str] = None, 
-                            run_id: Optional[int] = None) -> Optional[pd.DataFrame]:
+    def _load_prices_feature(
+            self, 
+            start_date: Optional[str] = None, 
+            end_date: Optional[str] = None
+    ) -> Optional[pd.DataFrame]:
         """Load prices feature from fact_prices table"""
         # Prices usually represent the latest known price, so cutoff might not apply directly
         # We might want the latest price before or on the cutoff date
         # For simplicity, let's just load all for now, filtering can be added if needed
         
         query = "SELECT multiindex_id, price_date, price FROM fact_prices ORDER BY multiindex_id, price_date DESC"
-        data = execute_query(query, fetchall=True, connection=self.db_conn)
+        params = []
+        
+        if start_date:
+            query += " WHERE price_date >= ?"
+            params.append(start_date)
+            
+        if end_date:
+            query += " AND price_date <= ?"
+            params.append(end_date)
+            
+        data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
         
         if not data:
             return None
@@ -427,15 +449,22 @@ class SQLFeatureStore:
         
         return result_df
 
-    def _load_sales_feature(self, cutoff_date: Optional[str] = None, 
-                           run_id: Optional[int] = None) -> Optional[pd.DataFrame]:
+    def _load_sales_feature(
+            self, 
+            start_date: Optional[str] = None, 
+            end_date: Optional[str] = None
+    ) -> Optional[pd.DataFrame]:
         """Load sales feature from fact_sales table"""
         query = "SELECT multiindex_id, sale_date, quantity FROM fact_sales"
         params = []
         
-        if cutoff_date:
-            query += " WHERE sale_date <= ?"
-            params.append(cutoff_date)
+        if start_date:
+            query += " WHERE sale_date >= ?"
+            params.append(start_date)
+            
+        if end_date:
+            query += " AND sale_date <= ?"
+            params.append(end_date)
             
         data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
         
@@ -474,15 +503,22 @@ class SQLFeatureStore:
         
         return result_df
 
-    def _load_change_feature(self, cutoff_date: Optional[str] = None, 
-                            run_id: Optional[int] = None) -> Optional[pd.DataFrame]:
+    def _load_change_feature(
+            self, 
+            start_date: Optional[str] = None, 
+            end_date: Optional[str] = None
+    ) -> Optional[pd.DataFrame]:
         """Load stock change feature from fact_stock_changes table"""
         query = "SELECT multiindex_id, change_date, quantity_change FROM fact_stock_changes"
         params = []
         
-        if cutoff_date:
-            query += " WHERE change_date <= ?"
-            params.append(cutoff_date)
+        if start_date:
+            query += " WHERE change_date >= ?"
+            params.append(start_date)
+            
+        if end_date:
+            query += " AND change_date <= ?"
+            params.append(end_date)
             
         data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
         
@@ -512,6 +548,7 @@ class SQLFeatureStore:
         
         return result_df
 
+
 class FeatureStoreFactory:
     """Factory for creating feature store instances"""
     
@@ -539,8 +576,9 @@ def save_features(features: Dict[str, pd.DataFrame],
     return run_id
 
 def load_features(store_type: str = 'sql', 
-                 cutoff_date: Optional[str] = None, 
-                 run_id: Optional[int] = None, **kwargs) -> Dict[str, pd.DataFrame]:
+                  start_date: Optional[str] = None,
+                  end_date: Optional[str] = None,
+                  **kwargs) -> Dict[str, pd.DataFrame]:
     """Helper function to load features using a specific store type"""
-    store = FeatureStoreFactory.get_store(store_type=store_type, run_id=run_id, **kwargs)
-    return store.load_features(cutoff_date=cutoff_date, run_id=run_id) 
+    store = FeatureStoreFactory.get_store(store_type=store_type, **kwargs)
+    return store.load_features(start_date=start_date, end_date=end_date)

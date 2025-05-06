@@ -22,7 +22,7 @@ from app.db.database import (
     DatabaseError
 )
 from app.services.data_processor import process_data_files
-from app.services.training_service import train_model
+from app.services.datasphere_service import run_job
 from app.services.prediction_service import generate_predictions
 from app.services.report_service import generate_report
 from app.utils.validation import validate_stock_file, validate_sales_file, validate_date_format, ValidationError
@@ -220,7 +220,7 @@ async def create_training_job(
         
         # Start the background task
         background_tasks.add_task(
-            train_model,
+            run_job,
             job_id=job_id,
             params=params
         )

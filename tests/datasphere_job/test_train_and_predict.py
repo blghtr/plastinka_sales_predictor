@@ -4,49 +4,16 @@ import sys
 import pandas as pd
 from darts import TimeSeries
 from darts.models import NBEATSModel
+from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset
 
 # Assume the main script will be in plastinka_sales_predictor.datasphere_job.train_and_predict
 # We might need to adjust the import path later
-from plastinka_sales_predictor.datasphere_job.train_and_predict import parse_arguments, load_data, prepare_features, train_model, predict_sales # Import train_model and predict_sales
+from plastinka_sales_predictor.datasphere_job.train_and_predict import load_data, prepare_datasets, train_model, predict_sales # Updated import
 # from plastinka_sales_predictor.datasphere_job.train_and_predict import train_model # Import later
 # from darts import TimeSeries # Example imports for type hints / mocks if needed
 # from darts.models import NBEATSModel # Example model
 
-# Placeholder test - This will fail until parse_arguments is implemented
-def test_parse_arguments_minimal():
-    # Test minimal required args
-    test_args = ['--db-host', 'localhost', '--db-user', 'test', '--db-password', 'pass', '--db-name', 'mydb']
-    with patch.object(sys, 'argv', ['script_name'] + test_args):
-        args = parse_arguments() # This line should now work
-        # assert args.mode == 'train' # Removed
-        assert args.db_host == 'localhost'
-        assert args.db_user == 'test'
-        assert args.db_password == 'pass'
-        assert args.db_name == 'mydb'
-        assert args.db_port == 5432 # Check default port
-        assert args.model_output_ref == 'model.pkl' # Check default output ref
-        assert args.prediction_output_ref == 'predictions.csv' # Check default output ref
-        # assert False # Remove placeholder failure
-
-def test_parse_arguments_custom_port_outputs():
-    # Test custom port and output refs
-    test_args = [
-        '--db-host', 'db.example.com', 
-        '--db-user', 'prod', 
-        '--db-password', 'secret', 
-        '--db-name', 'production', 
-        '--db-port', '5433',
-        '--model-output-ref', 'final_model.joblib',
-        '--prediction-output-ref', 'forecast_next_month.parquet'
-    ]
-    with patch.object(sys, 'argv', ['script_name'] + test_args):
-        args = parse_arguments()
-        assert args.db_host == 'db.example.com'
-        assert args.db_port == 5433
-        assert args.model_output_ref == 'final_model.joblib'
-        assert args.prediction_output_ref == 'forecast_next_month.parquet'
-
-# Add more tests for other arguments like dates as they become relevant 
+# Test functions for parse_arguments removed as we're now using click
 
 # Test data loading
 def test_load_data_success():
@@ -122,7 +89,7 @@ def test_load_data_exception():
             load_data(db_config, start_date=None, end_date=None) 
 
 # Test Data Preparation
-def test_prepare_features():
+def test_prepare_datasets():
     """Tests the data preparation and transformation logic."""
     # Sample raw data - structure reflects loading 'stock' first
     raw_sales = pd.DataFrame({
@@ -140,13 +107,13 @@ def test_prepare_features():
         'change': [-10, -5, -3] # Example change column 
     }).set_index('date') # Assuming index is just date for stock table
     
-    # Input dict for prepare_features
+    # Input dict for prepare_datasets
     # Assumes load_features returns keys 'sales' and 'stock'
     raw_features = {'sales': raw_sales, 'stock': raw_stock}
 
-    params = {'cutoff_date_upper': '01-03-2023'} # Cutoff March 1st
+    params = {'cutoff_date_upper': '01-03-2023', 'lags': 12} # Cutoff March 1st, added lags
 
-    # ---- Mock external dependencies used within prepare_features ----
+    # ---- Mock external dependencies used within prepare_datasets ----
     # Mock get_stock_features - assume it returns a DataFrame with date index
     mock_stock_features_df = pd.DataFrame({
         'stock': [100, 90], # Jan, Feb data 
@@ -161,58 +128,53 @@ def test_prepare_features():
     }, index=pd.to_datetime(['2023-01-01', '2023-02-01'])) # Monthly index
     mock_sales_pivot_df.index.name = '_date' # Or appropriate index name
 
-    # --- Expected output --- 
-    # Based on the implemented logic and mocks
-    expected_output = {
-        'sales_pivot': mock_sales_pivot_df, # Output from mocked get_monthly_sales_pivot
-        'rounded_stocks': mock_stock_features_df # Output from mocked get_stock_features, filtered by cutoff
-        # Add expected transformers/params if they were initialized
-    }
-
+    # Create mock datasets
+    mock_train_dataset = MagicMock(spec=PlastinkaTrainingTSDataset)
+    mock_val_dataset = MagicMock(spec=PlastinkaTrainingTSDataset)
+    
     # Patch the imported functions from scripts.prepare_datasets
     with patch('plastinka_sales_predictor.datasphere_job.train_and_predict.get_stock_features') as mock_get_stock:
         with patch('plastinka_sales_predictor.datasphere_job.train_and_predict.get_monthly_sales_pivot') as mock_get_pivot:
+            with patch('plastinka_sales_predictor.datasphere_job.train_and_predict.PlastinkaTrainingTSDataset.setup_dataset') as mock_setup_dataset:
+                # Configure mock return values
+                mock_get_stock.return_value = mock_stock_features_df
+                mock_get_pivot.return_value = mock_sales_pivot_df
+                mock_setup_dataset.side_effect = [mock_train_dataset, mock_val_dataset]
 
-            # Configure mock return values
-            mock_get_stock.return_value = mock_stock_features_df
-            mock_get_pivot.return_value = mock_sales_pivot_df
+                # Call the function to be tested
+                train_ds, val_ds = prepare_datasets(raw_features, params)
 
-            # Call the function to be tested
-            transformed_features = prepare_features(raw_features, params)
+                # --- Assertions --- 
+                # Check mocked functions were called correctly
+                mock_get_stock.assert_called_once() # Check it was called
+                # Extract call args and compare DataFrames/Series explicitly
+                call_args_stock, _ = mock_get_stock.call_args
+                assert len(call_args_stock) == 2 # Ensure correct number of positional args
+                pd.testing.assert_frame_equal(call_args_stock[0], raw_features['stock'])
+                pd.testing.assert_series_equal(call_args_stock[1], raw_features['stock']['change'])
 
-            # --- Assertions --- 
-            # Check mocked functions were called correctly
-            mock_get_stock.assert_called_once() # Check it was called
-            # Extract call args and compare DataFrames/Series explicitly
-            call_args_stock, _ = mock_get_stock.call_args
-            assert len(call_args_stock) == 2 # Ensure correct number of positional args
-            pd.testing.assert_frame_equal(call_args_stock[0], raw_features['stock'])
-            pd.testing.assert_series_equal(call_args_stock[1], raw_features['stock']['change'])
+                # Check call to get_monthly_sales_pivot (needs expected input dataframe)
+                # The input to get_monthly_sales_pivot is filtered sales, check this:
+                expected_rounded_sales = raw_features['sales'][raw_features['sales'].index.get_level_values('_date') < pd.to_datetime(params['cutoff_date_upper'], dayfirst=True)]
+                mock_get_pivot.assert_called_once()
+                
+                # Verify the argument passed to get_monthly_sales_pivot
+                call_args_pivot, _ = mock_get_pivot.call_args
+                assert len(call_args_pivot) == 1
+                pd.testing.assert_frame_equal(call_args_pivot[0], expected_rounded_sales)
+                
+                # Check the returned datasets
+                assert train_ds == mock_train_dataset
+                assert val_ds == mock_val_dataset
 
-            # Check call to get_monthly_sales_pivot (needs expected input dataframe)
-            # The input to get_monthly_sales_pivot is filtered sales, check this:
-            expected_rounded_sales = raw_features['sales'][raw_features['sales'].index.get_level_values('_date') < pd.to_datetime(params['cutoff_date_upper'], dayfirst=True)]
-            mock_get_pivot.assert_called_once()
-            # More robust: check the first argument passed to the mock
-            call_args_pivot, _ = mock_get_pivot.call_args
-            assert len(call_args_pivot) == 1
-            pd.testing.assert_frame_equal(call_args_pivot[0], expected_rounded_sales)
-            
-            # Check the structure and content of the returned dictionary
-            assert 'sales_pivot' in transformed_features
-            assert 'rounded_stocks' in transformed_features
-            pd.testing.assert_frame_equal(transformed_features['sales_pivot'], expected_output['sales_pivot'])
-            pd.testing.assert_frame_equal(transformed_features['rounded_stocks'], expected_output['rounded_stocks'])
-            # assert False # Remove placeholder failure
-
-def test_prepare_features_missing_data():
-    """Tests that prepare_features raises ValueError if input data is missing."""
+def test_prepare_datasets_missing_data():
+    """Tests that prepare_datasets raises ValueError if input data is missing."""
     with pytest.raises(ValueError, match="Missing required raw feature data."):
-        prepare_features({'sales': pd.DataFrame()}, {}) # Missing 'stock'
+        prepare_datasets({'sales': pd.DataFrame()}, {'lags': 12}) # Missing 'stock'
     with pytest.raises(ValueError, match="Missing required raw feature data."):
-        prepare_features({'stock': pd.DataFrame()}, {}) # Missing 'sales'
+        prepare_datasets({'stock': pd.DataFrame()}, {'lags': 12}) # Missing 'sales'
 
-def test_prepare_features_auto_cutoff():
+def test_prepare_datasets_auto_cutoff():
     """Tests automatic cutoff date determination."""
     # Sample raw data
     raw_sales = pd.DataFrame({
@@ -221,7 +183,7 @@ def test_prepare_features_auto_cutoff():
     }).set_index(['_date', 'store_id', 'product_id'])
     raw_stock = pd.DataFrame({'date': pd.to_datetime(['2023-01-01']), 'stock': [100], 'change': [-10]}).set_index('date')
     raw_features = {'sales': raw_sales, 'stock': raw_stock}
-    params = {'cutoff_date_upper': None} # No cutoff provided
+    params = {'cutoff_date_upper': None, 'lags': 12} # No cutoff provided, added lags
 
     # Mock dependencies
     mock_stock_features_df = pd.DataFrame({'stock': [100]}, index=pd.to_datetime(['2023-01-01']))
@@ -231,27 +193,31 @@ def test_prepare_features_auto_cutoff():
     mock_sales_pivot_df = pd.DataFrame({(1, 101): [8.0, 7.0, 2.0]}, index=pd.to_datetime(['2023-01-01', '2023-02-01', '2023-03-01']))
     mock_sales_pivot_df.index.name = '_date'
 
+    # Create mock datasets
+    mock_train_dataset = MagicMock(spec=PlastinkaTrainingTSDataset)
+    mock_val_dataset = MagicMock(spec=PlastinkaTrainingTSDataset)
+
     # Nested with statements for patching (Corrected)
     with patch('plastinka_sales_predictor.datasphere_job.train_and_predict.get_stock_features') as mock_get_stock:
         with patch('plastinka_sales_predictor.datasphere_job.train_and_predict.get_monthly_sales_pivot') as mock_get_pivot:
-            # Indentation fixed for lines below
-            mock_get_stock.return_value = mock_stock_features_df
-            mock_get_pivot.return_value = mock_sales_pivot_df
-            
-            transformed_features = prepare_features(raw_features, params)
-            
-            # Assert pivot includes March data due to auto cutoff being April 1st
-            assert transformed_features['sales_pivot'].shape[0] == 3 
-            # Assert rounded_stocks filtered correctly (up to April 1st)
-            # In this case, the mock only has Jan data, which is before Apr 1st
-            assert transformed_features['rounded_stocks'].shape[0] == 1 
+            with patch('plastinka_sales_predictor.datasphere_job.train_and_predict.PlastinkaTrainingTSDataset.setup_dataset') as mock_setup_dataset:
+                # Indentation fixed for lines below
+                mock_get_stock.return_value = mock_stock_features_df
+                mock_get_pivot.return_value = mock_sales_pivot_df
+                mock_setup_dataset.side_effect = [mock_train_dataset, mock_val_dataset]
+                
+                train_ds, val_ds = prepare_datasets(raw_features, params)
+                
+                # Assert expected datasets are returned
+                assert train_ds == mock_train_dataset
+                assert val_ds == mock_val_dataset
 
 # Test Model Training
 # Use autospec=True for better mock signature matching if needed
 @patch('plastinka_sales_predictor.datasphere_job.train_and_predict.NBEATSModel', autospec=True) 
 def test_train_model(MockNBEATSModel):
     """Tests the model training function."""
-    # Sample prepared data (output from prepare_features)
+    # Sample prepared data (output from prepare_datasets)
     # Simplify pivot table to have a single, named value column for NBEATS
     sales_pivot_data = pd.DataFrame({
         'sales': [8.0, 7.0, 9.0, 6.0] # Example monthly sales with simple column name

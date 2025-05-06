@@ -206,3 +206,7 @@ class AppSettings(BaseSettings):
 
 # Create a global instance of the settings
 settings = AppSettings() 
+
+
+# TODO Implement datasphere settings
+# TODO Implement  settings

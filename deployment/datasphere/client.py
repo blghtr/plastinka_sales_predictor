@@ -3,26 +3,16 @@ import logging
 import re
 import json
 import time # Added for potential delay
+import datasphere
 
 logger = logging.getLogger(__name__)
 
-# Import the datasphere SDK
-try:
-    import datasphere.sdk
-    # Also import specific types if needed for hints, though mocking might make this less critical
-    # from datasphere.api import jobs_pb2 as ds_jobs
-    # from datasphere.sdk import JobWrapper
-except ImportError:
-    # Handle cases where the SDK might not be installed, although it should be
-    # Log a warning or potentially disable SDK features
-    datasphere = None # type: ignore
-    logger.warning("DataSphere SDK (datasphere.sdk) not found. SDK features will be unavailable.")
 
 class DataSphereClientError(Exception):
     """Custom exception for DataSphere client errors."""
     pass
 
-class DataSphereClient:
+class DataSphereClient:  # TODO: Проверить, действительно ли нам нужен свой клиент или можно использовать datasphere.client.Client 
     """Client for interacting with Yandex DataSphere Jobs (SDK and CLI fallback)."""
 
     def __init__(self, project_id: str, folder_id: str, oauth_token: str = None, yc_profile: str = None):
