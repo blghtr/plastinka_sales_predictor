@@ -58,10 +58,15 @@ def get_db_config() -> Dict[str, Any]:
     return get_config_values().get("db", {})
 
 
+def get_datasphere_config() -> Dict[str, Any]:
+    """Get DataSphere specific configuration."""
+    return get_config_values().get("datasphere", {})
+
+
 def get_app_config() -> Dict[str, Any]:
     """Get application-level configuration."""
     config = get_config_values()
-    return {k: v for k, v in config.items() if k not in ("api", "db")}
+    return {k: v for k, v in config.items() if k not in ("api", "db", "datasphere")}
 
 
 class APISettings(BaseSettings):
@@ -137,11 +142,107 @@ class DatabaseSettings(BaseSettings):
         super().__init__(**merged_data)
 
 
+class TrainJobSettings(BaseSettings):
+    """Settings specific to the DataSphere training job submission."""
+    input_dir: str = Field(
+        default=os.environ.get("DATASPHERE_TRAIN_JOB_INPUT_DIR", "deployment/data/datasphere_input"),
+        description="Base directory for DataSphere training job inputs (params.json etc.)"
+    )
+    output_dir: str = Field(
+        default=os.environ.get("DATASPHERE_TRAIN_JOB_OUTPUT_DIR", "deployment/data/datasphere_output"),
+        description="Base directory for DataSphere training job outputs"
+    )
+    job_config_path: Optional[str] = Field(
+        default=os.environ.get("DATASPHERE_TRAIN_JOB_CONFIG_PATH", None),
+        description="Optional path to a base DataSphere job configuration file (might not be used by submit_job)"
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="DATASPHERE_TRAIN_JOB_",
+        env_file=".env",
+        extra="ignore",
+        env_nested_delimiter="__"
+    )
+
+
+class DataSphereSettings(BaseSettings):
+    """DataSphere specific settings."""
+    # Client settings
+    project_id: str = Field(
+        default=os.environ.get("DATASPHERE_PROJECT_ID", ""),
+        description="ID of the DataSphere project"
+    )
+    folder_id: str = Field(
+        default=os.environ.get("DATASPHERE_FOLDER_ID", ""),
+        description="Yandex Cloud folder ID"
+    )
+    oauth_token: Optional[str] = Field(
+        default=os.environ.get("DATASPHERE_OAUTH_TOKEN", None),
+        description="Yandex Cloud OAuth token (optional, uses profile/env if None)",
+    )
+    yc_profile: Optional[str] = Field(
+        default=os.environ.get("DATASPHERE_YC_PROFILE", None),
+        description="Yandex Cloud CLI profile name (optional)"
+    )
+    
+
+    
+    # Nested Train Job Settings
+    train_job: TrainJobSettings = Field(default_factory=TrainJobSettings)
+    
+    # Polling configuration
+    max_polls: int = Field(
+        default=int(os.environ.get("DATASPHERE_MAX_POLLS", 120)),
+        description="Maximum number of times to poll DataSphere job status"
+    )
+    poll_interval: float = Field(
+        default=float(os.environ.get("DATASPHERE_POLL_INTERVAL", 5.0)),
+        description="Interval in seconds between polling DataSphere job status"
+    )
+
+    # Add the new setting here
+    download_diagnostics_on_success: bool = Field(
+        default=os.environ.get("DATASPHERE_DOWNLOAD_DIAGNOSTICS_ON_SUCCESS", "false").lower() == "true",
+        description="Whether to download logs/diagnostics for successful DataSphere jobs"
+    )
+
+    @property
+    def client(self) -> Dict[str, Any]:
+        """Get client configuration as a dictionary."""
+        return {
+            "project_id": self.project_id,
+            "folder_id": self.folder_id,
+            "oauth_token": self.oauth_token,
+            "yc_profile": self.yc_profile
+        }
+    
+    # Use SettingsConfigDict for Pydantic v2 settings configuration
+    model_config = SettingsConfigDict(
+        env_prefix="DATASPHERE_",
+        env_file=".env",
+        extra="ignore",
+        env_nested_delimiter="__"
+    )
+    
+    def __init__(self, **data):
+        # Merge config file values with the incoming data
+        config_values = get_datasphere_config()
+        # Handle nested train_job settings correctly during merge
+        train_job_config = config_values.pop("train_job", {})
+        merged_data = {**config_values, **data}
+        # Merge top-level first
+        # Merge train_job settings if they exist in incoming data or config file
+        if 'train_job' in merged_data or train_job_config:
+            merged_data['train_job'] = TrainJobSettings(**{**train_job_config, **merged_data.get('train_job', {})})
+        super().__init__(**merged_data)
+
+
 class AppSettings(BaseSettings):
     """Main application settings container."""
     # Explicitly declare API and DB settings as fields
     api: APISettings = Field(default_factory=APISettings)
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    datasphere: DataSphereSettings = Field(default_factory=DataSphereSettings)
     
     env: str = Field(
         default=os.environ.get("APP_ENV", "development"),
@@ -166,6 +267,28 @@ class AppSettings(BaseSettings):
     temp_upload_dir: str = Field(
         default=os.environ.get("TEMP_UPLOAD_DIR", "./temp_uploads"),
         description="Directory for temporary file uploads"
+    )
+    max_models_to_keep: int = Field(
+        default=int(os.environ.get("MAX_MODELS_TO_KEEP", 5)), 
+        description="Maximum number of trained model artifacts to keep locally"
+    )
+    
+    # Model and parameters selection settings
+    default_metric: str = Field(
+        default=os.environ.get("DEFAULT_METRIC", "val_MIC"),
+        description="Default metric name to use for selecting best models/parameters"
+    )
+    default_metric_higher_is_better: bool = Field(
+        default=os.environ.get("DEFAULT_METRIC_HIGHER_IS_BETTER", "true").lower() == "true",
+        description="Whether higher values of the default metric are better"
+    )
+    auto_select_best_params: bool = Field(
+        default=os.environ.get("AUTO_SELECT_BEST_PARAMS", "true").lower() == "true",
+        description="Whether to automatically select the best parameter set as active"
+    )
+    auto_select_best_model: bool = Field(
+        default=os.environ.get("AUTO_SELECT_BEST_MODEL", "true").lower() == "true",
+        description="Whether to automatically select the best model as active"
     )
     
     # Use SettingsConfigDict for Pydantic v2 settings configuration
@@ -207,6 +330,3 @@ class AppSettings(BaseSettings):
 # Create a global instance of the settings
 settings = AppSettings() 
 
-
-# TODO Implement datasphere settings
-# TODO Implement  settings

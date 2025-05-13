@@ -10,9 +10,10 @@ from plastinka_sales_predictor.data_preparation import (
     get_stock_features,
     get_monthly_sales_pivot,
 )
+import os
 
 
-DEFAULT_OUTPUT_DIR = './datasets/'
+DEFAULT_OUTPUT_DIR = './datasets/' # Default location if not specified
 DEFAULT_CUTOFF_DATE = '30-09-2022'
 DEFAULT_STATIC_FEATURES = [
     'Конверт',
@@ -49,12 +50,17 @@ def load_data(start_date=None, end_date=None):
     return features
 
 
-def prepare_datasets(raw_features: dict, end_date: str, config: dict) -> tuple[
+def prepare_datasets(raw_features: dict, end_date: str, config: dict, output_dir: str | None = None) -> tuple[
     PlastinkaTrainingTSDataset, PlastinkaTrainingTSDataset
 ]:
     """
     Loads data from DB, prepares features, creates full dataset.
+    Saves train and validation datasets to the specified output_dir.
     """
+    # Determine the save directory
+    save_directory = output_dir if output_dir is not None else DEFAULT_OUTPUT_DIR
+    os.makedirs(save_directory, exist_ok=True) # Ensure the directory exists
+
     end_date_str = end_date
     logger.info("Starting feature preparation...")
 
@@ -127,7 +133,7 @@ def prepare_datasets(raw_features: dict, end_date: str, config: dict) -> tuple[
             transformer=static_transformer
         )
         train_dataset.save(
-            save_dir=DEFAULT_OUTPUT_DIR,
+            save_dir=save_directory,
             dataset_name='train'
         )
 
@@ -140,7 +146,7 @@ def prepare_datasets(raw_features: dict, end_date: str, config: dict) -> tuple[
             transformer=static_transformer
         )
         val_dataset.save(
-            save_dir=DEFAULT_OUTPUT_DIR,
+            save_dir=save_directory,
             dataset_name='val'
         )
         
@@ -153,10 +159,11 @@ def prepare_datasets(raw_features: dict, end_date: str, config: dict) -> tuple[
     return train_dataset, val_dataset
 
 
-def get_datasets(start_date=None, end_date=None, config=None):
+def get_datasets(start_date=None, end_date=None, config=None, output_dir: str | None = None):
     """
-    Loads data from DB, prepares features, creates full dataset.
+    Loads data from DB, prepares features, creates and saves datasets to output_dir.
     """
     raw_features = load_data(start_date, end_date)
-    return prepare_datasets(raw_features, end_date, config)
+    # Pass the output_dir down to the preparation function
+    return prepare_datasets(raw_features, end_date, config, output_dir)
 

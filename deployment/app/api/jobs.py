@@ -19,11 +19,10 @@ from app.db.database import (
     create_job, update_job_status, get_job, list_jobs,
     get_data_upload_result, get_training_result, get_prediction_result, get_report_result,
     create_data_upload_result, create_training_result, create_prediction_result, create_report_result,
-    DatabaseError
+    DatabaseError, get_active_parameter_set, get_best_parameter_set_by_metric
 )
 from app.services.data_processor import process_data_files
 from app.services.datasphere_service import run_job
-from app.services.prediction_service import generate_predictions
 from app.services.report_service import generate_report
 from app.utils.validation import validate_stock_file, validate_sales_file, validate_date_format, ValidationError
 from app.utils.file_validation import validate_excel_file_upload
@@ -198,36 +197,67 @@ async def create_data_upload_job(
 @router.post("/training", response_model=TrainingResponse)
 async def create_training_job(
     request: Request,
-    params: TrainingParams,
     background_tasks: BackgroundTasks
 ):
     """
-    Submit a job to train a model.
+    Submit a job to train a model using the active parameter set.
     
     This will:
     1. Prepare the training dataset
-    2. Train the model with the provided parameters
+    2. Train the model using the active parameter set or best parameter set
     3. Save the trained model
     
     Returns a job ID that can be used to check the job status.
+    
+    Raises:
+        HTTPException: If there's no active parameter set and no best parameter set by metric.
     """
     try:
+        # Check if active parameter set exists
+        active_params_data = get_active_parameter_set()
+        active_parameter_set_id = None
+        
+        if active_params_data:
+            active_parameter_set_id = active_params_data["parameter_set_id"]
+            logger.info(f"Found active parameter set: {active_parameter_set_id}")
+        else:
+            # Check if there's a best parameter set by metric
+            metric_name = settings.default_metric
+            best_params_data = get_best_parameter_set_by_metric(
+                metric_name, 
+                settings.default_metric_higher_is_better
+            )
+            
+            if not best_params_data:
+                error_msg = "No active parameter set and no best parameter set by metric available"
+                logger.error(error_msg)
+                raise HTTPException(
+                    status_code=400,
+                    detail=error_msg
+                )
+            
+            active_parameter_set_id = best_params_data["parameter_set_id"]
+            logger.info(f"Using best parameter set by {metric_name}: {active_parameter_set_id}")
+        
         # Create a new job
         job_id = create_job(
             JobType.TRAINING,
-            parameters=params.model_dump()
+            parameters={"use_active_parameters": True, "parameter_set_id": active_parameter_set_id}
         )
         
         # Start the background task
         background_tasks.add_task(
             run_job,
-            job_id=job_id,
-            params=params
+            job_id=job_id
         )
         
-        logger.info(f"Created training job {job_id} with parameters: {params.model_dump()}")
-        return TrainingResponse(job_id=job_id, status=JobStatus.PENDING)
-        
+        logger.info(f"Created training job {job_id} using parameter set {active_parameter_set_id}")
+        return TrainingResponse(
+            job_id=job_id, 
+            status=JobStatus.PENDING,
+            parameter_set_id=active_parameter_set_id,
+            using_active_parameters=True
+        )
     except DatabaseError as e:
         logger.error(f"Database error in training job creation: {str(e)}", exc_info=True)
         error = ErrorDetail(
@@ -275,11 +305,11 @@ async def create_prediction_job(
         )
         
         # Start the background task
-        background_tasks.add_task(
-            generate_predictions,
-            job_id=job_id,
-            params=params
-        )
+        #background_tasks.add_task(
+        #    generate_predictions,
+        #    job_id=job_id,
+        #    params=params
+        #)
         
         logger.info(f"Created prediction job {job_id} with model_id: {params.model_id}")
         return PredictionResponse(job_id=job_id, status=JobStatus.PENDING)

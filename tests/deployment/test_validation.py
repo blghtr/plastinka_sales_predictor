@@ -3,7 +3,7 @@ import pytest
 import pandas as pd
 from datetime import datetime
 
-from app.utils.validation import (
+from deployment.app.utils.validation import (
     validate_excel_file, 
     validate_date_format, 
     validate_stock_file, 

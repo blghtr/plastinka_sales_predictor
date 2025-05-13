@@ -67,7 +67,10 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             minimum_sales_months: int = 1
     ):
         super().__init__()
-
+        # --- Регуляризация временного индекса ---
+        monthly_sales = ensure_monthly_regular_index(monthly_sales)
+        stock_features = ensure_monthly_regular_index(stock_features)
+        
         self.dtype = dtype
         multiidxs = (
             monthly_sales.
@@ -110,12 +113,11 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             span=past_covariates_span,
             weights_alpha=weight_coef,
             scaler=scaler,
+            transformer=static_transformer,
+            static_features=static_features,
             copy=False,
             reindex=False
         )
-        self.static_transformer = static_transformer
-        self.static_features = static_features
-        self.static_covariates_mapping = self.get_static_covariates()
         self.return_ts = False
         self._allow_empty_stock = False
         self.minimum_sales_months = minimum_sales_months
@@ -323,6 +325,9 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             scaler = scaler.fit(self.monthly_sales)
         self.scaler = scaler
 
+    def set_static_transformer(self, transformer):
+        self.static_transformer = transformer
+
     def setup_dataset(
             self,
             window: tuple[int, int] | None = None,
@@ -331,6 +336,8 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             span: int | None = None,
             weights_alpha: float | None = None,
             scaler: BaseEstimator | None = None,
+            transformer: BaseEstimator | None = None,
+            static_features: Sequence[str] | None = None,
             copy: bool = True,
             reindex: bool = True
     ) -> Optional[Self]:
@@ -350,6 +357,11 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
 
         if scaler:
             ds.set_scaler(scaler)
+
+        self.static_features = static_features
+        if transformer:
+            ds.set_static_transformer(transformer)
+            self.static_covariates_mapping = self.get_static_covariates()
 
         if weights_alpha is not None:
             ds.set_reweight_fn(weights_alpha)
@@ -553,9 +565,12 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
         past_covariates_item = self.get_past_covariates(
             item_multiidx
         )[start_index:end_index]
-        static_covariates_item = self.static_covariates_mapping.loc[
-            item_multiidx
-        ]
+
+        static_covariates_item = None
+        if self.static_covariates_mapping is not None:
+            static_covariates_item = self.static_covariates_mapping.loc[
+                item_multiidx
+            ]
 
         if self.scaler is not None:
             series_item = self.scaler.transform(series_item)
@@ -791,7 +806,8 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
     validated, bins = categorize_prices(validated, bins)
     validated = validate_date_columns(validated)
     validated = validate_categories(validated)
-    validated = validated.assign(precise_record_year=validated['Год записи'])
+    if 'precise_record_year' not in validated.columns:
+        validated = validated.assign(precise_record_year=validated['Год записи'])
     validated = categorize_dates(validated)
     validated = validate_styles(validated)
 
@@ -938,7 +954,8 @@ def process_data(
 
     def _process_sales(
             preprocessed_df,
-            all_keys
+            all_keys,
+            keys_no_dates
     ):
         sales = filter_by_date(
             preprocessed_df,
@@ -1050,7 +1067,8 @@ def process_data(
 
         sales, change, prices_from_sales = _process_sales(
             preprocessed_df,
-            all_keys
+            all_keys,
+            keys_no_dates
         )
 
         prices = pd.concat(
@@ -1162,6 +1180,11 @@ def get_stock_features(
     )
     return stock_features
 
+def ensure_monthly_regular_index(df):
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("Index must be DatetimeIndex")
+    full_range = pd.date_range(start=df.index.min(), end=df.index.max(), freq='MS')
+    return df.reindex(full_range, fill_value=0)
 
 def transform_months(series):
     msin = np.sin(2 * np.pi * series / 12).values

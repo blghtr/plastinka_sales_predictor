@@ -2,13 +2,76 @@
 
 This document describes all environment variables used by the Plastinka Sales Predictor application. These environment variables control application behavior across different environments like development, testing, and production.
 
-## Setting Environment Variables
+## Setting Configuration Variables
 
-Environment variables can be set in multiple ways:
+Configuration variables can be set in multiple ways:
 
 1. **System environment variables**: Set using operating system methods
 2. **`.env` file**: Create a `.env` file in the project root directory
 3. **Command-line arguments**: Some variables can be overridden via command-line args in deployment scripts
+4. **Config file**: JSON or YAML configuration file (new)
+
+## Configuration File Support
+
+The application now supports loading configuration from JSON or YAML files as an alternative to environment variables.
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `CONFIG_FILE_PATH` | Path to JSON or YAML config file | - | `/path/to/config.json` or `/path/to/config.yaml` |
+
+### Config File Format
+
+The config file should be structured to match the application's configuration hierarchy:
+
+```json
+{
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "debug": false,
+    "allowed_origins": ["http://localhost:3000"],
+    "api_key": "your_api_key_here",
+    "log_level": "INFO"
+  },
+  "db": {
+    "path": "deployment/data/plastinka.db"
+  },
+  "env": "development",
+  "callback_base_url": "http://localhost:8000",
+  "callback_route": "/api/v1/cloud/callback",
+  "callback_auth_token": "your_auth_token_here",
+  "max_upload_size": 52428800
+}
+```
+
+YAML format example:
+
+```yaml
+api:
+  host: 0.0.0.0
+  port: 8000
+  debug: false
+  allowed_origins:
+    - http://localhost:3000
+  api_key: your_api_key_here
+  log_level: INFO
+db:
+  path: deployment/data/plastinka.db
+env: development
+callback_base_url: http://localhost:8000
+callback_route: /api/v1/cloud/callback
+callback_auth_token: your_auth_token_here
+max_upload_size: 52428800
+```
+
+### Configuration Priority
+
+When multiple configuration sources are present, the following priority order is used:
+
+1. Values provided directly to constructor (highest priority)
+2. Values from config file
+3. Environment variables
+4. Default values (lowest priority)
 
 ## Core Application Configuration
 
@@ -72,6 +135,9 @@ Environment variables can be set in multiple ways:
 APP_ENV=development
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
 
+# Config File Path (optional)
+CONFIG_FILE_PATH=config.json
+
 # Database Configuration
 DATABASE_PATH=deployment/data/plastinka.db
 
@@ -104,6 +170,6 @@ MAX_UPLOAD_SIZE=52428800
 ## Security Considerations
 
 - Never commit sensitive credentials to version control
-- Restrict access to environment files containing credentials
+- Restrict access to environment files and config files containing credentials
 - In production, use proper secret management services where available
 - Regularly rotate authentication tokens and API keys 

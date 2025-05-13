@@ -7,12 +7,12 @@ import uuid
 from pathlib import Path
 
 # Adjust imports based on your project structure
-from app.main import app 
-from app.models.api_models import (
+from deployment.app.main import app 
+from deployment.app.models.api_models import (
     JobStatus, JobType, TrainingParams, PredictionParams, ReportParams
 )
-from app.db.database import DatabaseError
-from app.utils.validation import ValidationError
+from deployment.app.db.database import DatabaseError
+from deployment.app.utils.validation import ValidationError
 
 # Fixture for the TestClient
 @pytest.fixture(scope="module")

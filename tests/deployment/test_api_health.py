@@ -7,8 +7,8 @@ from datetime import datetime
 
 # Assuming your FastAPI app instance is created in deployment/app/main.py
 # Adjust the import path if necessary
-from app.main import app 
-from app.api.health import (
+from deployment.app.main import app 
+from deployment.app.api.health import (
     HealthResponse, 
     SystemStatsResponse, 
     RetryStatsResponse, 
@@ -17,7 +17,7 @@ from app.api.health import (
     check_environment, 
     start_time
 )
-from app.config import settings # Needed for DB path in check_database test
+from deployment.app.config import settings # Needed for DB path in check_database test
 
 # Fixture for the TestClient
 @pytest.fixture(scope="module")

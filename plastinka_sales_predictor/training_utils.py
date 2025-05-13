@@ -108,14 +108,16 @@ def prepare_for_training(
                 weights_alpha=ds_config['alpha'],
                 copy=False
             )
+
             callbacks.extend([
                 EarlyStopping(
                     monitor="val_loss",
-                    patience=20,
+                    patience=15,
                     min_delta=0.001,
                     mode="min",
                 ),
             ])
+
         likelihood = WQuantileRegression(
             quantiles=quantiles,
             sigma_left_factor=weights_config['sigma_left'],
@@ -236,3 +238,9 @@ def get_device():
     else:
         return 'cpu'
 
+
+def extract_early_stopping_callback(trainer: pl.Trainer) -> EarlyStopping:
+    for callback in trainer.callbacks:
+        if isinstance(callback, EarlyStopping):
+            return callback
+    return None

@@ -17,6 +17,7 @@ from app.db.schema import init_db
 # Import API routers
 from app.api.jobs import router as jobs_router
 from app.api.health import router as health_router
+from app.api.models_params import router as models_params_router
 
 # Import utils
 from app.utils.error_handling import configure_error_handlers
@@ -113,6 +114,7 @@ app = configure_error_handlers(app)
 # Include API routers
 app.include_router(jobs_router)
 app.include_router(health_router)
+app.include_router(models_params_router)
 
 # Root endpoint
 @app.get("/")

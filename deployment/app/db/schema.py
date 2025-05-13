@@ -103,14 +103,36 @@ CREATE TABLE IF NOT EXISTS data_upload_results (
     FOREIGN KEY (processing_run_id) REFERENCES processing_runs(run_id)
 );
 
+-- New table for model metadata
+CREATE TABLE IF NOT EXISTS models (
+    model_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    model_path TEXT NOT NULL,      -- Path to the saved model file (e.g., .onnx or .pt)
+    created_at TIMESTAMP NOT NULL,
+    metadata TEXT,                 -- Optional JSON for file size, framework, etc.
+    is_active BOOLEAN DEFAULT 0,
+    FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+);
+
+-- New table for unique parameter sets
+CREATE TABLE IF NOT EXISTS parameter_sets (
+    parameter_set_id TEXT PRIMARY KEY, -- Could be a hash of the parameters
+    parameters TEXT NOT NULL,        -- JSON string of the parameters
+    created_at TIMESTAMP NOT NULL,
+    is_active BOOLEAN DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS training_results (
     result_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     model_id TEXT,
+    parameter_set_id TEXT,  -- New column added
     metrics TEXT,           -- JSON of training metrics
-    parameters TEXT,        -- JSON of training parameters
+    parameters TEXT,        -- JSON of training parameters (consider removing later if parameter_set_id is sufficient)
     duration INTEGER,       -- in seconds
-    FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+    FOREIGN KEY (job_id) REFERENCES jobs(job_id),
+    FOREIGN KEY (model_id) REFERENCES models(model_id), -- Added FK to new models table
+    FOREIGN KEY (parameter_set_id) REFERENCES parameter_sets(parameter_set_id) -- Added FK
 );
 
 CREATE TABLE IF NOT EXISTS prediction_results (
@@ -132,64 +154,6 @@ CREATE TABLE IF NOT EXISTS report_results (
     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
 );
 
--- Cloud Function Tables
-CREATE TABLE IF NOT EXISTS cloud_functions (
-    function_id TEXT PRIMARY KEY,
-    function_type TEXT NOT NULL,  -- 'training' or 'prediction'
-    function_name TEXT NOT NULL,  -- The actual cloud function name
-    created_at TIMESTAMP NOT NULL,
-    last_updated TIMESTAMP NOT NULL,
-    version TEXT NOT NULL,
-    status TEXT NOT NULL,         -- 'active', 'updating', 'error'
-    config TEXT                   -- JSON of function configuration
-);
-
-CREATE TABLE IF NOT EXISTS cloud_function_executions (
-    execution_id TEXT PRIMARY KEY,
-    function_id TEXT NOT NULL,
-    job_id TEXT NOT NULL,
-    status TEXT NOT NULL,         -- 'pending', 'running', 'completed', 'failed'
-    start_time TIMESTAMP,
-    end_time TIMESTAMP,
-    request_payload TEXT,         -- JSON of the request sent to the cloud function
-    response_payload TEXT,        -- JSON of the final response from the cloud function
-    cloud_request_id TEXT,        -- Cloud provider's request identifier
-    error_message TEXT,
-    FOREIGN KEY (function_id) REFERENCES cloud_functions(function_id),
-    FOREIGN KEY (job_id) REFERENCES jobs(job_id)
-);
-
-CREATE TABLE IF NOT EXISTS cloud_function_status_updates (
-    update_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    execution_id TEXT NOT NULL,
-    timestamp TIMESTAMP NOT NULL,
-    status TEXT NOT NULL,         -- 'running', 'success', 'error'
-    progress_percentage REAL,     -- 0-100 percentage
-    current_step TEXT,            -- Description of current step
-    steps_completed INTEGER,      -- Number of completed steps
-    steps_total INTEGER,          -- Total number of steps
-    logs TEXT,                    -- JSON array of recent log entries
-    error_code TEXT,              -- Error code if status is 'error'
-    error_message TEXT,           -- Error message if status is 'error'
-    error_details TEXT,           -- JSON of error details if status is 'error'
-    FOREIGN KEY (execution_id) REFERENCES cloud_function_executions(execution_id)
-);
-
-CREATE TABLE IF NOT EXISTS cloud_storage_objects (
-    object_id TEXT PRIMARY KEY,
-    bucket_name TEXT NOT NULL,
-    object_path TEXT NOT NULL,
-    content_type TEXT,
-    size_bytes INTEGER,
-    created_at TIMESTAMP NOT NULL,
-    md5_hash TEXT,                -- For integrity verification
-    related_job_id TEXT,          -- Job that created or uses this object
-    object_type TEXT NOT NULL,    -- 'dataset', 'model', 'result'
-    expiration_time TIMESTAMP,    -- When the object should be deleted (if temporary)
-    FOREIGN KEY (related_job_id) REFERENCES jobs(job_id),
-    UNIQUE(bucket_name, object_path)
-);
-
 -- Indexes for optimization
 CREATE INDEX IF NOT EXISTS idx_multiindex_barcode ON dim_multiindex_mapping(barcode);
 CREATE INDEX IF NOT EXISTS idx_multiindex_artist_album ON dim_multiindex_mapping(artist, album);
@@ -201,14 +165,6 @@ CREATE INDEX IF NOT EXISTS idx_changes_date ON fact_stock_changes(change_date);
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type);
-
--- Cloud function indexes
-CREATE INDEX IF NOT EXISTS idx_cloud_func_type ON cloud_functions(function_type);
-CREATE INDEX IF NOT EXISTS idx_cloud_func_exec_job ON cloud_function_executions(job_id);
-CREATE INDEX IF NOT EXISTS idx_cloud_func_exec_status ON cloud_function_executions(status);
-CREATE INDEX IF NOT EXISTS idx_cloud_status_exec_id ON cloud_function_status_updates(execution_id);
-CREATE INDEX IF NOT EXISTS idx_cloud_storage_job ON cloud_storage_objects(related_job_id);
-CREATE INDEX IF NOT EXISTS idx_cloud_storage_type ON cloud_storage_objects(object_type);
 """
 
 def init_db(db_path: str = "deployment/data/plastinka.db"):

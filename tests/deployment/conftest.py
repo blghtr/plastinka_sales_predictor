@@ -5,7 +5,7 @@ import tempfile
 import sqlite3
 from pathlib import Path
 
-from app.main import app
+from deployment.app.main import app
 
 
 @pytest.fixture

@@ -12,7 +12,12 @@ from .data_preparation import (
     GlobalLogMinMaxScaler
 )
 from .logger_setup import configure_logger
-from .training_utils import train_model, prepare_for_training, get_model
+from .training_utils import (
+    train_model, 
+    prepare_for_training, 
+    get_model, 
+    extract_early_stopping_callback
+)
 from .tuning_utils import (
     train_model as train_model_tune,
     train_fn,
@@ -38,5 +43,6 @@ __all__ = [
     "train_fn",
     "trial_name_creator",
     "flatten_config",
-    "load_fixed_params"
+    "load_fixed_params",
+    "extract_early_stopping_callback"
 ] 
