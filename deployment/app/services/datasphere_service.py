@@ -20,7 +20,8 @@ from deployment.app.db.database import (
     get_best_model_by_metric,
     set_model_active,
     delete_models_by_ids,
-    get_all_models
+    get_all_models,
+    get_job
 )
 from deployment.app.models.api_models import JobStatus, TrainingParams
 from deployment.app.config import settings
@@ -70,14 +71,19 @@ async def _prepare_job_datasets(job_id: str, params: TrainingParams) -> None:
     logger.info(f"[{job_id}] Calling get_datasets with start_date: {start_date_for_dataset}, end_date: {end_date_for_dataset}, outputting to: {target_input_dir}")
     # Assuming get_datasets accepts an output_dir argument or similar mechanism
     # to control where data is saved. Adjust call signature as needed.
-    get_datasets(
-        start_date=start_date_for_dataset,
-        end_date=end_date_for_dataset,
-        config=params,
-        output_dir=target_input_dir # Explicitly pass target directory
-    )
-    logger.info(f"[{job_id}] Datasets prepared in {target_input_dir}.")
-    update_job_status(job_id, JobStatus.RUNNING.value, progress=10, status_message="Datasets prepared.")
+    try:
+        get_datasets(
+            start_date=start_date_for_dataset,
+            end_date=end_date_for_dataset,
+            config=params,
+            output_dir=target_input_dir # Explicitly pass target directory
+        )
+        logger.info(f"[{job_id}] Datasets prepared in {target_input_dir}.")
+        update_job_status(job_id, JobStatus.RUNNING.value, progress=10, status_message="Datasets prepared.")
+    except Exception as e:
+        logger.error(f"[{job_id}] Failed to prepare datasets: {e}", exc_info=True)
+        update_job_status(job_id, JobStatus.FAILED.value, error_message=f"Failed to prepare datasets: {e}")
+        raise RuntimeError(f"Failed to prepare datasets during job {job_id}. Original error: {e}") from e
 
 
 async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
@@ -95,7 +101,7 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
     except ImportError as e:
         logger.error(f"Error importing DataSphereClient: {e}. Ensure google.cloud.compute_v1 is installed.")
         update_job_status(job_id, JobStatus.FAILED.value, error_message=f"Client Initialization Failed: {e}")
-        raise # Re-raise the import error
+        raise RuntimeError(f"Failed to initialize DataSphere client: {e}") from e
 
 
 async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams) -> Tuple[str, str]:
@@ -454,9 +460,10 @@ async def _process_job_results(
          logger.warning(f"[{job_id}] Predictions artifact path specified ({predictions_path}) but file not found.")
 
 
-async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> None:
+async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> List[str]:
     """Attempts to recursively delete the specified directories."""
     logger.info(f"[{job_id}] Stage 7: Cleaning up specified directories: {dir_paths}")
+    cleanup_errors = []
 
     for dir_path in dir_paths:
         if dir_path and os.path.exists(dir_path) and os.path.isdir(dir_path):
@@ -464,11 +471,16 @@ async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> None:
                 shutil.rmtree(dir_path)
                 logger.info(f"[{job_id}] Successfully deleted directory: {dir_path}")
             except Exception as e_clean:
-                logger.error(f"[{job_id}] Error deleting directory {dir_path}: {e_clean}")
+                error_msg = f"Error deleting directory {dir_path}: {e_clean}"
+                logger.error(f"[{job_id}] {error_msg}")
+                cleanup_errors.append(error_msg)
         elif not dir_path:
              logger.info(f"[{job_id}] Skipping cleanup for empty directory path.")
         else:
             logger.info(f"[{job_id}] Directory not found or not a directory, skipping cleanup: {dir_path}")
+    
+    # Return any cleanup errors to be handled by caller
+    return cleanup_errors
 
 
 # Main Orchestrator Function
@@ -480,6 +492,8 @@ async def run_job(job_id: str) -> None:
     ds_job_run_suffix: Optional[str] = None
     results_dir: Optional[str] = None
     client: Optional[DataSphereClient] = None
+    cleanup_errors = None
+    job_completed_successfully = False
 
     try:
         # Initialize job status
@@ -519,20 +533,13 @@ async def run_job(job_id: str) -> None:
             job_id, ds_job_id, results_dir, params, metrics_data, model_path, predictions_path, polls, settings.datasphere.poll_interval, parameter_set_id
         )
         # Final success status (COMPLETED) is set within this function
+        job_completed_successfully = True
 
     except (ValueError, RuntimeError, TimeoutError, ImportError) as e:
         # Handle errors from pipeline stages (already logged within helpers)
         # Ensure final status is FAILED if not already set
         error_msg = f"Job failed: {str(e)}"
         logger.error(f"[{job_id}] Pipeline terminated due to error: {e}", exc_info=False) # Log again at top level without full trace if already logged
-        # Check current status before potentially overwriting a more specific FAILED message
-        # This requires getting current status, which might be complex. For simplicity,
-        # we rely on helpers setting FAILED status with specific messages.
-        # If an error occurs *between* stages, set a generic FAILED status here.
-        # Example: Check if status is still RUNNING before marking FAILED
-        # current_status = get_job_status(job_id) # Hypothetical function
-        # if current_status not in [JobStatus.FAILED.value, JobStatus.COMPLETED.value]:
-        #      update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg, status_message=error_msg[:100])
         # Re-raise so the caller knows the job failed
         raise
     except TimeoutError as e:
@@ -556,8 +563,20 @@ async def run_job(job_id: str) -> None:
                 # Add ds_job_specific_output_base_dir_local only if it's defined (it won't be for early failures)
                 locals().get('ds_job_specific_output_base_dir_local')
             ]
-            # Call the simplified cleanup function
-            await _cleanup_directories(job_id, [d for d in dirs_to_clean if d]) # Filter out None/empty paths
+            # Call the cleanup function, which now returns errors
+            cleanup_errors = await _cleanup_directories(job_id, [d for d in dirs_to_clean if d]) # Filter out None/empty paths
+            
+            # If cleanup errors occurred and the job completed successfully, update the status message
+            if cleanup_errors and job_completed_successfully:
+                try:
+                    # Just append a note about the cleanup error to the status message
+                    update_job_status(
+                        job_id, 
+                        JobStatus.COMPLETED.value,
+                        status_message=f"Job completed successfully. DS Job ID: {ds_job_id}. Cleanup error logged."
+                    )
+                except Exception as status_update_e:
+                    logger.error(f"[{job_id}] Error updating status with cleanup error info: {status_update_e}")
         except Exception as cleanup_e:
             logger.error(f"[{job_id}] Error during final cleanup stage: {cleanup_e}", exc_info=True)
             # Do not change job status based on cleanup failure
