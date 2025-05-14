@@ -70,6 +70,24 @@ CREATE TABLE IF NOT EXISTS fact_stock_changes (
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
+-- New fact table for predictions storage
+CREATE TABLE IF NOT EXISTS fact_predictions (
+    prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    multiindex_id INTEGER NOT NULL,
+    prediction_date TIMESTAMP NOT NULL,
+    result_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    quantile_05 DECIMAL(10,2) NOT NULL,
+    quantile_25 DECIMAL(10,2) NOT NULL,
+    quantile_50 DECIMAL(10,2) NOT NULL,
+    quantile_75 DECIMAL(10,2) NOT NULL,
+    quantile_95 DECIMAL(10,2) NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id),
+    FOREIGN KEY (model_id) REFERENCES models(model_id),
+    FOREIGN KEY (result_id) REFERENCES prediction_results(result_id)
+);
+
 -- Utility Tables
 CREATE TABLE IF NOT EXISTS processing_runs (
     run_id INTEGER PRIMARY KEY,
@@ -163,8 +181,23 @@ CREATE INDEX IF NOT EXISTS idx_stock_date ON fact_stock(snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_sales_date ON fact_sales(sale_date);
 CREATE INDEX IF NOT EXISTS idx_changes_date ON fact_stock_changes(change_date);
 
+-- Indexes for predictions
+CREATE INDEX IF NOT EXISTS idx_predictions_multiindex ON fact_predictions(multiindex_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_date ON fact_predictions(prediction_date);
+CREATE INDEX IF NOT EXISTS idx_predictions_result ON fact_predictions(result_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_model ON fact_predictions(model_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_date_model ON fact_predictions(prediction_date, model_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_date_multiindex ON fact_predictions(prediction_date, multiindex_id);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type);
+
+-- Indexes for models and training results to improve data retention queries
+CREATE INDEX IF NOT EXISTS idx_models_active ON models(is_active);
+CREATE INDEX IF NOT EXISTS idx_models_created ON models(created_at);
+CREATE INDEX IF NOT EXISTS idx_models_active_created ON models(is_active, created_at);
+CREATE INDEX IF NOT EXISTS idx_training_results_parameter_set ON training_results(parameter_set_id);
+CREATE INDEX IF NOT EXISTS idx_training_results_model ON training_results(model_id);
 """
 
 def init_db(db_path: str = "deployment/data/plastinka.db"):

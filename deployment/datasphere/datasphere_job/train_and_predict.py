@@ -12,10 +12,7 @@ from plastinka_sales_predictor import (
     extract_early_stopping_callback
 )
 from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset
-from darts import TimeSeries
-from darts.models import TiDEModel
-from pytorch_lightning.callbacks import EarlyStopping
-from deployment.datasphere.prepare_datasets import get_datasets
+from ..prepare_datasets import get_datasets
 import time
 
 DEFAULT_OUTPUT_DIR = 'datasets/'
@@ -216,7 +213,13 @@ def get_predictions_df(
         )
     )
 
-    preds_df = preds_df.clip(0).quantile((0.05, 0.25, 0.5, 0.75, 0.95), axis=1).T
+    # Используем строковые названия колонок для квантилей
+    quantiles = (0.05, 0.25, 0.5, 0.75, 0.95)
+    preds_df = preds_df.clip(0).quantile(quantiles, axis=1).T
+    
+    # Преобразуем названия колонок квантилей в строки
+    preds_df.columns = [str(col) for col in preds_df.columns]
+    
     preds_df = preds_df.reset_index()
 
     return preds_df

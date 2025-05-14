@@ -5,7 +5,12 @@ import json
 import uuid
 import asyncio
 import logging
+import pandas as pd
+import shutil
+from pathlib import Path
+import yaml
 from typing import Optional, Tuple, Dict, Any, List
+from pydantic import TypeAdapter
 from deployment.app.db.database import (
     update_job_status, 
     create_training_result, 
@@ -21,16 +26,30 @@ from deployment.app.db.database import (
     set_model_active,
     delete_models_by_ids,
     get_all_models,
-    get_job
+    get_job,
+    create_prediction_result,
+    get_or_create_multiindex_id,
+    execute_many,
+    get_db_connection
 )
 from deployment.app.models.api_models import JobStatus, TrainingParams
-from deployment.app.config import settings
+from deployment.app.config import AppSettings
 from deployment.datasphere.client import DataSphereClient
 from deployment.datasphere.prepare_datasets import get_datasets
-import shutil
-from pathlib import Path
-import yaml
-from pydantic import TypeAdapter
+
+# Initialize settings
+settings = AppSettings()
+
+# Constants from settings
+DATASPHERE_JOB_DIRECTORY = settings.datasphere.train_job.output_dir
+DATASPHERE_MODEL_FILE = "model.onnx"
+DATASPHERE_PREDICTIONS_FILE = "predictions.csv"
+DATASPHERE_PREDICTIONS_FORMAT = "csv"
+JOB_POLL_MAX = settings.datasphere.max_polls
+JOB_POLL_INTERVAL = settings.datasphere.poll_interval
+MAX_RETRIES = 3
+RETRY_DELAY = 2
+DATASPHERE_IMAGE_VARIABLES = ["PYTHONPATH", "PYTHONUNBUFFERED"]
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -374,90 +393,58 @@ async def _process_job_results(
     logger.info(f"[{job_id}] Stage 6: Processing job results for DS Job {ds_job_id}...")
 
     training_hyperparams = params.model_dump() # For storing with results
-    current_model_id = None # Will be set if model is successfully recorded
+    current_model_id = None # Will be set if model was saved successfully
 
-    # --- Calculate Duration ---
-    training_duration_seconds = metrics_data.get("training_duration_seconds") if metrics_data else None
-    if training_duration_seconds is None:
-        # Estimate duration if not provided in metrics
-        training_duration_seconds = polls * poll_interval
-        logger.warning(f"[{job_id}] training_duration_seconds not in metrics, estimated as {training_duration_seconds}s.")
-    else:
-        logger.info(f"[{job_id}] Training duration from metrics: {training_duration_seconds}s.")
-
-
-    # --- Handle Model Record Creation and Cleanup ---
+    # Save model and get model_id
     if model_path and os.path.exists(model_path):
-        # Generate a unique ID for this specific model artifact
-        current_model_id = f'{params.model_id}_{uuid.uuid4().hex[:8]}' # More unique ID
-        model_created_at = datetime.utcnow()
-        model_metadata = {
-            "file_size_bytes": os.path.getsize(model_path),
-            "downloaded_from_ds_job": ds_job_id,
-            "original_path": model_path, # Keep track of where it was downloaded
-            "results_dir": results_dir, # Add results dir for context
-            # Add other relevant metadata if available
-        }
-
-        # Persist the model file to a more permanent location if desired
-        # For now, we'll record the downloaded path. Consider moving/copying later.
-        # model_storage_path = _persist_model_artifact(job_id, current_model_id, model_path)
-
-        create_model_record(
-            model_id=current_model_id,
-            job_id=job_id,
-            model_path=model_path, # Record the path where it currently is
-            created_at=model_created_at,
-            metadata=model_metadata,
-            is_active=False # Activation is a separate step, potentially manual or based on evaluation
-        )
-        logger.info(f"[{job_id}] Model record created (initially inactive): {current_model_id} at path {model_path}")
-
-        # Perform cleanup of older models *after* successfully creating the new record
-        await _perform_model_cleanup(job_id, current_model_id)
-
-    elif model_path:
-        logger.warning(f"[{job_id}] Model artifact path specified ({model_path}) but file not found. Cannot create model record.")
+        logger.info(f"[{job_id}] Recording model in database...")
+        try:
+            current_model_id = await save_model_file_and_db(job_id, model_path, ds_job_id)
+            logger.info(f"[{job_id}] Model recorded with ID: {current_model_id}")
+        except Exception as e:
+            logger.error(f"[{job_id}] Error saving model: {str(e)}")
     else:
-        logger.info(f"[{job_id}] No model artifact path available from DS job. Cannot create model record.")
-
-
-    # --- Create Training Result ---
+        logger.warning(f"[{job_id}] No model file found at {model_path}")
+    
+    # Create training result record
     if metrics_data:
-        training_result_id = create_training_result(
-            job_id=job_id,
-            model_id=current_model_id, # Link to model if created, else None
-            parameter_set_id=parameter_set_id, # Link to the parameters used
-            metrics=metrics_data,
-            parameters=training_hyperparams, # Store params used for this result
-            duration=int(training_duration_seconds)
-        )
-        logger.info(f"[{job_id}] Training result {training_result_id} stored (Params: {parameter_set_id}, Model: {current_model_id or 'N/A'}).")
-        # Update final status to COMPLETED with result ID
-        update_job_status(
-            job_id=job_id,
-            status=JobStatus.COMPLETED.value,
-            progress=100,
-            result_id=training_result_id,
-            status_message=f"Job completed. DS Job ID: {ds_job_id}. Training Result ID: {training_result_id}"
-        )
+        # Format metrics for storage
+        formatted_metrics = json.dumps(metrics_data)
+        logger.info(f"[{job_id}] Creating training result record with metrics...")
+        try:
+            await create_training_result(
+                job_id=job_id,
+                parameter_set_id=parameter_set_id,
+                metrics=formatted_metrics,
+                model_id=current_model_id,
+                duration_seconds=polls * poll_interval,
+                hyperparameters=json.dumps(training_hyperparams)
+            )
+            logger.info(f"[{job_id}] Training result record created")
+        except Exception as e:
+            logger.error(f"[{job_id}] Error creating training result: {str(e)}")
     else:
-        # Job technically completed, but without metrics, we can't create a full result
-        logger.warning(f"[{job_id}] Metrics not found for DS Job {ds_job_id}. Skipping creation of training_result entry.")
-        update_job_status(
-            job_id,
-            JobStatus.COMPLETED.value, # Mark as completed, but indicate missing metrics
-            progress=100,
-            status_message=f"Job completed. DS Job ID: {ds_job_id}. Metrics missing."
-        )
-
-    # Log final artifact locations for reference
-    if current_model_id:
-        logger.info(f"[{job_id}] Final Model ID: {current_model_id} (Results Dir: {results_dir})")
+        logger.warning(f"[{job_id}] No metrics data available")
+    
+    # Save predictions if available
     if predictions_path and os.path.exists(predictions_path):
-        logger.info(f"[{job_id}] Predictions available at: {predictions_path} (in Results Dir: {results_dir})")
-    elif predictions_path:
-         logger.warning(f"[{job_id}] Predictions artifact path specified ({predictions_path}) but file not found.")
+        logger.info(f"[{job_id}] Saving predictions to database...")
+        try:
+            # Process predictions file and save to database
+            prediction_result = save_predictions_to_db(
+                predictions_path=predictions_path,
+                job_id=job_id,
+                model_id=current_model_id
+            )
+            logger.info(f"[{job_id}] Saved {prediction_result['predictions_count']} predictions to database with result_id: {prediction_result['result_id']}")
+        except Exception as e:
+            logger.error(f"[{job_id}] Error saving predictions: {str(e)}")
+    else:
+        logger.warning(f"[{job_id}] No predictions file found at {predictions_path}")
+    
+    # Update job status to completed
+    await update_job_status(job_id, JobStatus.COMPLETED)
+    logger.info(f"[{job_id}] Job processing completed")
 
 
 async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> List[str]:
@@ -481,6 +468,169 @@ async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> List[str]:
     
     # Return any cleanup errors to be handled by caller
     return cleanup_errors
+
+
+def save_predictions_to_db(
+    predictions_path: str, 
+    job_id: str, 
+    model_id: str,
+    direct_db_connection=None
+) -> dict:
+    """
+    Reads prediction results from a CSV file and saves them to the database.
+    
+    Args:
+        predictions_path: Path to the CSV file with predictions
+        job_id: The job ID that produced these predictions
+        model_id: The model ID used for these predictions
+        direct_db_connection: Optional direct database connection to use
+        
+    Returns:
+        Dictionary with result_id and predictions_count
+        
+    Raises:
+        FileNotFoundError: If the predictions file doesn't exist
+        ValueError: If the predictions file has invalid format or missing required columns
+    """
+    # Verify the file exists
+    if not os.path.exists(predictions_path):
+        raise FileNotFoundError(f"Predictions file not found: {predictions_path}")
+    
+    try:
+        # Load predictions from CSV
+        df = pd.read_csv(predictions_path)
+                
+        # Verify required columns exist
+        required_columns = ['barcode', 'artist', 'album', 'cover_type', 
+                           'price_category', 'release_type', 'recording_decade', 
+                           'release_decade', 'style', 'record_year',
+                           '0.05', '0.25', '0.5', '0.75', '0.95']
+        
+        missing_cols = [col for col in required_columns if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Predictions file missing required columns: {missing_cols}")
+        
+        # Generate a UUID for the prediction result
+        result_id = str(uuid.uuid4())
+        
+        # Create a connection to the database
+        conn = direct_db_connection if direct_db_connection else get_db_connection()
+        
+        try:
+            # Ensure schema is applied to this connection
+            from deployment.app.db.schema import SCHEMA_SQL
+            # Применяем схему к этому соединению
+            conn.executescript(SCHEMA_SQL)
+            conn.commit()
+            
+            # Begin transaction
+            conn.execute("BEGIN TRANSACTION")
+            
+            # Create a record in prediction_results table
+            timestamp = datetime.now().isoformat()
+            conn.execute(
+                """
+                INSERT INTO prediction_results 
+                (result_id, job_id, model_id, prediction_date, output_path, summary_metrics) 
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (result_id, job_id, model_id, timestamp, predictions_path, "{}")
+            )
+            
+            # Prepare data for batch insert into fact_predictions
+            predictions_data = []
+            
+            for _, row in df.iterrows():
+                # Get or create multiindex_id
+                multiindex_id = get_or_create_multiindex_id(
+                    barcode=row['barcode'],
+                    artist=row['artist'],
+                    album=row['album'],
+                    cover_type=row['cover_type'],
+                    price_category=row['price_category'],
+                    release_type=row['release_type'],
+                    recording_decade=row['recording_decade'],
+                    release_decade=row['release_decade'],
+                    style=row['style'],
+                    record_year=int(row['record_year']),
+                    connection=conn
+                )
+                
+                # Prepare prediction data
+                prediction_row = (
+                    result_id,
+                    multiindex_id,
+                    timestamp,  # prediction_date
+                    model_id,   # model_id
+                    row['0.05'],
+                    row['0.25'],
+                    row['0.5'],
+                    row['0.75'],
+                    row['0.95'],
+                    timestamp   # created_at
+                )
+                predictions_data.append(prediction_row)
+            
+            # Batch insert all predictions
+            try:
+                # Проверка соединения и таблицы перед вставкой
+                check_cursor = conn.cursor()
+                check_cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='fact_predictions'")
+                table_exists = check_cursor.fetchone()
+                if not table_exists:
+                    raise ValueError("Table fact_predictions does not exist in the database")
+                
+                # Попробуем прямой вызов вместо execute_many
+                cursor = conn.cursor()
+                cursor.executemany(
+                    """
+                    INSERT INTO fact_predictions
+                    (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    predictions_data
+                )
+            except Exception:
+                # Если прямой вызов не сработал, используем execute_many
+                execute_many(
+                    """
+                    INSERT INTO fact_predictions
+                    (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    predictions_data,
+                    conn
+                )
+            
+            # Commit the transaction instead of execute("COMMIT")
+            conn.commit()
+            
+            return {
+                "result_id": result_id,
+                "predictions_count": len(df)
+            }
+            
+        except Exception as e:
+            # Rollback on error
+            try:
+                conn.rollback()
+            except:
+                pass
+            raise e
+        finally:
+            # Не закрываем соединение, если это внешнее соединение
+            if not direct_db_connection and conn:
+                conn.close()
+            
+    except pd.errors.EmptyDataError:
+        raise ValueError("Predictions file is empty")
+    except pd.errors.ParserError:
+        raise ValueError("Predictions file has invalid format")
+    except Exception as e:
+        # Не заворачиваем FileNotFoundError в ValueError
+        if isinstance(e, FileNotFoundError):
+            raise
+        raise ValueError(f"Error processing predictions: {str(e)}")
 
 
 # Main Orchestrator Function
@@ -583,3 +733,44 @@ async def run_job(job_id: str) -> None:
 
         ds_job_info = f"DS Job ID: {ds_job_id}" if ds_job_id else f"DS Job Run Suffix: {ds_job_run_suffix}" if ds_job_run_suffix else "N/A"
         logger.info(f"[{job_id}] Job run processing finished. ({ds_job_info}).")
+
+async def save_model_file_and_db(job_id: str, model_path: str, ds_job_id: str) -> str:
+    """
+    Save model file reference to database and return model_id.
+    
+    Args:
+        job_id: ID of the job
+        model_path: Path to the model file
+        ds_job_id: DataSphere job ID that created the model
+        
+    Returns:
+        model_id: ID of the model record created
+        
+    Raises:
+        Exception: If model file doesn't exist or database operation fails
+    """
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found at {model_path}")
+    
+    # Generate a unique ID for this model
+    model_id = f"model_{uuid.uuid4().hex[:8]}"
+    model_created_at = datetime.now()
+    
+    # Create metadata
+    model_metadata = {
+        "file_size_bytes": os.path.getsize(model_path),
+        "downloaded_from_ds_job": ds_job_id,
+        "original_path": model_path
+    }
+    
+    # Create model record in database
+    create_model_record(
+        model_id=model_id,
+        job_id=job_id,
+        model_path=model_path,
+        created_at=model_created_at,
+        metadata=model_metadata,
+        is_active=False
+    )
+    
+    return model_id

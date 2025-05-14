@@ -63,10 +63,15 @@ def get_datasphere_config() -> Dict[str, Any]:
     return get_config_values().get("datasphere", {})
 
 
+def get_data_retention_config() -> Dict[str, Any]:
+    """Get data retention specific configuration."""
+    return get_config_values().get("data_retention", {})
+
+
 def get_app_config() -> Dict[str, Any]:
     """Get application-level configuration."""
     config = get_config_values()
-    return {k: v for k, v in config.items() if k not in ("api", "db", "datasphere")}
+    return {k: v for k, v in config.items() if k not in ("api", "db", "datasphere", "data_retention")}
 
 
 class APISettings(BaseSettings):
@@ -237,12 +242,63 @@ class DataSphereSettings(BaseSettings):
         super().__init__(**merged_data)
 
 
+class DataRetentionSettings(BaseSettings):
+    """Data retention specific settings."""
+    # Retention periods (in days)
+    sales_retention_days: int = Field(
+        default=int(os.environ.get("RETENTION_SALES_DAYS", 730)),  # ~2 years
+        description="Retention period for sales data in days"
+    )
+    stock_retention_days: int = Field(
+        default=int(os.environ.get("RETENTION_STOCK_DAYS", 730)),  # ~2 years
+        description="Retention period for stock data in days"
+    )
+    prediction_retention_days: int = Field(
+        default=int(os.environ.get("RETENTION_PREDICTION_DAYS", 365)),  # ~1 year
+        description="Retention period for prediction data in days"
+    )
+    
+    # Model management
+    models_to_keep: int = Field(
+        default=int(os.environ.get("RETENTION_MODELS_TO_KEEP", 5)),
+        description="Number of models to keep per parameter set"
+    )
+    inactive_model_retention_days: int = Field(
+        default=int(os.environ.get("RETENTION_INACTIVE_MODEL_DAYS", 90)),  # ~3 months
+        description="Retention period for inactive models in days"
+    )
+    
+    # Execution settings
+    cleanup_enabled: bool = Field(
+        default=os.environ.get("RETENTION_CLEANUP_ENABLED", "true").lower() == "true",
+        description="Enable automatic data cleanup"
+    )
+    cleanup_schedule: str = Field(
+        default=os.environ.get("RETENTION_CLEANUP_SCHEDULE", "0 3 * * 0"),  # 3:00 AM every Sunday
+        description="Cleanup schedule in cron format"
+    )
+    
+    model_config = SettingsConfigDict(
+        env_prefix="RETENTION_",
+        env_file=".env",
+        extra="ignore",
+        env_nested_delimiter="__"
+    )
+    
+    def __init__(self, **data):
+        # Merge config file values with the incoming data
+        config_values = get_data_retention_config()
+        merged_data = {**config_values, **data}
+        super().__init__(**merged_data)
+
+
 class AppSettings(BaseSettings):
     """Main application settings container."""
     # Explicitly declare API and DB settings as fields
     api: APISettings = Field(default_factory=APISettings)
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
     datasphere: DataSphereSettings = Field(default_factory=DataSphereSettings)
+    data_retention: DataRetentionSettings = Field(default_factory=DataRetentionSettings)
     
     env: str = Field(
         default=os.environ.get("APP_ENV", "development"),
