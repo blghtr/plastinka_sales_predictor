@@ -111,6 +111,17 @@ CREATE TABLE IF NOT EXISTS jobs (
     progress REAL           -- 0-100 percentage
 );
 
+-- Job status history table for tracking status changes over time
+CREATE TABLE IF NOT EXISTS job_status_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    status TEXT NOT NULL,    -- 'pending', 'running', 'completed', 'failed'
+    progress REAL,           -- 0-100 percentage
+    status_message TEXT,     -- Detailed status message
+    updated_at TIMESTAMP NOT NULL,
+    FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+);
+
 CREATE TABLE IF NOT EXISTS data_upload_results (
     result_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
@@ -192,6 +203,11 @@ CREATE INDEX IF NOT EXISTS idx_predictions_date_multiindex ON fact_predictions(p
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type);
 
+-- Index for job status history
+CREATE INDEX IF NOT EXISTS idx_job_history_job_id ON job_status_history(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_history_updated_at ON job_status_history(updated_at);
+CREATE INDEX IF NOT EXISTS idx_job_history_job_updated ON job_status_history(job_id, updated_at);
+
 -- Indexes for models and training results to improve data retention queries
 CREATE INDEX IF NOT EXISTS idx_models_active ON models(is_active);
 CREATE INDEX IF NOT EXISTS idx_models_created ON models(created_at);
@@ -226,6 +242,13 @@ def init_db(db_path: str = "deployment/data/plastinka.db"):
         
         # Execute schema creation SQL
         cursor.executescript(SCHEMA_SQL)
+        
+        # Логируем структуру таблицы training_results
+        cursor.execute("PRAGMA table_info(training_results)")
+        columns = cursor.fetchall()
+        print(f"training_results columns in {db_path}:")
+        for col in columns:
+            print(col)
         
         # Commit changes and close connection
         conn.commit()

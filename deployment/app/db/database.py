@@ -198,6 +198,7 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
 
 def update_job_status(job_id: str, status: str, progress: float = None, 
                       result_id: str = None, error_message: str = None,
+                      status_message: str = None,
                       connection: sqlite3.Connection = None) -> None:
     """
     Update job status and related fields
@@ -208,6 +209,7 @@ def update_job_status(job_id: str, status: str, progress: float = None,
         progress: Optional progress value (0-100)
         result_id: Optional result ID if job completed
         error_message: Optional error message if job failed
+        status_message: Optional detailed status message (stored in job_status_history)
         connection: Optional existing database connection to use
     """
     now = datetime.now().isoformat()
@@ -235,12 +237,49 @@ def update_job_status(job_id: str, status: str, progress: float = None,
     query = ", ".join(query_parts) + " WHERE job_id = ?"
     params.append(job_id)
     
+    # Create a database connection if one wasn't provided
+    conn_created = False
+    if not connection:
+        connection = get_db_connection()
+        conn_created = True
+    
     try:
+        # Update the job status
         execute_query(query, tuple(params), connection=connection)
-        logger.info(f"Updated job {job_id}: status={status}, progress={progress}")
+        
+        # Record in job_status_history if available
+        try:
+            # Check if job_status_history table exists
+            table_exists = execute_query(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='job_status_history'",
+                fetchall=False,
+                connection=connection
+            )
+            
+            if table_exists:
+                history_query = """
+                    INSERT INTO job_status_history 
+                    (job_id, status, progress, status_message, updated_at) 
+                    VALUES (?, ?, ?, ?, ?)
+                """
+                history_params = (job_id, status, progress or 0, status_message, now)
+                execute_query(history_query, history_params, connection=connection)
+        except Exception as history_error:
+            # Log but don't fail the main operation if history insert fails
+            logger.warning(f"Could not update job_status_history: {history_error}")
+        
+        if conn_created:
+            connection.commit()
+            
+        logger.info(f"Updated job {job_id}: status={status}, progress={progress}, message={status_message}")
     except DatabaseError as e:
+        if conn_created:
+            connection.rollback()
         logger.error(f"Failed to update job {job_id}: {str(e)}")
         raise
+    finally:
+        if conn_created:
+            connection.close()
 
 def get_job(job_id: str, connection: sqlite3.Connection = None) -> Dict:
     """

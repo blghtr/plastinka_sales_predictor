@@ -417,8 +417,8 @@ async def _process_job_results(
                 parameter_set_id=parameter_set_id,
                 metrics=formatted_metrics,
                 model_id=current_model_id,
-                duration_seconds=polls * poll_interval,
-                hyperparameters=json.dumps(training_hyperparams)
+                duration=polls * poll_interval,
+                parameters=json.dumps(training_hyperparams)
             )
             logger.info(f"[{job_id}] Training result record created")
         except Exception as e:
@@ -443,7 +443,7 @@ async def _process_job_results(
         logger.warning(f"[{job_id}] No predictions file found at {predictions_path}")
     
     # Update job status to completed
-    await update_job_status(job_id, JobStatus.COMPLETED)
+    update_job_status(job_id, JobStatus.COMPLETED)
     logger.info(f"[{job_id}] Job processing completed")
 
 
