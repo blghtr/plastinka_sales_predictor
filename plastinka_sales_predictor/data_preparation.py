@@ -571,6 +571,9 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             static_covariates_item = self.static_covariates_mapping.loc[
                 item_multiidx
             ]
+            static_covariates_item_array = np.expand_dims(
+                static_covariates_item.values, 1
+            ).T
 
         if self.scaler is not None:
             series_item = self.scaler.transform(series_item)
@@ -585,7 +588,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             past_covariates_item[:-self.output_chunk_length],
             future_covariates_item[:-self.output_chunk_length],
             future_covariates_item[-self.output_chunk_length:],
-            np.expand_dims(static_covariates_item.values, 1).T,
+            static_covariates_item_array,
             self.reweight_fn(
                 series_item[:-self.output_chunk_length] *
                 soft_availability
@@ -718,10 +721,12 @@ def validate_date_columns(df: pd.DataFrame) -> pd.DataFrame:
             valid_str = series.str.extract('(^\d+)')[0]
             padding_9 = (4 - valid_str.str.len().astype(int)).map(lambda x: '9' * x)
             padding_1 = (4 - valid_str.str.len().astype(int)).map(lambda x: '1' * x)
-            filled = np.where(is_not_20, valid_str + padding_9, valid_str + padding_1)
-        except:
-            pass
-        return filled
+            return np.where(is_not_20, valid_str + padding_9, valid_str + padding_1)
+
+        except Exception as e:
+            import logging
+            logging.warning(f"Error in fill_partial_years_np_where: {e}")
+            return series  # Return original series on error instead of silently failing
 
     validated = df.copy()
 
@@ -738,8 +743,16 @@ def validate_date_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     valid_rereleases = validated[(validated['Тип'] != 'Оригинал') & (validated['Год выпуска'].notna())]
     if len(valid_rereleases) > 10:
-        mean_gap = (valid_rereleases['Год выпуска'] - valid_rereleases['Год записи']).mean().round().astype(
-            int)
+        diff_years = valid_rereleases['Год выпуска'] - valid_rereleases['Год записи']
+        # Check for valid (non-NaN) differences before calculating mean
+        if not diff_years.empty and not diff_years.isnull().all():
+            mean_gap = diff_years.mean()
+            if pd.notna(mean_gap):
+                mean_gap = int(round(mean_gap))
+            else:
+                mean_gap = 15  # Default if mean is NaN
+        else:
+            mean_gap = 15  # Default if no valid differences
     else:
         mean_gap = 15
 
@@ -766,7 +779,15 @@ def validate_categories(df: pd.DataFrame) -> pd.DataFrame:
             g_known = validated.loc[filter_condition, 'Конверт'].dropna()
             idxs = g_nan.index
             if g_known.shape[0]:
-                validated.loc[idxs] = validated.loc[idxs].fillna({'Конверт': g_known.mode().iloc[0]})
+                mode_val = g_known.mode()
+                if not mode_val.empty:
+                    validated.loc[idxs] = validated.loc[idxs].fillna({'Конверт': mode_val.iloc[0]})
+                else:
+                    # If no mode found (all values unique or other edge case), use the first value
+                    import logging
+                    logging.warning("No mode found for 'Конверт' in group. Using first value if available.")
+                    if len(g_known) > 0:
+                        validated.loc[idxs] = validated.loc[idxs].fillna({'Конверт': g_known.iloc[0]})
     validated['Конверт'] = validated['Конверт'].map(lambda x: 'Sealed' if x == 'SS' else 'Opened')
     return validated
 

@@ -225,8 +225,7 @@ def test_isolated_get_preprocessed_df_sales_with_stock_bins():
 PROCESS_DATA_FUNC_NAME = "process_data"
 
 def test_isolated_process_data():
-    # process_data takes file paths. The generator script saves these paths as JSON strings in .json files.
-    # The script saved parameters as a pickle instead of individual files
+    # process_data takes file paths. The parameters were saved in input_parameters.pkl
     input_parameters = load_isolated_input_artifact(PROCESS_DATA_FUNC_NAME, "input_parameters.pkl")
     
     # Extract parameters from the loaded object
@@ -234,10 +233,7 @@ def test_isolated_process_data():
     sales_path_str = input_parameters.get("sales_path", str(SAMPLE_SALES_PATH))
     cutoff_date = input_parameters.get("cutoff_date", CUTOFF_DATE)
 
-    # The loaded paths might be relative to the project root where generate_pipeline_examples.py runs.
-    # Ensure they are correctly resolved if needed, or assume they are usable as is.
-    # For this test, we assume the paths saved by generate_pipeline_examples are directly usable.
-
+    # The process_data function will load the data from these paths directly
     actual_features_dict = process_data(stock_path_str, sales_path_str, cutoff_date)
     
     expected_outputs_map = {
@@ -273,32 +269,35 @@ def test_isolated_PlastinkaTrainingTSDataset():
     
     monthly_sales_pivot = load_isolated_input_artifact(TRAINING_DATASET_FUNC_NAME, "monthly_sales_pivot.pkl")
     
-    # Parameters as used in generate_pipeline_examples.py (or a simplified version for isolated test if applicable)
-    # These might need to be loaded from a config or defined if they are complex
-    static_transformer = MultiColumnLabelBinarizer() # Or load if pickled
-    scaler = GlobalLogMinMaxScaler() # Or load if pickled
-    # Load other params from a json if they were saved, or define directly
+    # Use the same parameters as in generate_pipeline_examples.py
+    static_transformer = MultiColumnLabelBinarizer()
+    scaler = GlobalLogMinMaxScaler()
     
-    # Directly define standard parameters since dataset_params.json doesn't exist in the artifacts
-    
+    # Important: Match these parameters exactly with generate_pipeline_examples.py
     dataset_params = {
-        "static_features": ['Конверт','Тип','Ценовая категория','Стиль','Год записи','Год выпуска'], 
-        "input_chunk_length": monthly_sales_pivot.shape[0] - 1,
-        "output_chunk_length": 1,
-        "past_covariates_span": 14,
+        "static_features": ['Тип', 'Конверт', 'Стиль', 'Ценовая категория'],
+        "input_chunk_length": 6,
+        "output_chunk_length": 3,
+        # Keep other parameters that might be needed
+        "past_covariates_span": 3, # Align with default used by generator
         "past_covariates_fnames": ['Тип','Конверт','Стиль','Ценовая категория'],
-        "minimum_sales_months": 2
+        "minimum_sales_months": 1 # Align with default used by generator
     }
     
     dataset = PlastinkaTrainingTSDataset(
         stock_features=stock_features,
         monthly_sales=monthly_sales_pivot,
-        static_transformer=static_transformer, # Assuming new instances are okay for testing structure
-        scaler=scaler, # Assuming new instances are okay for testing structure
+        static_transformer=static_transformer,
+        scaler=scaler,
         **dataset_params
     )
     actual_dataset_dict = dataset.to_dict()
-    expected_path = GENERAL_EXAMPLES_DIR / "PlastinkaTrainingTSDataset_values.json" # As per generate_pipeline_examples
-    # Or if there is an isolated output: ISOLATED_TESTS_BASE_DIR / TRAINING_DATASET_FUNC_NAME / "outputs" / "dataset_dict.json"
-    # Using general example path based on current understanding from generate_pipeline_examples.py for this specific full dataset output
+    
+    # Use the isolated test expected output instead of the general example
+    expected_path = ISOLATED_TESTS_BASE_DIR / TRAINING_DATASET_FUNC_NAME / "outputs" / "full_dataset_to_dict.pkl"
+    
+    # Fall back to general example only if isolated test output is not available
+    if not expected_path.exists():
+        expected_path = GENERAL_EXAMPLES_DIR / "PlastinkaTrainingTSDataset_values.json"
+        
     _run_dataset_test(actual_dataset_dict, expected_path, "PlastinkaTrainingTSDataset")

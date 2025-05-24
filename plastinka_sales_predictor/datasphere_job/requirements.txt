@@ -1,0 +1,10 @@
+pandas>=2.2.3
+psycopg2-binary>=2.9.9
+darts>=0.34.0
+scikit-learn>=1.4.1
+numpy>=1.26.4
+matplotlib>=3.10.1
+pytorch-lightning>=2.2.1
+torch>=2.2.0
+pyarrow>=19.0.1
+pydantic>=2.6.3 

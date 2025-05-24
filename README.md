@@ -19,16 +19,15 @@ Plastinka Sales Predictor uses a TiDE (Time-series Dense Encoder) deep learning 
 ```
 plastinka_sales_predictor/
 ├── __init__.py                 # Module exports
-├── data_preparation.py         # Data transformations and dataset creation  
+├── callbacks.py                # Training callbacks
+├── data_preparation.py         # Data transformations and dataset creation
+├── logger_setup.py             # Logging configuration
+├── losses.py                   # Custom loss functions
+├── metrics.py                  # Custom evaluation metrics
 ├── training_utils.py           # Model training utilities
 ├── tuning_utils.py             # Hyperparameter tuning
-├── metrics.py                  # Custom evaluation metrics
-├── losses.py                   # Custom loss functions
-├── callbacks.py                # Training callbacks
-├── logger_setup.py             # Logging configuration
-└── cloud_functions/            # Deployment components
-    ├── prediction/             # Prediction pipeline
-    └── training/               # Training pipeline
+└── datasphere_job/             # Files specific to DataSphere job execution
+    └── requirements.txt        # Python dependencies for the DataSphere job
 ```
 
 ## Installation
@@ -50,10 +49,13 @@ from plastinka_sales_predictor.data_preparation import (
 )
 
 # Process raw data
+# NOTE: The following paths point to placeholder/sample files in the 'examples' directory.
+# Replace 'examples/data/stocks_placeholder.txt' with your actual Excel file (e.g., stocks.xlsx).
+# Populate 'examples/data/sales_data/' with your actual sales data files.
 features = process_data(
-    stocks_path="./datasets/raw_data/stocks.xlsx",
-    sales_path="./datasets/raw_data/sales",
-    cutoff_date="30-09-2022"
+    stocks_path="examples/data/stocks_placeholder.txt", # Or your actual 'stocks.xlsx'
+    sales_path="examples/data/sales_data/",
+    cutoff_date="30-09-2022" # Adjust as needed for your data
 )
 
 # Generate features and create dataset
@@ -80,19 +82,22 @@ from plastinka_sales_predictor import (
 import json
 
 # Load configuration
-with open("configs/model_config.json", "r") as f:
+# NOTE: This example uses a sample configuration file.
+with open("examples/configs/model_config.json", "r") as f:
     config = json.load(f)
 
 # Prepare model and train
+# Ensure the 'dataset' object is created as shown in the Data Preparation section.
 model = train_model(
     *prepare_for_training(
         config=config,
-        ds=dataset
+        ds=dataset # Assumes 'dataset' is available from the Data Preparation step
     )
 )
 
 # Save model
-model.save("models/my_model.pt")
+# NOTE: Ensure the 'examples/models/' directory exists or is created before running.
+model.save("examples/models/my_model.pt")
 ```
 
 ### Prediction

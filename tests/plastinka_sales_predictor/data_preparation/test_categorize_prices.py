@@ -1,16 +1,32 @@
 import pandas as pd
 import pytest
+import pickle
+from pathlib import Path
 from plastinka_sales_predictor.data_preparation import categorize_prices
 from tests.plastinka_sales_predictor.data_preparation.test_utils import compare_categorical_columns
 
+# Define path to example data
+ISOLATED_TESTS_BASE_DIR = Path("tests/example_data/isolated_tests")
+
+def load_sample_data():
+    """Load stock data from pkl file"""
+    # First check if there's a dedicated sample for categorize_prices tests
+    sample_path = ISOLATED_TESTS_BASE_DIR / "process_raw" / "inputs" / "stock_df_raw.pkl"
+    if sample_path.exists():
+        with open(sample_path, 'rb') as f:
+            return pickle.load(f)
+    else:
+        # Fallback to Excel file if pkl not available
+        return pd.read_excel('tests/example_data/sample_stocks.xlsx')
 
 def test_categorize_prices_quantiles():
-    # Arrange: читаем тестовый файл
-    df = pd.read_excel('tests/example_data/sample_stocks.xlsx')
-    # Act: применяем категоризацию по квантилям
+    # Arrange: load test data from pkl file
+    df = load_sample_data()
+    
+    # Act: apply categorization by quantiles
     result_df, bins = categorize_prices(df)
     
-    # Assert: появился столбец, количество уникальных категорий = 7 (по умолчанию q)
+    # Assert: check that column exists, with 7 unique categories (default q)
     assert 'Ценовая категория' in result_df.columns, "Column 'Ценовая категория' not found in result"
     
     unique_categories = result_df['Ценовая категория'].unique()
@@ -22,7 +38,7 @@ def test_categorize_prices_quantiles():
     
     assert bins is not None, "Bins should not be None"
     
-    # Проверяем наличие NaN - допускаем не более 2 таких значений
+    # Check for NaN values - allow up to 2 such values
     null_count = result_df['Ценовая категория'].isnull().sum()
     assert null_count <= 2, f"Found {null_count} null values in 'Ценовая категория' column (max allowed: 2)"
     if null_count > 0:
@@ -30,15 +46,16 @@ def test_categorize_prices_quantiles():
 
 
 def test_categorize_prices_with_bins():
-    df = pd.read_excel('tests/example_data/sample_stocks.xlsx')
-    # Сначала получаем бины
+    df = load_sample_data()
+    
+    # First get the bins
     _, bins = categorize_prices(df)
-    # Теперь передаем их явно
+    # Now pass them explicitly
     result_df, bins2 = categorize_prices(df, bins=bins)
     
     assert 'Ценовая категория' in result_df.columns, "Column 'Ценовая категория' not found in result"
     
-    # Бины должны совпадать
+    # Bins should match
     bins_equal = all(bins == bins2)
     if not bins_equal:
         differences = [(i, b1, b2) for i, (b1, b2) in enumerate(zip(bins, bins2)) if b1 != b2]
@@ -46,17 +63,17 @@ def test_categorize_prices_with_bins():
 
 
 def test_categorize_prices_expected_bins():
-    # Искусственные данные с известными значениями
+    # Artificial data with known values
     df = pd.DataFrame({'Цена, руб.': [100, 200, 300, 400, 500, 600, 700]})
-    # q=[0, 0.5, 1] делит на две категории: <=400 и >400
+    # q=[0, 0.5, 1] divides into two categories: <=400 and >400
     result_df, bins = categorize_prices(df, q=[0, 0.5, 1])
     
-    # Проверяем, что значения <=400 попали в первую категорию, остальные — во вторую
+    # Check that values <=400 are in the first category, the rest in the second
     cat = result_df['Ценовая категория']
-    # Получаем уникальные категории
+    # Get unique categories
     cats = cat.unique()
     
-    # Проверяем, что их две
+    # Check there are two of them
     assert len(cats) == 2, f"Expected 2 categories, got {len(cats)}: {cats}"
     
     # Check distribution in each category

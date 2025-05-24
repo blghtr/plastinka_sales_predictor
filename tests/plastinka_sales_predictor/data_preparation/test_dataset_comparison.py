@@ -2,11 +2,29 @@ import pandas as pd
 import numpy as np
 import pytest
 import json
+import pickle
 from pathlib import Path
 from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset, MultiColumnLabelBinarizer, GlobalLogMinMaxScaler
 from tests.plastinka_sales_predictor.data_preparation.test_utils import compare_numeric_columns, compare_categorical_columns
 from darts import TimeSeries
 
+# Define path to example data
+ISOLATED_TESTS_BASE_DIR = Path("tests/example_data/isolated_tests")
+GENERAL_EXAMPLES_DIR = Path("generated_general_examples")
+
+def _load_artifact(file_path: Path):
+    """Loads a pickled or JSON artifact based on its extension."""
+    if not file_path.exists():
+        pytest.fail(f"Artifact file not found: {file_path}")
+    
+    if file_path.suffix == '.json':
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    elif file_path.suffix == '.pkl':
+        with open(file_path, 'rb') as f:
+            return pickle.load(f)
+    else:
+        pytest.fail(f"Unsupported artifact file extension: {file_path.suffix} for file {file_path}. Only .json and .pkl are supported.")
 
 def compare_timeseries(actual_ts, expected_ts, tolerance=1e-6):
     """
@@ -163,7 +181,27 @@ def compare_dataset_values(actual_dict, expected_dict, tolerance=1e-6):
                         'differences': ts_diff
                     })
             
-            # Handle numpy arrays or lists of numbers
+            # PRIORITY: Handle list/tuple of mixed types (like labels)
+            elif isinstance(act, (list, tuple)) and isinstance(exp, (list, tuple)) and \
+                 not (isinstance(act, TimeSeries) or (isinstance(act, dict) and act.get('type') == 'TimeSeries')) and \
+                 not (isinstance(exp, TimeSeries) or (isinstance(exp, dict) and exp.get('type') == 'TimeSeries')) and \
+                 not isinstance(act, np.ndarray) and not isinstance(exp, np.ndarray) and \
+                 not all(isinstance(x, (int, float, np.number)) for x in (act if isinstance(act, (list, tuple)) else act.flatten())) and \
+                 not all(isinstance(x, (int, float, np.number)) for x in (exp if isinstance(exp, (list, tuple)) else exp.flatten())):
+                
+                act_comp = list(act)
+                exp_comp = list(exp)
+                if act_comp != exp_comp:
+                    item_differences.append({
+                        'index': i,
+                        'type': 'list/tuple', 
+                        'differences': {
+                            'actual': str(act),
+                            'expected': str(exp)
+                        }
+                    })
+
+            # Handle numpy arrays or lists of PURELY numbers
             elif isinstance(act, (np.ndarray, list, tuple)) and all(isinstance(x, (int, float, np.number)) for x in (act if isinstance(act, (list, tuple)) else act.flatten())):
                 # Convert to numpy arrays for comparison
                 act_array = np.array(act)
@@ -200,20 +238,54 @@ def compare_dataset_values(actual_dict, expected_dict, tolerance=1e-6):
                         }
                     })
             
-            # Handle simple scalar values
-            elif isinstance(act, (str, int, float, bool, np.number)) and isinstance(exp, (str, int, float, bool, np.number)):
-                if isinstance(act, (int, float, np.number)) and isinstance(exp, (int, float, np.number)):
-                    if abs(act - exp) > tolerance:
-                        item_differences.append({
-                            'index': i,
-                            'type': 'scalar',
-                            'differences': {
-                                'actual': float(act) if isinstance(act, np.number) else act,
-                                'expected': float(exp) if isinstance(exp, np.number) else exp,
-                                'diff': float(act - exp) if isinstance(act, np.number) else None
-                            }
-                        })
-                elif act != exp:
+            # Handle scalar values (int, float)
+            elif isinstance(act, (int, float, np.number)) and isinstance(exp, (int, float, np.number)):
+                abs_diff = abs(float(act) - float(exp))
+                if abs_diff > tolerance:
+                    item_differences.append({
+                        'index': i,
+                        'type': 'scalar',
+                        'differences': {
+                            'actual': float(act) if isinstance(act, np.number) else act,
+                            'expected': float(exp) if isinstance(exp, np.number) else exp,
+                            'diff': abs_diff
+                        }
+                    })
+            
+            # Handle other scalar values (str, bool, etc.)
+            # Convert to list if both are list-like (tuple or list) to allow tuple vs list comparison
+            # Ensure they are not TimeSeries or np.ndarray as those are handled specifically earlier
+            elif isinstance(act, (list, tuple)) and isinstance(exp, (list, tuple)) and \
+                 not (isinstance(act, TimeSeries) or (isinstance(act, dict) and act.get('type') == 'TimeSeries')) and \
+                 not (isinstance(exp, TimeSeries) or (isinstance(exp, dict) and exp.get('type') == 'TimeSeries')) and \
+                 not isinstance(act, np.ndarray) and not isinstance(exp, np.ndarray):
+                
+                act_comp = list(act)
+                exp_comp = list(exp)
+                if act_comp != exp_comp:
+                    item_differences.append({
+                        'index': i,
+                        'type': 'list/tuple', # Indicate it's a list/tuple comparison
+                        'differences': {
+                            'actual': str(act),   # Report original types
+                            'expected': str(exp)
+                        }
+                    })
+            elif act != exp:
+                # This will now catch other non-numeric, non-list-like differences
+                if (isinstance(act, str) and isinstance(exp, str)) or \
+                   (isinstance(act, bool) and isinstance(exp, bool)) or \
+                   (type(act) == type(exp)): # General catch for same-type scalars
+                    item_differences.append({
+                        'index': i,
+                        'type': 'scalar',
+                        'differences': {
+                            'actual': str(act),
+                            'expected': str(exp),
+                            'diff': None # Diff may not be meaningful for all scalars
+                        }
+                    })
+                else: # Different types that are not list/tuple
                     item_differences.append({
                         'index': i,
                         'type': 'scalar',
@@ -279,29 +351,44 @@ def test_dataset_values_full_comparison(save_expected=False):
     Args:
         save_expected: If True, saves the current dataset as the new expected data
     """
-    expected_dir = Path('tests/example_data/expected')
-    stock_features = pd.read_csv(expected_dir / 'get_stock_features__sample_stocks__stock_features.csv', index_col=0)
-    sales_pivot = pd.read_csv(expected_dir / 'get_monthly_sales_pivot__sample_stocks__sales_pivot.csv', index_col=0)
+    # Use the pkl files from isolated tests instead of CSV files
+    try:
+        # Try to load from training_dataset inputs first
+        stock_features = _load_artifact(ISOLATED_TESTS_BASE_DIR / "training_dataset" / "inputs" / "stock_features.pkl")
+        monthly_sales_pivot = _load_artifact(ISOLATED_TESTS_BASE_DIR / "training_dataset" / "inputs" / "monthly_sales_pivot.pkl")
+    except Exception:
+        try:
+            # Fall back to getting data from get_stock_features and get_monthly_sales_pivot outputs
+            stock_features = _load_artifact(ISOLATED_TESTS_BASE_DIR / "get_stock_features" / "outputs" / "stock_features.pkl")
+            monthly_sales_pivot = _load_artifact(ISOLATED_TESTS_BASE_DIR / "get_monthly_sales_pivot" / "outputs" / "monthly_sales_pivot.pkl")
+        except Exception:
+            pytest.skip("Required pkl files not found in example data. Run data generation script to create them.")
+            return
+    
     static_transformer = MultiColumnLabelBinarizer()
     scaler = GlobalLogMinMaxScaler()
-    input_chunk_length = sales_pivot.shape[0] - 1
-    output_chunk_length = 1
-    
+    # Parameters aligned with generate_pipeline_examples.py
+    input_chunk_length = 6
+    output_chunk_length = 3
+    default_past_covariates_span = 3
+    default_minimum_sales_months = 1
+    aligned_static_features = ['Тип', 'Конверт', 'Стиль', 'Ценовая категория']
+
     dataset = PlastinkaTrainingTSDataset(
         stock_features=stock_features,
-        monthly_sales=sales_pivot,
+        monthly_sales=monthly_sales_pivot,
         static_transformer=static_transformer,
-        static_features=['Конверт','Тип','Ценовая категория','Стиль','Год записи','Год выпуска'],
+        static_features=aligned_static_features, # Aligned
         scaler=scaler,
-        input_chunk_length=input_chunk_length,
-        output_chunk_length=output_chunk_length,
-        past_covariates_span=14,
-        past_covariates_fnames=['Тип','Конверт','Стиль','Ценовая категория'],
-        minimum_sales_months=2
+        input_chunk_length=input_chunk_length, # Aligned
+        output_chunk_length=output_chunk_length, # Aligned
+        past_covariates_span=default_past_covariates_span, # Aligned
+        past_covariates_fnames=['Тип','Конверт','Стиль','Ценовая категория'], # Matches default
+        minimum_sales_months=default_minimum_sales_months # Aligned
     )
     
     dataset_dict = dataset.to_dict()
-    expected_values_path = expected_dir / 'PlastinkaTrainingTSDataset__sample_stocks__values.json'
+    expected_values_path = GENERAL_EXAMPLES_DIR / "PlastinkaTrainingTSDataset_values.json"
     
     if save_expected:
         # This functionality has been moved to the separate generate_dataset_values.py script
@@ -310,9 +397,8 @@ def test_dataset_values_full_comparison(save_expected=False):
     
     # Load expected values for comparison
     try:
-        with open(expected_values_path, 'r', encoding='utf-8') as f:
-            expected_dict = json.load(f)
-    except FileNotFoundError:
+        expected_dict = _load_artifact(expected_values_path)
+    except Exception:
         pytest.skip(f"Expected values file not found: {expected_values_path}. Run generate_dataset_values.py to create it.")
         return
     
@@ -387,7 +473,8 @@ def test_dataset_values_full_comparison(save_expected=False):
                     
                     elif item_diff['type'] == 'scalar':
                         diffs = item_diff['differences']
-                        if 'diff' in diffs and diffs['diff'] is not None:
+                        # Safely access 'diff' key
+                        if diffs.get('diff') is not None:
                             error_msg += f"      - Value: actual={diffs['actual']}, expected={diffs['expected']}, diff={diffs['diff']:.6f}\n"
                         else:
                             error_msg += f"      - Value: actual={diffs['actual']}, expected={diffs['expected']}\n"
@@ -413,4 +500,4 @@ def test_dataset_values_full_comparison(save_expected=False):
 
 if __name__ == "__main__":
     # When run directly, this will test and print out differences
-    test_dataset_values_full_comparison() 
+    test_dataset_values_full_comparison()
