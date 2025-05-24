@@ -522,13 +522,14 @@ class TestDatabase(unittest.TestCase):
         # Arrange
         job_id = create_job("training", connection=self.conn)
         model_id = "model-123"
+        parameter_set_id = "param-set-123"
         metrics = {"accuracy": 0.95, "loss": 0.05}
         parameters = {"epochs": 100, "batch_size": 32}
-        duration = 3600  # seconds
+        duration = 3600
         
         # Act
         result_id = create_training_result(
-            job_id, model_id, metrics, parameters, duration, connection=self.conn
+            job_id, model_id, parameter_set_id, metrics, parameters, duration, connection=self.conn
         )
         
         # Assert
@@ -536,6 +537,7 @@ class TestDatabase(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["job_id"], job_id)
         self.assertEqual(result["model_id"], model_id)
+        self.assertEqual(result["parameter_set_id"], parameter_set_id)
         self.assertEqual(result["duration"], duration)
         
         # Verify metrics and parameters were stored correctly
@@ -557,13 +559,12 @@ class TestDatabase(unittest.TestCase):
         # Arrange
         job_id = create_job("prediction", connection=self.conn)
         model_id = "model-123"
-        prediction_date = datetime.now()
         output_path = "/path/to/predictions.csv"
         summary_metrics = {"mse": 0.01, "mae": 0.05}
         
         # Act
         result_id = create_prediction_result(
-            job_id, model_id, prediction_date, output_path, summary_metrics, connection=self.conn
+            job_id, model_id, output_path, summary_metrics, connection=self.conn
         )
         
         # Assert
@@ -572,7 +573,6 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(result["job_id"], job_id)
         self.assertEqual(result["model_id"], model_id)
         self.assertEqual(result["output_path"], output_path)
-        self.assertEqual(result["prediction_date"], prediction_date.isoformat())
         
         # Verify metrics were stored correctly
         stored_metrics = json.loads(result["summary_metrics"])

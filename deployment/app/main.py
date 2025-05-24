@@ -9,19 +9,19 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 
 # Import configuration
-from app.config import settings
+from deployment.app.config import settings
 
 # Import database initializer
-from app.db.schema import init_db
+from deployment.app.db.schema import init_db
 
 # Import API routers
-from app.api.jobs import router as jobs_router
-from app.api.health import router as health_router
-from app.api.models_params import router as models_params_router
-from app.api.admin import router as admin_router
+from deployment.app.api.jobs import router as jobs_router
+from deployment.app.api.health import router as health_router
+from deployment.app.api.models_params import router as models_params_router
+from deployment.app.api.admin import router as admin_router
 
 # Import utils
-from app.utils.error_handling import configure_error_handlers
+from deployment.app.utils.error_handling import configure_error_handlers
 
 # Create directories
 Path("deployment/data").mkdir(parents=True, exist_ok=True)

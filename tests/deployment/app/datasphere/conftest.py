@@ -24,7 +24,7 @@ from deployment.app.db.database import (
 )
 from deployment.app.db.schema import init_db, SCHEMA_SQL
 from deployment.app.models.api_models import (
-    JobStatus, JobType, TrainingParams, 
+    JobStatus, JobType, TrainingParams,
     ModelConfig, OptimizerConfig, LRSchedulerConfig,
     TrainingDatasetConfig
 )
@@ -32,7 +32,6 @@ from deployment.app.services.datasphere_service import run_job, save_predictions
 from deployment.datasphere.client import DataSphereClient, DataSphereClientError
 
 # Constants for tests
-TEST_DS_JOB_ID = "ds_job_" + str(uuid.uuid4())
 TEST_MODEL_ID = "model_" + str(uuid.uuid4())
 
 # Sample predictions data for tests
@@ -203,6 +202,22 @@ def setup_db_mocks():
                 {'job_id': 'test-job-id', 'status': 'running', 'progress': 50, 'status_message': 'Running'},
                 {'job_id': 'test-job-id', 'status': 'completed', 'progress': 100, 'status_message': 'Completed'}
             ]
+        elif 'fact_predictions' in query and fetchall:
+            # Возвращаем имитацию записей предсказаний на основе SAMPLE_PREDICTIONS
+            predictions = []
+            for i in range(len(SAMPLE_PREDICTIONS["barcode"])):
+                model_id = params[0] if params else "test_model_id"
+                pred = {
+                    'object_id': f"obj_{i+1}",
+                    'q05': SAMPLE_PREDICTIONS["0.05"][i],
+                    'q25': SAMPLE_PREDICTIONS["0.25"][i],
+                    'q50': SAMPLE_PREDICTIONS["0.5"][i],
+                    'q75': SAMPLE_PREDICTIONS["0.75"][i],
+                    'q95': SAMPLE_PREDICTIONS["0.95"][i],
+                    'model_id': model_id
+                }
+                predictions.append(pred)
+            return predictions
         elif fetchall:
             return [{'id': 1}, {'id': 2}]
         else:
@@ -256,13 +271,13 @@ def setup_temp_db():
     debug_cursor = debug_conn.cursor()
     debug_cursor.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN "
-        "('dim_multiindex_mapping', 'fact_predictions', 'prediction_results', 'models', 'jobs', 'job_status_history')"
+        "('dim_multiindex_mapping', 'fact_predictions', 'prediction_results', 'models', 'jobs', 'job_status_history', 'parameter_sets')"
     )
     table_count = debug_cursor.fetchone()[0]
     debug_conn.close()
     
     # Убеждаемся, что таблицы созданы
-    assert table_count >= 5, f"Database should have at least 5 required tables, but found {table_count}"
+    assert table_count >= 6, f"Database should have at least 6 required tables, but found {table_count}"
     
     # Создаем соединение для тестов
     conn = sqlite3.connect(db_path)
@@ -271,23 +286,15 @@ def setup_temp_db():
     
     # Вставляем тестовые данные
     parameter_set_id = 1
-    params = {
-        "input_chunk_length": 12,
-        "output_chunk_length": 6,
-        "hidden_size": 64,
-        "lstm_layers": 2,
-        "dropout": 0.2,
-        "batch_size": 32,
-        "max_epochs": 10,
-        "learning_rate": 0.001
-    }
+    params = create_training_params()
+    params_dict = params.model_dump()
     
     # Вставляем тестовый parameter_set
     cursor.execute(
         """INSERT INTO parameter_sets 
            (parameter_set_id, parameters, is_active, created_at) 
            VALUES (?, ?, ?, ?)""",
-        (parameter_set_id, json.dumps(params), 1, datetime.now().isoformat())
+        (parameter_set_id, json.dumps(params_dict), 1, datetime.now().isoformat())
     )
     
     # Вставляем тестовые multiindex_mapping
@@ -316,7 +323,7 @@ def setup_temp_db():
     )
     
     # Создаем тестовую модель
-    model_id = "test_model_" + str(uuid.uuid4())
+    model_id = TEST_MODEL_ID
     cursor.execute(
         """INSERT INTO models 
            (model_id, job_id, model_path, created_at, is_active) 
@@ -352,14 +359,22 @@ def setup_temp_db():
         "job_id": job_id,
         "model_id": model_id,
         "parameter_set_id": parameter_set_id,
-        "params": params,
-        "original_db_path": original_db_path
+        "params_dict": params_dict,
+        "original_db_path": original_db_path,
+        "conn": sqlite3.connect(db_path)  # Add a connection to be used by tests
     }
+    
+    # Set the row_factory for the connection
+    setup_data["conn"].row_factory = sqlite3.Row
     
     # Возвращаем настройки
     try:
         yield setup_data
     finally:
+        # Close the connection we created
+        if setup_data["conn"]:
+            setup_data["conn"].close()
+        
         # Восстанавливаем оригинальный путь к БД
         if original_db_path is not None:
             os.environ['DATABASE_PATH'] = original_db_path
@@ -368,8 +383,8 @@ def setup_temp_db():
         
         # Закрываем все соединения
         try:
-            conn = sqlite3.connect(db_path)
-            conn.close()
+            conn_close = sqlite3.connect(db_path)
+            conn_close.close()
         except Exception:
             pass
         
@@ -416,48 +431,38 @@ def mock_datasphere():
     """
     # Настройка мока DataSphere клиента
     mock_client = MagicMock(spec=DataSphereClient)
-    mock_client.submit_job.return_value = TEST_DS_JOB_ID
+    mock_client.submit_job.return_value = "ds_job_" + str(uuid.uuid4())
     mock_client.get_job_status.return_value = "SUCCESS"
     
-    # Mock для download_job_results
     def download_results_side_effect(job_id, output_dir, with_logs=False, with_diagnostics=False):
-        # Не делаем реальных операций с файлами, просто имитируем успешное
-        # скачивание и наличие файлов
-        # Вместо создания файлов, просто имитируем что они существуют
-        # Мы не будем физически создавать директории, т.к. это может вызвать проблемы
-        # на разных ОС, особенно в конвейере CI
-
-        # Вместо этого мокаем os.path.exists чтобы он возвращал True для путей файлов результатов
-        # Возвращаем моки путей к файлам как будто они существуют
         metrics_path = os.path.join(output_dir, 'metrics.json')
         predictions_path = os.path.join(output_dir, 'predictions.csv')
         model_path = os.path.join(output_dir, 'model.onnx')
+        log_paths = [os.path.join(output_dir, 'logs.txt')] if with_logs else []
+        diag_paths = [os.path.join(output_dir, 'diagnostics.json')] if with_diagnostics else []
         
-        # Если запрашиваются логи, добавляем пути логов
-        log_paths = []
-        if with_logs:
-            log_paths.append(os.path.join(output_dir, 'logs.txt'))
-        
-        # Если запрашивается диагностика, добавляем пути диагностики
-        diag_paths = []
-        if with_diagnostics:
-            diag_paths.append(os.path.join(output_dir, 'diagnostics.json'))
-        
-        # Мокаем проверки существования этих файлов в основном коде
-        # Обновляем side_effect для os.path.exists
         original_exists = os.path.exists
         
         def patched_exists(path):
-            # Для путей к нашим файлам возвращаем True
             if path in [metrics_path, predictions_path, model_path, output_dir] + log_paths + diag_paths:
                 return True
-            # Для всех остальных вызываем оригинальную функцию
+            # Для всех путей, содержащих 'model.onnx' или 'predictions.csv' или 'metrics.json', возвращаем True
+            if 'model.onnx' in str(path) or 'predictions.csv' in str(path) or 'metrics.json' in str(path):
+                return True
             return original_exists(path)
         
         # Обновляем мок
         patches.get('os_path_exists').side_effect = patched_exists
         
-        # Не делаем реальных операций, вместо этого просто возвращаем, что скачивание успешно
+        # Добавляем мок для os.path.getsize
+        def mock_getsize(path):
+            # Возвращаем фиктивный размер для модели
+            if 'model.onnx' in str(path):
+                return 1024 * 1024  # 1MB
+            return 1024  # 1KB
+        
+        patches['os_path_getsize'] = patch('os.path.getsize', side_effect=mock_getsize)
+        
         return None
     
     mock_client.download_job_results.side_effect = download_results_side_effect
@@ -468,13 +473,22 @@ def mock_datasphere():
         'get_active_parameter_set': patch('deployment.app.services.datasphere_service.get_active_parameter_set', mock_get_active_parameter_set),
         'get_datasets': patch('deployment.app.services.datasphere_service.get_datasets', mock_get_datasets),
         'create_model_record': patch('deployment.app.services.datasphere_service.create_model_record', mock_create_model_record),
-        'os_path_exists': patch('os.path.exists', return_value=True),  # Всегда считаем, что файл существует
+        'os_path_exists': patch('os.path.exists', return_value=True),
+        'update_job_status': patch('deployment.app.services.datasphere_service.update_job_status'),
     }
     
-    # Настройка мока _get_job_parameters
+    # Настройка мока _get_job_parameters с автоматическим оборачиванием async
     mock_get_job_parameters = AsyncMock()
     mock_get_job_parameters.return_value = (create_training_params(), 1)
-    patches['_get_job_parameters'] = patch('deployment.app.services.datasphere_service._get_job_parameters', mock_get_job_parameters)
+    
+    # Создаем функцию-обертку для правильного ожидания AsyncMock
+    async def wrapped_get_job_parameters(*args, **kwargs):
+        return await mock_get_job_parameters(*args, **kwargs)
+    
+    patches['_get_job_parameters'] = patch(
+        'deployment.app.services.datasphere_service._get_job_parameters', 
+        side_effect=wrapped_get_job_parameters
+    )
     
     # Настройка мока settings
     mock_settings = MagicMock()
@@ -485,36 +499,74 @@ def mock_datasphere():
     mock_settings.datasphere.poll_interval = 0.1
     patches['settings'] = patch('deployment.app.services.datasphere_service.settings', mock_settings)
     
-    # Настройка мока _prepare_job_datasets
+    # Настройка мока _prepare_job_datasets с корректной оберткой async
     mock_prepare_datasets = AsyncMock()
     mock_prepare_datasets.return_value = None
-    patches['_prepare_job_datasets'] = patch('deployment.app.services.datasphere_service._prepare_job_datasets', mock_prepare_datasets)
     
-    # Настройка мока _archive_input_directory чтобы избежать создания реального input.zip
+    async def wrapped_prepare_datasets(*args, **kwargs):
+        return await mock_prepare_datasets(*args, **kwargs)
+    
+    patches['_prepare_job_datasets'] = patch(
+        'deployment.app.services.datasphere_service._prepare_job_datasets',
+        side_effect=wrapped_prepare_datasets
+    )
+    
+    # Настройка мока _archive_input_directory с корректной оберткой async
     mock_archive_input = AsyncMock()
-    mock_archive_input.return_value = "input.zip"  # Просто возвращаем имя файла, не создавая его
-    patches['_archive_input_directory'] = patch('deployment.app.services.datasphere_service._archive_input_directory', mock_archive_input)
+    mock_archive_input.return_value = "input.zip"
     
-    # Настройка мока save_model_file_and_db чтобы избежать работы с реальным файлом модели
+    async def wrapped_archive_input(*args, **kwargs):
+        return await mock_archive_input(*args, **kwargs)
+    
+    patches['_archive_input_directory'] = patch(
+        'deployment.app.services.datasphere_service._archive_input_directory',
+        side_effect=wrapped_archive_input
+    )
+    
+    # Настройка мока save_model_file_and_db с корректной оберткой async
     mock_save_model = AsyncMock()
     mock_save_model.return_value = "test_model_" + str(uuid.uuid4())
-    patches['save_model_file_and_db'] = patch('deployment.app.services.datasphere_service.save_model_file_and_db', mock_save_model)
     
-    # Настройка мока create_training_result
+    async def wrapped_save_model(*args, **kwargs):
+        return await mock_save_model(*args, **kwargs)
+    
+    patches['save_model_file_and_db'] = patch(
+        'deployment.app.services.datasphere_service.save_model_file_and_db',
+        side_effect=wrapped_save_model
+    )
+    
+    # Настройка мока create_training_result с корректной оберткой async, если он async
     mock_create_training = AsyncMock()
     mock_create_training.return_value = None
-    patches['create_training_result'] = patch('deployment.app.services.datasphere_service.create_training_result', mock_create_training)
+    
+    async def wrapped_create_training(*args, **kwargs):
+        return await mock_create_training(*args, **kwargs)
+    
+    patches['create_training_result'] = patch(
+        'deployment.app.services.datasphere_service.create_training_result',
+        side_effect=wrapped_create_training
+    )
     
     # Настройка мока для save_predictions_to_db
     def mock_save_predictions(predictions_path, job_id, model_id, direct_db_connection=None):
-        """Мок для save_predictions_to_db чтобы избежать чтения реального CSV файла"""
+        """
+        Мок для save_predictions_to_db чтобы имитировать запись предсказаний в БД
+        Возвращает идентификатор результата и количество сохраненных предсказаний
+        """
+        # Генерируем уникальный result_id для каждого вызова
+        result_id = "test_result_" + str(uuid.uuid4())
+        
+        # Возвращаем информацию о результате сохранения
         return {
-            "result_id": "test_result_" + str(uuid.uuid4()),
-            "predictions_count": 5
+            "result_id": result_id,
+            "predictions_count": len(SAMPLE_PREDICTIONS["barcode"]),
+            "model_id": model_id
         }
     
-    patches['save_predictions_to_db'] = patch('deployment.app.services.datasphere_service.save_predictions_to_db', 
-                                                side_effect=mock_save_predictions)
+    patches['save_predictions_to_db'] = patch(
+        'deployment.app.services.datasphere_service.save_predictions_to_db',
+        side_effect=mock_save_predictions
+    )
     
     # Настройка mock_open для чтения конфига и результатов
     mock_file_content = "job_name: test_job\nparams:\n  param1: value1\n"
@@ -610,8 +662,14 @@ def verify_predictions_saved(connection, result, expected_data):
     assert record is not None
     
     # Проверяем каждую квантиль
-    quantiles = ['05', '25', '50', '75', '95']
-    for i, q in enumerate(quantiles):
-        db_value = float(record[f"quantile_{q}"])
-        expected_value = expected_data[f"0.{q}"][0]
-        assert pytest.approx(db_value, 0.01) == expected_value, f"Quantile {q} mismatch" 
+    quantile_map = {
+        '05': '0.05',
+        '25': '0.25',
+        '50': '0.5',
+        '75': '0.75',
+        '95': '0.95',
+    }
+    for q_db, q_data in quantile_map.items():
+        db_value = float(record[f"quantile_{q_db}"])
+        expected_value = expected_data[q_data][0]
+        assert abs(db_value - expected_value) < 1e-6 

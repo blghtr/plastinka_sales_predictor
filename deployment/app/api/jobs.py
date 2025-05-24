@@ -10,25 +10,26 @@ from pathlib import Path
 import aiofiles
 import shutil
 
-from app.models.api_models import (
+from deployment.app.models.api_models import (
     JobResponse, JobDetails, JobsList, JobStatus, JobType,
     DataUploadResponse, TrainingParams, TrainingResponse,
     PredictionParams, PredictionResponse, ReportParams, ReportResponse
 )
-from app.db.database import (
+from deployment.app.db.database import (
     create_job, update_job_status, get_job, list_jobs,
     get_data_upload_result, get_training_result, get_prediction_result, get_report_result,
     create_data_upload_result, create_training_result, create_prediction_result, create_report_result,
     DatabaseError, get_active_parameter_set, get_best_parameter_set_by_metric
 )
-from app.services.data_processor import process_data_files
-from app.services.datasphere_service import run_job
-from app.services.report_service import generate_report
-from app.utils.validation import validate_stock_file, validate_sales_file, validate_date_format, ValidationError
-from app.utils.file_validation import validate_excel_file_upload
-from app.utils.error_handling import ErrorDetail
+from deployment.app.services.data_processor import process_data_files
+from deployment.app.services.datasphere_service import run_job
+from deployment.app.services.report_service import generate_report
+from deployment.app.utils.validation import validate_stock_file, validate_sales_file, validate_date_format, ValidationError
+from deployment.app.utils.file_validation import validate_excel_file_upload
+from deployment.app.utils.error_handling import ErrorDetail
 import debugpy
-from app.config import settings
+from deployment.app.config import settings
+from deployment.app.services.auth import get_current_api_key_validated
 
 logger = logging.getLogger("plastinka.api")
 
@@ -58,7 +59,8 @@ async def create_data_upload_job(
     background_tasks: BackgroundTasks,
     stock_file: UploadFile = File(..., description="Excel file with stock data"),
     sales_files: List[UploadFile] = File(..., description="Excel files with sales data"),
-    cutoff_date: str = Form("30.09.2022", description="Cutoff date for data processing (DD.MM.YYYY)")
+    cutoff_date: str = Form("30.09.2022", description="Cutoff date for data processing (DD.MM.YYYY)"),
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Submit a job to process data files.
@@ -197,7 +199,8 @@ async def create_data_upload_job(
 @router.post("/training", response_model=TrainingResponse)
 async def create_training_job(
     request: Request,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Submit a job to train a model using the active parameter set.
@@ -285,7 +288,8 @@ async def create_training_job(
 async def create_prediction_job(
     request: Request,
     params: PredictionParams,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Submit a job to generate predictions.
@@ -298,21 +302,7 @@ async def create_prediction_job(
     Returns a job ID that can be used to check the job status.
     """
     try:
-        # Create a new job
-        job_id = create_job(
-            JobType.PREDICTION,
-            parameters=params.model_dump()
-        )
-        
-        # Start the background task
-        #background_tasks.add_task(
-        #    generate_predictions,
-        #    job_id=job_id,
-        #    params=params
-        #)
-        
-        logger.info(f"Created prediction job {job_id} with model_id: {params.model_id}")
-        return PredictionResponse(job_id=job_id, status=JobStatus.PENDING)
+        raise NotImplementedError("Prediction job is not implemented yet")
         
     except DatabaseError as e:
         logger.error(f"Database error in prediction job creation: {str(e)}", exc_info=True)
@@ -341,7 +331,8 @@ async def create_prediction_job(
 async def create_report_job(
     request: Request,
     params: ReportParams,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Submit a job to generate a report.
@@ -394,7 +385,7 @@ async def create_report_job(
 
 
 @router.get("/{job_id}", response_model=JobDetails)
-async def get_job_status(request: Request, job_id: str):
+async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(get_current_api_key_validated)):
     """
     Get the status and details of a job.
     
@@ -494,7 +485,8 @@ async def list_all_jobs(
     request: Request,
     job_type: Optional[JobType] = None,
     status: Optional[JobStatus] = None,
-    limit: int = Query(100, ge=1, le=1000)
+    limit: int = Query(100, ge=1, le=1000),
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     List all jobs with optional filtering by type and status.

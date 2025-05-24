@@ -2,6 +2,9 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 # SQL statements for creating the database schema
 SCHEMA_SQL = """
@@ -37,36 +40,36 @@ CREATE TABLE IF NOT EXISTS dim_styles (
     UNIQUE(style_name)
 );
 
--- Fact Tables
+-- Fact Tables (with standardized column names)
 CREATE TABLE IF NOT EXISTS fact_stock (
     multiindex_id INTEGER,
-    snapshot_date DATE,
-    quantity REAL,
-    PRIMARY KEY (multiindex_id, snapshot_date),
+    data_date DATE,
+    value REAL,
+    PRIMARY KEY (multiindex_id, data_date),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
 CREATE TABLE IF NOT EXISTS fact_prices (
     multiindex_id INTEGER,
-    price_date DATE,
-    price DECIMAL(10,2),
-    PRIMARY KEY (multiindex_id, price_date),
+    data_date DATE,
+    value REAL,
+    PRIMARY KEY (multiindex_id, data_date),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
 CREATE TABLE IF NOT EXISTS fact_sales (
     multiindex_id INTEGER,
-    sale_date DATE,
-    quantity REAL,
-    PRIMARY KEY (multiindex_id, sale_date),
+    data_date DATE,
+    value REAL,
+    PRIMARY KEY (multiindex_id, data_date),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
 CREATE TABLE IF NOT EXISTS fact_stock_changes (
     multiindex_id INTEGER,
-    change_date DATE,
-    quantity_change REAL,
-    PRIMARY KEY (multiindex_id, change_date),
+    data_date DATE,
+    value REAL,
+    PRIMARY KEY (multiindex_id, data_date),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
@@ -188,9 +191,9 @@ CREATE INDEX IF NOT EXISTS idx_multiindex_barcode ON dim_multiindex_mapping(barc
 CREATE INDEX IF NOT EXISTS idx_multiindex_artist_album ON dim_multiindex_mapping(artist, album);
 CREATE INDEX IF NOT EXISTS idx_multiindex_style ON dim_multiindex_mapping(style);
 
-CREATE INDEX IF NOT EXISTS idx_stock_date ON fact_stock(snapshot_date);
-CREATE INDEX IF NOT EXISTS idx_sales_date ON fact_sales(sale_date);
-CREATE INDEX IF NOT EXISTS idx_changes_date ON fact_stock_changes(change_date);
+CREATE INDEX IF NOT EXISTS idx_stock_date ON fact_stock(data_date);
+CREATE INDEX IF NOT EXISTS idx_sales_date ON fact_sales(data_date);
+CREATE INDEX IF NOT EXISTS idx_changes_date ON fact_stock_changes(data_date);
 
 -- Indexes for predictions
 CREATE INDEX IF NOT EXISTS idx_predictions_multiindex ON fact_predictions(multiindex_id);
@@ -230,38 +233,48 @@ def init_db(db_path: str = "deployment/data/plastinka.db"):
         bool: True if successful, False otherwise
     """
     try:
+        logger.debug(f"Initializing database at path: {db_path}")
+        
         # Create directory if it doesn't exist
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         
         # Check if database already exists
         db_exists = Path(db_path).exists()
+        logger.debug(f"Database already exists: {db_exists}")
         
         # Connect to database
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Execute schema creation SQL
+        # Log tables before schema execution
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables_before = [row[0] for row in cursor.fetchall()]
+        logger.debug(f"Tables before schema execution: {tables_before}")
+        
+        # Execute schema SQL
+        logger.debug("Executing schema SQL...")
         cursor.executescript(SCHEMA_SQL)
-        
-        # Логируем структуру таблицы training_results
-        cursor.execute("PRAGMA table_info(training_results)")
-        columns = cursor.fetchall()
-        print(f"training_results columns in {db_path}:")
-        for col in columns:
-            print(col)
-        
-        # Commit changes and close connection
         conn.commit()
+        
+        # Verify tables were created
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables_after = [row[0] for row in cursor.fetchall()]
+        logger.debug(f"Tables after schema execution: {tables_after}")
+        
+        # Check specifically for our required tables
+        required_tables = ['jobs', 'parameter_sets', 'training_results', 'prediction_results']
+        missing_tables = [table for table in required_tables if table not in tables_after]
+        
+        if missing_tables:
+            logger.warning(f"Missing required tables after schema execution: {missing_tables}")
+            return False
+        
+        logger.info("Database schema initialized successfully")
         conn.close()
-        
-        if db_exists:
-            print(f"Database schema validated at {db_path}")
-        else:
-            print(f"Database initialized at {db_path}")
-        
         return True
+        
     except Exception as e:
-        print(f"Error initializing database: {str(e)}")
+        logger.error(f"Error initializing database: {str(e)}", exc_info=True)
         return False
 
 if __name__ == "__main__":

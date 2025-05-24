@@ -3,7 +3,7 @@ import logging
 from typing import Tuple, Optional, List
 from fastapi import UploadFile
 
-from app.utils.validation import ValidationError
+from deployment.app.utils.validation import ValidationError
 
 logger = logging.getLogger("plastinka.file_validation")
 

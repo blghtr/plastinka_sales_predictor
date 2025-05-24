@@ -1,12 +1,12 @@
 """
 API endpoints for working with models and parameter sets.
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import Dict, Any, List, Optional
 import logging
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.db.database import (
+from deployment.app.db.database import (
     get_active_parameter_set,
     set_parameter_set_active,
     get_best_parameter_set_by_metric,
@@ -19,7 +19,8 @@ from app.db.database import (
     get_all_models,
     delete_models_by_ids
 )
-from app.config import settings
+from deployment.app.config import settings
+from deployment.app.services.auth import get_current_api_key_validated
 
 router = APIRouter(
     prefix="/api/v1/model-params",
@@ -74,7 +75,7 @@ class DeleteResponse(BaseModel):
 
 # Parameter Set Endpoints
 @router.get("/parameter-sets/active", response_model=ParameterSetResponse)
-async def get_active_parameter_set_endpoint():
+async def get_active_parameter_set_endpoint(api_key: bool = Depends(get_current_api_key_validated)):
     """Get the currently active parameter set."""
     active_params = get_active_parameter_set()
     if not active_params:
@@ -83,7 +84,7 @@ async def get_active_parameter_set_endpoint():
 
 
 @router.post("/parameter-sets/{parameter_set_id}/set-active")
-async def activate_parameter_set(parameter_set_id: str):
+async def activate_parameter_set(parameter_set_id: str, api_key: bool = Depends(get_current_api_key_validated)):
     """Set a parameter set as active."""
     if set_parameter_set_active(parameter_set_id):
         return {"success": True, "message": f"Parameter set {parameter_set_id} set as active"}
@@ -93,7 +94,8 @@ async def activate_parameter_set(parameter_set_id: str):
 @router.get("/parameter-sets/best", response_model=ParameterSetResponse)
 async def get_best_parameter_set(
     metric_name: str = Query(None, description="Metric name to use for comparison"),
-    higher_is_better: bool = Query(True, description="Whether higher values are better")
+    higher_is_better: bool = Query(True, description="Whether higher values are better"),
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Get the best parameter set based on a metric.
@@ -118,7 +120,8 @@ async def get_best_parameter_set(
 
 @router.get("/parameter-sets", response_model=List[ParameterSetResponse])
 async def get_parameter_sets_endpoint(
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of parameter sets to return")
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of parameter sets to return"),
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Get a list of all parameter sets.
@@ -132,7 +135,8 @@ async def get_parameter_sets_endpoint(
 
 @router.post("/parameter-sets/delete", response_model=DeleteResponse)
 async def delete_parameter_sets(
-    request: DeleteIdsRequest
+    request: DeleteIdsRequest,
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Delete multiple parameter sets by their IDs.
@@ -151,7 +155,7 @@ async def delete_parameter_sets(
 
 # Model Endpoints
 @router.get("/models/active", response_model=ModelResponse)
-async def get_active_model_endpoint():
+async def get_active_model_endpoint(api_key: bool = Depends(get_current_api_key_validated)):
     """Get the currently active model."""
     active_model = get_active_model()
     if not active_model:
@@ -160,7 +164,7 @@ async def get_active_model_endpoint():
 
 
 @router.post("/models/{model_id}/set-active")
-async def activate_model(model_id: str):
+async def activate_model(model_id: str, api_key: bool = Depends(get_current_api_key_validated)):
     """Set a model as active."""
     if set_model_active(model_id):
         return {"success": True, "message": f"Model {model_id} set as active"}
@@ -170,7 +174,8 @@ async def activate_model(model_id: str):
 @router.get("/models/best", response_model=ModelResponse)
 async def get_best_model(
     metric_name: str = Query(None, description="Metric name to use for comparison"),
-    higher_is_better: bool = Query(True, description="Whether higher values are better")
+    higher_is_better: bool = Query(True, description="Whether higher values are better"),
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Get the best model based on a metric.
@@ -192,7 +197,8 @@ async def get_best_model(
 
 @router.get("/models/recent", response_model=List[ModelResponse])
 async def get_recent_models_endpoint(
-    limit: int = Query(5, ge=1, le=100, description="Maximum number of models to return")
+    limit: int = Query(5, ge=1, le=100, description="Maximum number of models to return"),
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """Get the most recent models, ordered by creation date."""
     models = get_recent_models(limit)
@@ -231,7 +237,8 @@ async def get_recent_models_endpoint(
 
 @router.get("/models", response_model=List[ModelResponse])
 async def get_all_models_endpoint(
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of models to return")
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of models to return"),
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Get a list of all models.
@@ -245,7 +252,8 @@ async def get_all_models_endpoint(
 
 @router.post("/models/delete", response_model=DeleteResponse)
 async def delete_models(
-    request: DeleteIdsRequest
+    request: DeleteIdsRequest,
+    api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Delete multiple models by their IDs and their associated files.

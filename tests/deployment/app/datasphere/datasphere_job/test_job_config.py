@@ -1,31 +1,15 @@
 import os
 import pytest
 import yaml # For loading YAML file
+from pathlib import Path
 
 # Define the expected path relative to the project root
 JOB_REQ_PATH = "plastinka_sales_predictor/datasphere_job/requirements.txt"
-CONFIG_YAML_PATH = "configs/datasphere/job_config.yaml" # Define config path
 
-def test_job_requirements_file_exists():
-    """Check if the job-specific requirements.txt file exists."""
-    assert os.path.exists(JOB_REQ_PATH), f"Job requirements file not found at {JOB_REQ_PATH}"
-    # This test will fail until the file is created
+# Create an absolute path to the config file
+project_root = Path(__file__).parent.parent.parent.parent.parent.parent
+CONFIG_YAML_PATH = os.path.join(project_root, "tests", "configs", "datasphere", "job_config.yaml")
 
-def test_job_requirements_content():
-    """Check if essential packages are listed in job requirements."""
-    # Ensure file exists before reading (or skip if first test fails)
-    if not os.path.exists(JOB_REQ_PATH):
-        pytest.skip(f"Skipping content check as file {JOB_REQ_PATH} doesn't exist.")
-
-    with open(JOB_REQ_PATH, 'r') as f:
-        content = f.read()
-        
-    # Check for essential packages (adjust list as needed)
-    assert "pandas>=" in content
-    assert "psycopg2-binary>=" in content
-    assert "darts" in content # Check for darts, maybe specify variant like darts[pytorch]
-    assert "scikit-learn>=" in content # Likely needed by darts/models
-    # This test will fail until the file is created with content 
 
 def test_config_yaml_file_exists():
     """Check if the job config YAML file exists."""

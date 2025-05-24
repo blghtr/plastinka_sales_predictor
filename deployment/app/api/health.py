@@ -11,8 +11,9 @@ import psutil
 import sqlite3
 from datetime import datetime, timedelta
 
-from app.utils.retry_monitor import get_retry_statistics, reset_retry_statistics
-from app.config import settings
+from deployment.app.utils.retry_monitor import get_retry_statistics, reset_retry_statistics
+from deployment.app.config import settings
+from deployment.app.services.auth import get_current_api_key_validated
 
 router = APIRouter(
     prefix="/health",
@@ -168,7 +169,7 @@ async def health_check():
     }
 
 @router.get("/system", response_model=SystemStatsResponse)
-async def system_stats():
+async def system_stats(api_key: bool = Depends(get_current_api_key_validated)):
     """
     Get detailed system statistics.
     Returns CPU, memory, and disk usage.
@@ -187,7 +188,7 @@ async def system_stats():
     }
 
 @router.get("/retry-stats", response_model=RetryStatsResponse)
-async def retry_statistics():
+async def retry_statistics(api_key: bool = Depends(get_current_api_key_validated)):
     """
     Get detailed statistics about operation retries.
     Returns information about retry patterns and failure rates.
@@ -207,7 +208,7 @@ async def retry_statistics():
     }
 
 @router.post("/retry-stats/reset")
-async def reset_retry_stats():
+async def reset_retry_stats(api_key: bool = Depends(get_current_api_key_validated)):
     """
     Reset all retry statistics.
     """

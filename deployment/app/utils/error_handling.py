@@ -9,7 +9,7 @@ import os
 from typing import Dict, Any, Optional, List, Union, Type, Callable
 import uuid
 
-from app.utils.validation import ValidationError as AppValidationError
+from deployment.app.utils.validation import ValidationError as AppValidationError
 
 # Configure more detailed logging
 logger = logging.getLogger("plastinka.errors")

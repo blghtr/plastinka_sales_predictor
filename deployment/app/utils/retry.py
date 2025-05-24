@@ -15,8 +15,8 @@ import requests
 from requests.exceptions import RequestException
 from botocore.exceptions import ClientError
 
-from app.utils.error_handling import RetryableError
-from app.utils.retry_monitor import record_retry
+from deployment.app.utils.error_handling import RetryableError
+from deployment.app.utils.retry_monitor import record_retry
 
 logger = logging.getLogger(__name__)
 

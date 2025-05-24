@@ -9,6 +9,8 @@ import pandas as pd
 import shutil
 from pathlib import Path
 import yaml
+import subprocess
+import tempfile
 from typing import Optional, Tuple, Dict, Any, List
 from pydantic import TypeAdapter
 from deployment.app.db.database import (
@@ -125,22 +127,102 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
 
 async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams) -> Tuple[str, str]:
     """Prepares the parameters file within the main input directory."""
-    logger.info(f"[{job_id}] Stage 4a: Preparing DataSphere job submission inputs...")
+    logger.info(f"[{job_id}] Stage 4a: Preparing DataSphere job submission inputs (including wheel)...")
     # Generate a unique ID component for this DS job run (used for output/results dir later)
     ds_job_run_suffix = f"ds_job_{job_id}_{uuid.uuid4().hex[:8]}"
-    target_input_dir = settings.datasphere.train_job.input_dir # Use the main input dir
+    target_input_dir_str = settings.datasphere.train_job.input_dir # Use the main input dir
+    target_input_dir = Path(target_input_dir_str) # Work with Path objects for consistency
 
     # Ensure the main input directory exists (datasets should already be there)
     os.makedirs(target_input_dir, exist_ok=True)
 
-    params_json_path = os.path.join(target_input_dir, "params.json")
+    # --- BEGIN WHEEL BUILDING AND STAGING ---
+    project_root = Path(settings.project_root_dir)
+
+    logger.info(f"[{job_id}] Building plastinka_sales_predictor wheel from project root: {project_root}")
+    if not project_root.is_dir():
+        error_msg = f"Project root directory '{project_root}' configured in settings does not exist or is not a directory."
+        logger.error(f"[{job_id}] {error_msg}")
+        raise RuntimeError(f"Invalid project_root_dir for job {job_id}: {error_msg}")
+    
+    try:
+        with tempfile.TemporaryDirectory() as temp_wheel_dir:
+            temp_wheel_dir_path = Path(temp_wheel_dir)
+            build_command = [
+                "python", "-m", "build", "--wheel", "--outdir", str(temp_wheel_dir_path)
+            ]
+            logger.debug(f"[{job_id}] Running wheel build command: \"{' '.join(build_command)}\" in CWD: {project_root}")
+            
+            process = subprocess.run(
+                build_command,
+                cwd=str(project_root), # subprocess.run cwd expects string
+                check=False, # We check returncode manually to log stdout/stderr
+                capture_output=True,
+                text=True,
+                encoding='utf-8' # Be explicit about encoding for cross-platform compatibility
+            )
+
+            if process.returncode != 0:
+                error_msg = (
+                    f"Failed to build wheel. Return code: {process.returncode}\n"
+                    f"Stdout: {process.stdout}\n"
+                    f"Stderr: {process.stderr}"
+                )
+                logger.error(f"[{job_id}] {error_msg}")
+                # This exception will be caught by run_job's main error handler
+                raise RuntimeError(f"Wheel build failed for job {job_id}. Details: {error_msg}")
+
+            logger.info(f"[{job_id}] Wheel build successful. stdout: {process.stdout}")
+            if process.stderr: # Log stderr even on success, as 'build' might output warnings
+                logger.warning(f"[{job_id}] Wheel build stderr (warnings/info): {process.stderr}")
+            
+            # Find the generated wheel file
+            wheel_files = list(temp_wheel_dir_path.glob('plastinka_sales_predictor-*.whl'))
+            if not wheel_files:
+                error_msg = f"No 'plastinka_sales_predictor-*.whl' file found in temporary wheel directory {temp_wheel_dir_path} after build."
+                logger.error(f"[{job_id}] {error_msg}")
+                raise RuntimeError(f"Wheel file not found for job {job_id}. {error_msg}")
+            
+            if len(wheel_files) > 1:
+                # This case should ideally not happen with a clean build of a single package
+                logger.warning(f"[{job_id}] Multiple wheel files found: {[f.name for f in wheel_files]}. Using the first one: {wheel_files[0].name}")
+            
+            wheel_file_to_copy = wheel_files[0]
+            destination_wheel_path = target_input_dir / wheel_file_to_copy.name
+            
+            shutil.copy(wheel_file_to_copy, destination_wheel_path)
+            logger.info(f"[{job_id}] Copied wheel '{wheel_file_to_copy.name}' from '{wheel_file_to_copy}' to '{destination_wheel_path}'")
+
+    except subprocess.CalledProcessError as e:
+        # This block is less likely to be hit with check=False, but kept as a fallback.
+        # The manual check of process.returncode is the primary error detection for the subprocess.
+        error_msg = (
+            f"Wheel build process failed with CalledProcessError: {e}\n"
+            f"Stdout: {e.stdout if e.stdout else 'N/A'}\n"
+            f"Stderr: {e.stderr if e.stderr else 'N/A'}"
+        )
+        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+        raise RuntimeError(f"Wheel build failed for job {job_id}. Error: {error_msg}") from e
+    except FileNotFoundError as e:
+        # Handles cases like 'python' command not found or build script issues.
+        error_msg = f"Wheel build command failed: {e}. Ensure 'python' and the 'build' module are correctly installed and in PATH for the service environment."
+        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+        raise RuntimeError(f"Wheel build prerequisite missing for job {job_id}. Error: {error_msg}") from e
+    except Exception as e:
+        # Catch-all for other unexpected errors during the wheel process.
+        error_msg = f"An unexpected error occurred during wheel building or staging: {str(e)}"
+        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+        raise RuntimeError(f"Wheel build failed for job {job_id}. Unexpected error: {error_msg}") from e
+    # --- END WHEEL BUILDING AND STAGING ---
+
+    params_json_path = str(target_input_dir / "params.json") # Create Path object then convert to string for return
     logger.info(f"[{job_id}] Saving parameters to {params_json_path}")
-    with open(params_json_path, 'w') as f:
+    with open(params_json_path, 'w') as f: # open() accepts string path
         # Use model_dump_json for Pydantic v2+
         json.dump(params.model_dump(), f, indent=2) # Save parameters
 
     # Note: Progress update moved to after archiving
-    # update_job_status(job_id, JobStatus.RUNNING.value, progress=20, status_message="DataSphere job inputs prepared.")
+    # update_job_status(job_id, JobStatus.RUNNING.value, progress=20, status_message="DataSphere job inputs (including wheel) prepared.")
     # Return the suffix for identifying the run and the path to the params file (within input_dir)
     return ds_job_run_suffix, params_json_path # Keep params_json_path for potential direct use if needed, though zipped
 
@@ -203,13 +285,18 @@ async def _submit_and_monitor_datasphere_job(
     model_path = None
 
     logger.info(f"[{job_id}] Polling DS Job {ds_job_id} status (max_polls={max_polls}, poll_interval={poll_interval}s).")
+    # Add diagnostic print for max_polls
+    logger.debug(f"DEBUG MONITOR: DS Job ID: {ds_job_id}, Max polls from settings: {settings.datasphere.max_polls}")
+
     while not completed and polls < max_polls:
+        logger.debug(f"DEBUG MONITOR: Entering poll loop, poll {polls + 1} for DS Job ID: {ds_job_id}")
         await asyncio.sleep(poll_interval)
         polls += 1
 
         try:
             current_ds_status_str = client.get_job_status(ds_job_id)
             current_ds_status = current_ds_status_str.lower()
+            logger.debug(f"DEBUG MONITOR: Got status: {current_ds_status_str} for DS Job ID: {ds_job_id}")
             logger.info(f"[{job_id}] DS Job {ds_job_id} status (poll {polls}/{max_polls}): {current_ds_status_str}")
         except Exception as status_exc:
             logger.error(f"[{job_id}] Error getting status for DS Job {ds_job_id} (poll {polls}/{max_polls}): {status_exc}. Will retry.")
@@ -291,7 +378,6 @@ async def _submit_and_monitor_datasphere_job(
                 logger.error(f"[{job_id}] Failed to download or process results for DS Job {ds_job_id}: {download_exc}", exc_info=True)
                 update_job_status(job_id, JobStatus.FAILED.value, error_message=f"Result download/processing failed: {download_exc}")
                 raise RuntimeError(f"Result download/processing failed for DS Job {ds_job_id}") from download_exc
-
 
 
         elif current_ds_status in ["failed", "error", "cancelled"]:
@@ -389,62 +475,97 @@ async def _process_job_results(
     poll_interval: int,
     parameter_set_id: int # ID of the parameter set used
 ) -> None:
-    """Processes the results of a completed DataSphere job."""
-    logger.info(f"[{job_id}] Stage 6: Processing job results for DS Job {ds_job_id}...")
-
+    """
+    Process the results of a completed DataSphere job.
+    
+    Args:
+        job_id: ID of the job
+        ds_job_id: DataSphere job ID
+        results_dir: Directory where results were downloaded
+        params: Training parameters used for the job
+        metrics_data: Metrics data from metrics.json
+        model_path: Path to the downloaded model.onnx file
+        predictions_path: Path to the downloaded predictions.csv file
+        polls: Number of polling operations performed
+        poll_interval: Polling interval in seconds
+        parameter_set_id: ID of the parameter set used
+    """
     training_hyperparams = params.model_dump() # For storing with results
     current_model_id = None # Will be set if model was saved successfully
+    final_status_message = f"Job completed. DS Job ID: {ds_job_id}."
+    processing_warnings = []
+    training_result_id_for_status = None
+
 
     # Save model and get model_id
     if model_path and os.path.exists(model_path):
         logger.info(f"[{job_id}] Recording model in database...")
         try:
+            # Use the save_model_file_and_db function to save the model to the database
             current_model_id = await save_model_file_and_db(job_id, model_path, ds_job_id)
             logger.info(f"[{job_id}] Model recorded with ID: {current_model_id}")
         except Exception as e:
-            logger.error(f"[{job_id}] Error saving model: {str(e)}")
+            logger.error(f"[{job_id}] Error saving model record: {str(e)}", exc_info=True)
+            processing_warnings.append(f"Failed to save model record: {str(e)}")
     else:
-        logger.warning(f"[{job_id}] No model file found at {model_path}")
+        logger.warning(f"[{job_id}] No model file found at {model_path or 'N/A'}. Model record not created.")
+        processing_warnings.append("Model file not found in results.")
     
     # Create training result record
     if metrics_data:
-        # Format metrics for storage
-        formatted_metrics = json.dumps(metrics_data)
         logger.info(f"[{job_id}] Creating training result record with metrics...")
         try:
-            await create_training_result(
+            training_result_id_for_status = create_training_result(
                 job_id=job_id,
                 parameter_set_id=parameter_set_id,
-                metrics=formatted_metrics,
-                model_id=current_model_id,
-                duration=polls * poll_interval,
-                parameters=json.dumps(training_hyperparams)
+                metrics=metrics_data,  # Pass the dict directly
+                model_id=current_model_id, # Can be None if model saving failed or no model
+                duration=int(polls * poll_interval),
+                parameters=training_hyperparams # Pass the dict directly
             )
-            logger.info(f"[{job_id}] Training result record created")
+            logger.info(f"[{job_id}] Training result record created: {training_result_id_for_status}")
+            final_status_message += f" Training Result ID: {training_result_id_for_status}."
         except Exception as e:
-            logger.error(f"[{job_id}] Error creating training result: {str(e)}")
+            logger.error(f"[{job_id}] Error creating training result: {str(e)}", exc_info=True)
+            processing_warnings.append(f"Failed to create training result: {str(e)}")
     else:
-        logger.warning(f"[{job_id}] No metrics data available")
+        logger.warning(f"[{job_id}] No metrics data available. Training result record not created.")
+        processing_warnings.append("Metrics data not found in results.")
     
-    # Save predictions if available
-    if predictions_path and os.path.exists(predictions_path):
-        logger.info(f"[{job_id}] Saving predictions to database...")
+    # Save predictions if available, but only if a model was created
+    if current_model_id and predictions_path and os.path.exists(predictions_path):
+        logger.info(f"[{job_id}] Saving predictions to database for model {current_model_id}...")
         try:
             # Process predictions file and save to database
-            prediction_result = save_predictions_to_db(
+            prediction_result_info = save_predictions_to_db(
                 predictions_path=predictions_path,
                 job_id=job_id,
-                model_id=current_model_id
+                model_id=current_model_id # Pass current_model_id, which is confirmed not None here
             )
-            logger.info(f"[{job_id}] Saved {prediction_result['predictions_count']} predictions to database with result_id: {prediction_result['result_id']}")
+            logger.info(f"[{job_id}] Saved {prediction_result_info.get('predictions_count', 'N/A')} predictions to database with result_id: {prediction_result_info.get('result_id', 'N/A')}")
         except Exception as e:
-            logger.error(f"[{job_id}] Error saving predictions: {str(e)}")
-    else:
-        logger.warning(f"[{job_id}] No predictions file found at {predictions_path}")
-    
+            logger.error(f"[{job_id}] Error saving predictions: {str(e)}", exc_info=True)
+            processing_warnings.append(f"Failed to save predictions: {str(e)}")
+    elif not current_model_id and predictions_path and os.path.exists(predictions_path):
+        logger.warning(f"[{job_id}] Predictions file found at {predictions_path}, but no model was created. Predictions not saved.")
+        processing_warnings.append("Predictions file found, but not saved as no model was processed.")
+    elif not (predictions_path and os.path.exists(predictions_path)):
+        logger.info(f"[{job_id}] No predictions file found at {predictions_path or 'N/A'} or path does not exist. Predictions not saved.")
+        # processing_warnings.append("Predictions file not found in results.") # This might be normal
+
+    # Append warnings to the status message if any
+    if processing_warnings:
+        final_status_message += " Processing warnings: " + "; ".join(processing_warnings)
+
     # Update job status to completed
-    update_job_status(job_id, JobStatus.COMPLETED)
-    logger.info(f"[{job_id}] Job processing completed")
+    update_job_status(job_id, JobStatus.COMPLETED.value, progress=100, status_message=final_status_message, result_id=training_result_id_for_status)
+    logger.info(f"[{job_id}] Job processing completed. Final status message: {final_status_message}")
+
+    # Perform model cleanup only if a model was successfully created in this run
+    if current_model_id:
+        await _perform_model_cleanup(job_id, current_model_id)
+    else:
+        logger.info(f"[{job_id}] Skipping model cleanup as no new model was created in this job run.")
 
 
 async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> List[str]:
@@ -517,10 +638,6 @@ def save_predictions_to_db(
         conn = direct_db_connection if direct_db_connection else get_db_connection()
         
         try:
-            # Ensure schema is applied to this connection
-            from deployment.app.db.schema import SCHEMA_SQL
-            # Применяем схему к этому соединению
-            conn.executescript(SCHEMA_SQL)
             conn.commit()
             
             # Begin transaction
@@ -627,8 +744,11 @@ def save_predictions_to_db(
     except pd.errors.ParserError:
         raise ValueError("Predictions file has invalid format")
     except Exception as e:
-        # Не заворачиваем FileNotFoundError в ValueError
+        # Do not wrap database connection errors
+        import sqlite3
         if isinstance(e, FileNotFoundError):
+            raise
+        if isinstance(e, sqlite3.OperationalError):
             raise
         raise ValueError(f"Error processing predictions: {str(e)}")
 

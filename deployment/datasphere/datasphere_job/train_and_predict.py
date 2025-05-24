@@ -1,18 +1,14 @@
 import json
 import os
 import sys
+import subprocess # For installing the wheel
+import glob     # For finding the wheel file
 from datetime import datetime
 import click
 import numpy as np
 import pandas as pd
-from plastinka_sales_predictor import (
-    configure_logger,
-    prepare_for_training,
-    train_model as _train_model,
-    extract_early_stopping_callback
-)
-from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset
-from ..prepare_datasets import get_datasets
+# plastinka_sales_predictor imports are now moved into the main() function,
+# to be executed after the wheel installation.
 import time
 
 DEFAULT_OUTPUT_DIR = 'datasets/'
@@ -22,7 +18,7 @@ DEFAULT_PREDICTION_OUTPUT_REF = 'predictions.csv'
 DEFAULT_METRICS_OUTPUT_REF = 'metrics.json'
 
 
-logger = configure_logger(child_logger_name='train_predict_job_preparation')
+logger = None # Will be configured in main() after plastinka_sales_predictor is imported.
 
 
 # Custom Click parameter type for dictionary input
@@ -52,8 +48,8 @@ def get_output_paths(output_dict):
 
 
 def train_model(
-        train_dataset: PlastinkaTrainingTSDataset, 
-        val_dataset: PlastinkaTrainingTSDataset, 
+        train_dataset: 'PlastinkaTrainingTSDataset',
+        val_dataset: 'PlastinkaTrainingTSDataset',
         config: dict
 ) -> tuple:
     """
@@ -140,7 +136,7 @@ def train_model(
 
     return model, metrics_dict
 
-def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.DataFrame:
+def predict_sales(model, predict_dataset: 'PlastinkaTrainingTSDataset') -> pd.DataFrame:
     """Generates sales predictions using the trained model."""
     logger.info("Starting sales prediction...")
     
@@ -230,6 +226,80 @@ def get_predictions_df(
 @click.option('--output', type=DictParamType(), default='{}', help='JSON dictionary of output paths (keys: dir, model, prediction, metrics)')
 def main(input, output):
     """Run the training and prediction pipeline with the specified configuration."""
+    global logger # Declare logger as global to assign to it
+
+    # --- WHEEL INSTALLATION ---
+    # Use print for logging during this critical initial phase, as PSP logger is not yet configured.
+    print("Starting wheel installation phase...")
+    # The 'input' variable from click.option is the path to params.json.
+    # The wheel is assumed to be in the same directory.
+    params_dir = os.path.dirname(input)
+    print(f"Looking for plastinka_sales_predictor wheel in directory: {params_dir}")
+
+    wheel_pattern = os.path.join(params_dir, "plastinka_sales_predictor-*.whl")
+    wheel_files = glob.glob(wheel_pattern)
+
+    if not wheel_files:
+        print(f"ERROR: No plastinka_sales_predictor wheel file found matching pattern: {wheel_pattern}. Exiting.")
+        sys.exit(1)
+    if len(wheel_files) > 1:
+        # Log all found files for easier debugging by the user
+        found_files_str = ", ".join(wheel_files)
+        print(f"ERROR: Multiple wheel files found: [{found_files_str}]. Expected exactly one. Exiting.")
+        sys.exit(1)
+    
+    wheel_file_path = wheel_files[0]
+    print(f"Found wheel file: {wheel_file_path}")
+    print(f"Attempting to install {wheel_file_path} using pip...")
+
+    try:
+        # Using check=True to automatically raise CalledProcessError on non-zero exit status.
+        # Capturing output to provide more context in logs.
+        result = subprocess.run(
+            ["pip", "install", wheel_file_path],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print(f"Pip install successful. stdout:\n{result.stdout}")
+        if result.stderr: # Log stderr even on success, as pip might put warnings/info there
+             print(f"Pip install stderr (warnings/info):\n{result.stderr}")
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: pip install failed with return code {e.returncode}.")
+        print(f"stdout:\n{e.stdout}")
+        print(f"stderr:\n{e.stderr}")
+        print("Exiting.")
+        sys.exit(1)
+    except FileNotFoundError:
+        # This error occurs if 'pip' command itself is not found.
+        print("ERROR: pip command not found. Ensure pip is installed and in PATH. Exiting.")
+        sys.exit(1)
+    except Exception as e:
+        # Catch any other unexpected errors during the installation process.
+        print(f"ERROR: An unexpected error occurred during pip install: {str(e)}. Exiting.")
+        sys.exit(1)
+    
+    print("Plastinka_sales_predictor wheel installed successfully.")
+    # --- END WHEEL INSTALLATION ---
+
+    # --- PSP IMPORTS AND LOGGER CONFIGURATION ---
+    # These imports are moved here from global scope to ensure they happen after wheel installation.
+    from plastinka_sales_predictor import (
+        configure_logger,
+        prepare_for_training,
+        train_model as _train_model,
+        extract_early_stopping_callback
+    )
+    # PlastinkaTrainingTSDataset is needed for loading datasets and type hints (now strings).
+    from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset
+    
+    # Configure the logger for the rest of the script
+    # This re-assigns the global 'logger' variable.
+    logger = configure_logger(child_logger_name='train_predict_job_preparation')
+    logger.info("Plastinka_sales_predictor package imported and logger configured successfully.")
+    # --- END PSP IMPORTS AND LOGGER CONFIGURATION ---
+
+    # Original main() logic starts here, now using the configured logger
     logger.info("Starting datasphere job...")
     logger.info(f'Loading inputs from {input}...')
     
@@ -248,14 +318,30 @@ def main(input, output):
         start_date = datetime.strptime(input_dict["start_date"], "%Y-%m-%d")
         end_date = datetime.strptime(input_dict["end_date"], "%Y-%m-%d")
 
-    train_dataset, val_dataset = get_datasets(
-        start_date=start_date, 
-        end_date=end_date,
-        config=config
-    )
+    # Load pre-prepared datasets
+    # The 'input' variable from click.option is the path to params.json
+    # Assume .dill files are in the same directory (e.g., /input/)
+    params_dir = os.path.dirname(input)
 
-    if not train_dataset or not val_dataset:
-        logger.error("Feature preparation returned empty results. Exiting pipeline.")
+    train_dill_path = os.path.join(params_dir, "train.dill")
+    val_dill_path = os.path.join(params_dir, "val.dill")
+
+    logger.info(f"Loading train_dataset from {train_dill_path}...")
+    if not os.path.exists(train_dill_path):
+        logger.error(f"Train dataset file not found: {train_dill_path}")
+        sys.exit(1)
+    train_dataset = PlastinkaTrainingTSDataset.from_dill(train_dill_path)
+    logger.info("Train dataset loaded successfully.")
+
+    logger.info(f"Loading val_dataset from {val_dill_path}...")
+    if not os.path.exists(val_dill_path):
+        logger.error(f"Validation dataset file not found: {val_dill_path}")
+        sys.exit(1)
+    val_dataset = PlastinkaTrainingTSDataset.from_dill(val_dill_path)
+    logger.info("Validation dataset loaded successfully.")
+
+    if not train_dataset or not val_dataset: # Should not happen if files exist and load
+        logger.error("Failed to load datasets. Exiting pipeline.")
         sys.exit(1)
 
     # 3. Train model

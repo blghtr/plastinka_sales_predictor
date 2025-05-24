@@ -14,6 +14,21 @@ from deployment.app.config import settings # Corrected absolute import
 
 logger = logging.getLogger("plastinka.database")
 
+# Define allowed metric names for dynamic queries
+ALLOWED_METRICS = [
+    "mae",
+    "mse",
+    "rmse",
+    "r2",
+    "mape",
+    "smape",
+    "median_absolute_error",
+    "mean_squared_log_error",
+    "explained_variance_score",
+    "max_error"
+    # Add other allowed metric names as needed
+]
+
 # Use database path from settings
 DB_PATH = settings.db.path
 
@@ -26,17 +41,101 @@ class DatabaseError(Exception):
         self.original_error = original_error
         super().__init__(self.message)
 
-def get_db_connection():
-    """Get a connection to the SQLite database"""
+def get_db_connection(db_path_override: Optional[Union[str, Path]] = None):
+    """
+    Get a connection to the SQLite database.
+    If db_path_override is provided, it uses that path; otherwise, uses settings.db.path.
+    """
     try:
-        Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
+        if db_path_override:
+            current_db_path = Path(db_path_override)
+            logger.debug(f"get_db_connection using override DB_PATH: {current_db_path}")
+        else:
+            # Always get the most up-to-date path from settings
+            from deployment.app.config import settings
+            # Reload settings to ensure we have the latest DATABASE_PATH
+            settings.db.reload() # type: ignore # Assuming main settings object has reload
+            current_db_path = Path(settings.db.path)
+            logger.debug(f"get_db_connection using settings DB_PATH: {current_db_path}")
+
+        current_db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(current_db_path))
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.row_factory = dict_factory
         return conn
     except Exception as e:
         logger.error(f"Failed to connect to database: {str(e)}", exc_info=True)
         raise DatabaseError(f"Database connection failed: {str(e)}", original_error=e)
 
+@contextmanager
+def db_transaction(db_path_or_conn: Union[str, Path, sqlite3.Connection] = None):
+    """
+    Context manager for database transactions.
+
+    Args:
+        db_path_or_conn: Path to the database file or an existing sqlite3.Connection.
+                         If None, uses the default DB_PATH from settings.
+
+    Yields:
+        sqlite3.Connection: The database connection.
+
+    Raises:
+        DatabaseError: If connection or transaction handling fails.
+    """
+    conn: Optional[sqlite3.Connection] = None
+    conn_created_internally = False
+
+    try:
+        if isinstance(db_path_or_conn, (str, Path)):
+            logger.debug(f"db_transaction: Creating new connection to {db_path_or_conn}")
+            conn = get_db_connection(db_path_or_conn) # Assuming get_db_connection can take a path
+            conn_created_internally = True
+        elif isinstance(db_path_or_conn, sqlite3.Connection):
+            conn = db_path_or_conn
+            logger.debug(f"db_transaction: Using provided connection with id: {id(conn)}")
+            # Ensure foreign keys are on for provided connections if not already set by get_db_connection
+            # However, get_db_connection already does this. If conn is external, we assume it's configured.
+            # For safety, we could execute it, but it might interfere if the user has specific PRAGMA settings.
+            # Let's assume external connections are ready or get_db_connection handles it.
+        else: # db_path_or_conn is None, use default
+            logger.debug(f"db_transaction: Creating new connection to default DB_PATH: {DB_PATH}")
+            conn = get_db_connection() # Uses DB_PATH by default
+            conn_created_internally = True
+
+        if conn is None: # Should not happen if get_db_connection raises on failure
+            raise DatabaseError("Failed to establish a database connection for transaction.")
+
+        # Ensure PRAGMA foreign_keys = ON; is set for connections it establishes.
+        # get_db_connection already handles this.
+
+        # SQLite's default isolation_level is DEFERRED, which means a transaction
+        # doesn't actually start until the first DML statement.
+        # To ensure BEGIN is issued, we can set isolation_level to None
+        # and manage BEGIN/COMMIT/ROLLBACK manually, or rely on Python's
+        # context manager behavior with sqlite3.
+        # For explicit control, setting isolation_level to None is often preferred
+        # when using a context manager like this.
+        # However, sqlite3's connection object itself can be used as a context manager
+        # which handles this. Let's stick to explicit commit/rollback.
+        # The default behavior of conn.commit() and conn.rollback() is fine.
+
+        yield conn
+        conn.commit()
+        logger.debug(f"db_transaction: Transaction committed for connection id: {id(conn)}")
+
+    except Exception as e:
+        if conn:
+            logger.error(f"db_transaction: Exception occurred, rolling back transaction for connection id: {id(conn)}. Error: {e}", exc_info=True)
+            conn.rollback()
+        # Re-raise the exception to be handled by the caller
+        # If it's already a DatabaseError, re-raise it directly. Otherwise, wrap it.
+        if isinstance(e, DatabaseError):
+            raise
+        raise DatabaseError(f"Transaction failed: {str(e)}", original_error=e)
+    finally:
+        if conn and conn_created_internally:
+            logger.debug(f"db_transaction: Closing internally created connection with id: {id(conn)}")
+            conn.close()
 def dict_factory(cursor, row):
     """Convert row to dictionary"""
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
@@ -64,9 +163,13 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
     try:
         if connection:
             conn = connection
+            logger.debug(f"execute_query: Using provided connection with id: {id(conn)}")
+            logger.debug(f"execute_query: Connection isolation level: {conn.isolation_level}")
         else:
             conn = get_db_connection()
             conn_created = True
+            logger.debug(f"execute_query: Created new connection with id: {id(conn)}")
+            logger.debug(f"execute_query: Connection isolation level: {conn.isolation_level}")
             
         conn.row_factory = dict_factory
         cursor = conn.cursor()
@@ -79,14 +182,22 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
             else:
                 result = cursor.fetchone()
         else:
-            conn.commit()
+            # Only commit if this function created the connection
+            if conn_created:
+                logger.debug(f"execute_query: Committing changes for connection id: {id(conn)}")
+                conn.commit()
+            else:
+                logger.debug(f"execute_query: NOT committing changes for external connection id: {id(conn) if conn else None}")
             result = None
             
         return result
         
     except sqlite3.Error as e:
         if conn and conn_created:
+            logger.debug(f"execute_query: Rolling back changes for connection id: {id(conn)}")
             conn.rollback()
+        else:
+            logger.debug(f"execute_query: NOT rolling back for external connection id: {id(conn) if conn else None}")
         
         # Log with limited parameter data for security
         safe_params = "..." if params else "()"
@@ -102,6 +213,7 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
         if cursor:
             cursor.close()
         if conn and conn_created:
+            logger.debug(f"execute_query: Closing locally created connection with id: {id(conn)}")
             conn.close()
 
 def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Connection = None) -> None:
@@ -126,17 +238,31 @@ def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Conne
     try:
         if connection:
             conn = connection
+            logger.debug(f"execute_many: Using provided connection with id: {id(conn)}")
+            logger.debug(f"execute_many: Connection isolation level: {conn.isolation_level}")
         else:
             conn = get_db_connection()
             conn_created = True
+            logger.debug(f"execute_many: Created new connection with id: {id(conn)}")
+            logger.debug(f"execute_many: Connection isolation level: {conn.isolation_level}")
             
         cursor = conn.cursor()
         
         cursor.executemany(query, params_list)
-        conn.commit()
+        
+        # Only commit if we created this connection
+        if conn_created:
+            logger.debug(f"execute_many: Committing changes for connection id: {id(conn)}")
+            conn.commit()
+        else:
+            logger.debug(f"execute_many: NOT committing for external connection id: {id(conn)}")
         
     except sqlite3.Error as e:
-        if conn and conn_created:
+        # Always rollback on error, regardless of who created the connection
+        # This is safe because SQLite will only roll back to the most recent savepoint
+        # if the connection is already in a transaction
+        logger.debug(f"execute_many: Rolling back due to error for connection id: {id(conn)}")
+        if conn:
             conn.rollback()
         
         logger.error(f"Database error in executemany: {query[:100]}, params count: {len(params_list)}: {str(e)}", exc_info=True)
@@ -150,6 +276,7 @@ def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Conne
         if cursor:
             cursor.close()
         if conn and conn_created:
+            logger.debug(f"execute_many: Closing connection with id: {id(conn)}")
             conn.close()
 
 # Job-related database functions
@@ -173,6 +300,10 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
     job_id = generate_id()
     now = datetime.now().isoformat()
     
+    # Debug connection information
+    conn_id = id(connection) if connection else None
+    logger.debug(f"create_job: Using connection object id: {conn_id}, externally provided: {connection is not None}")
+    
     query = """
     INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, parameters, progress)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -189,8 +320,22 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
     )
     
     try:
+        # Debug transaction behavior
+        local_conn = False
+        if connection is None:
+            connection = get_db_connection()
+            local_conn = True
+            logger.debug(f"create_job: Created new connection with id: {id(connection)}")
+        
+        # Debug execute query connection
+        logger.debug(f"create_job: Calling execute_query with connection id: {id(connection)}")
         execute_query(query, params, connection=connection)
         logger.info(f"Created new job: {job_id} of type {job_type}")
+        
+        if local_conn:
+            logger.debug(f"create_job: Closing local connection with id: {id(connection)}")
+            connection.close()
+        
         return job_id
     except DatabaseError as e:
         logger.error(f"Failed to create job: {str(e)}")
@@ -213,6 +358,10 @@ def update_job_status(job_id: str, status: str, progress: float = None,
         connection: Optional existing database connection to use
     """
     now = datetime.now().isoformat()
+    
+    # Debug connection information
+    conn_id = id(connection) if connection else None
+    logger.debug(f"update_job_status: Using connection object id: {conn_id}, externally provided: {connection is not None}")
     
     # Build query and parameters list
     query_parts = ["UPDATE jobs SET updated_at = ?"]
@@ -378,76 +527,108 @@ def create_data_upload_result(job_id: str, records_processed: int,
 
 def create_or_get_parameter_set(
     parameters_dict: Dict[str, Any],
-    is_active: bool = False
+    is_active: bool = False,
+    connection: sqlite3.Connection = None
 ) -> str:
     """
     Creates a parameter set record if it doesn't exist, based on a hash of the parameters.
     If `is_active` is True, this set will be marked active, deactivating others.
     Returns the parameter_set_id.
-    
+
     Args:
         parameters_dict: Dictionary of parameters
         is_active: Whether to explicitly set this parameter set as active
-        
+        connection: Optional existing database connection to use
+
     Returns:
         Parameter set ID (hash)
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Create a stable JSON string representation for hashing
-    params_json = json.dumps(parameters_dict, sort_keys=True, ensure_ascii=False)
-    parameter_set_id = hashlib.sha256(params_json.encode('utf-8')).hexdigest()
-    
-    now = datetime.utcnow()
-    
+    conn_created = False
     try:
+        if connection:
+            conn = connection
+        else:
+            conn = get_db_connection()
+            conn_created = True
+            
+        cursor = conn.cursor()
+        
+        # Hash the JSON representation of the parameters for a stable ID
+        parameters_json = json.dumps(parameters_dict, sort_keys=True)
+        parameter_set_id = hashlib.md5(parameters_json.encode()).hexdigest()
+        
+        # Check if this parameter set already exists
         cursor.execute(
             "SELECT parameter_set_id FROM parameter_sets WHERE parameter_set_id = ?",
             (parameter_set_id,)
         )
-        existing = cursor.fetchone()
         
-        if not existing:
-            # New parameter set
+        if not cursor.fetchone():
+            # Create the parameter set
+            now = datetime.now().isoformat()
+            
             cursor.execute(
                 """
-                INSERT INTO parameter_sets (parameter_set_id, parameters, created_at, is_active)
+                INSERT INTO parameter_sets (parameter_set_id, parameters, is_active, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (parameter_set_id, params_json, now, is_active) # Set active status directly if requested
+                (parameter_set_id, parameters_json, 1 if is_active else 0, now)
             )
-            logger.info(f"Created new parameter set: {parameter_set_id}")
             
-            # If created as active, ensure others are deactivated
             if is_active:
+                # If this parameter set should be active, deactivate all others
                 cursor.execute(
-                    "UPDATE parameter_sets SET is_active = 0 WHERE parameter_set_id != ?",
+                    """
+                    UPDATE parameter_sets
+                    SET is_active = 0
+                    WHERE parameter_set_id != ?
+                    """,
                     (parameter_set_id,)
                 )
-                logger.info(f"Parameter set {parameter_set_id} created as active.")
-        
-        # If it exists and is_active is True, make it active
+                
+            if conn_created: # Only commit if this function created the connection
+                conn.commit()
+            logger.info(f"Created parameter set: {parameter_set_id}, active: {is_active}")
         elif is_active:
-            # Need to check if it's *already* active to avoid unnecessary updates
+            # If the parameter set already exists but needs to be set as active
             cursor.execute(
-                "SELECT is_active FROM parameter_sets WHERE parameter_set_id = ?",
+                """
+                UPDATE parameter_sets
+                SET is_active = 0
+                WHERE parameter_set_id != ?
+                """,
                 (parameter_set_id,)
             )
-            current_status = cursor.fetchone()
-            if not current_status or not current_status[0]: # If not found or not active
-                set_parameter_set_active(parameter_set_id, connection=conn)
             
-        conn.commit()
-
-    except sqlite3.Error as e:
-        logger.error(f"Database error in create_or_get_parameter_set: {e}")
-        conn.rollback()
+            cursor.execute(
+                """
+                UPDATE parameter_sets
+                SET is_active = 1
+                WHERE parameter_set_id = ?
+                """,
+                (parameter_set_id,)
+            )
+            
+            if conn_created: # Only commit if this function created the connection
+                conn.commit()
+            logger.info(f"Set existing parameter set {parameter_set_id} as active")
+            
+        return parameter_set_id
+        
+    except Exception as e:
+        logger.error(f"Error with parameter set: {e}")
+        if conn_created and 'conn' in locals():
+            try:
+                conn.rollback()
+            except Exception:
+                pass  # Already closed or other issue
         raise
     finally:
-        conn.close()
-        
-    return parameter_set_id
+        if conn_created and 'conn' in locals():
+            try:
+                conn.close()
+            except Exception:
+                pass  # Already closed or other issue
 
 def get_active_parameter_set(connection: sqlite3.Connection = None) -> Optional[Dict[str, Any]]:
     """
@@ -468,7 +649,7 @@ def get_active_parameter_set(connection: sqlite3.Connection = None) -> Optional[
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT parameter_set_id, parameters, default_metric_name, default_metric_value
+            SELECT parameter_set_id, parameters
             FROM parameter_sets 
             WHERE is_active = 1 
             LIMIT 1
@@ -476,23 +657,38 @@ def get_active_parameter_set(connection: sqlite3.Connection = None) -> Optional[
         )
         
         result = cursor.fetchone()
-        if result:
-            parameters = json.loads(result[1]) if result[1] else {}
+        if not result:
+            return None
             
-            return {
-                "parameter_set_id": result[0],
-                "parameters": parameters,
-                "default_metric_name": result[2],
-                "default_metric_value": result[3]
-            }
-        return None
+        # Handle both tuple and sqlite.Row result types
+        if hasattr(result, 'keys'):  # sqlite.Row
+            parameter_set_id = result['parameter_set_id']
+            parameters_json = result['parameters']
+        else:  # tuple
+            parameter_set_id = result[0]
+            parameters_json = result[1]
+            
+        # Parse the parameters JSON
+        try:
+            parameters = json.loads(parameters_json) if parameters_json else {}
+        except (json.JSONDecodeError, TypeError):
+            logger.error(f"Error parsing parameters JSON: {parameters_json}")
+            parameters = {}
+            
+        return {
+            "parameter_set_id": parameter_set_id,
+            "parameters": parameters
+        }
         
-    except sqlite3.Error as e:
-        logger.error(f"Database error in get_active_parameter_set: {e}")
+    except Exception as e:
+        logger.error(f"Error getting active parameter set: {e}")
         return None
     finally:
-        if conn_created and conn:
-            conn.close()
+        if conn_created and 'conn' in locals():
+            try:
+                conn.close()
+            except Exception:
+                pass  # Already closed or other issue
 
 def set_parameter_set_active(parameter_set_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None) -> bool:
     """
@@ -534,7 +730,8 @@ def set_parameter_set_active(parameter_set_id: str, deactivate_others: bool = Tr
             (parameter_set_id,)
         )
         
-        conn.commit()
+        if conn_created:
+            conn.commit()
         logger.info(f"Set parameter set {parameter_set_id} as active")
         return True
         
@@ -560,6 +757,10 @@ def get_best_parameter_set_by_metric(metric_name: str, higher_is_better: bool = 
         Dictionary with parameter_set_id, parameters, and metrics fields if a best set exists,
         otherwise None.
     """
+    if metric_name not in ALLOWED_METRICS:
+        logger.error(f"Invalid metric_name '{metric_name}' provided to get_best_parameter_set_by_metric.")
+        raise ValueError(f"Invalid metric_name: {metric_name}. Allowed metrics are: {ALLOWED_METRICS}")
+
     conn_created = False
     try:
         if connection:
@@ -573,21 +774,26 @@ def get_best_parameter_set_by_metric(metric_name: str, higher_is_better: bool = 
         
         order_direction = "DESC" if higher_is_better else "ASC"
         
+        # Construct the JSON path safely
+        json_path = f"'$.{metric_name}'" # The metric_name is now validated
+        
         # Join parameter_sets and training_results to find the best metrics
         # Ensure parameter_set_id is not NULL in training_results
+        # The metric_name for JSON_EXTRACT and order_direction are now safely constructed.
         query = f"""
-            SELECT 
-                ps.parameter_set_id, 
-                ps.parameters, 
+            SELECT
+                ps.parameter_set_id,
+                ps.parameters,
                 tr.metrics,
-                JSON_EXTRACT(tr.metrics, '$.{metric_name}') as metric_value
+                JSON_EXTRACT(tr.metrics, {json_path}) as metric_value
             FROM training_results tr
             JOIN parameter_sets ps ON tr.parameter_set_id = ps.parameter_set_id
-            WHERE tr.parameter_set_id IS NOT NULL AND JSON_VALID(tr.metrics) = 1 AND JSON_EXTRACT(tr.metrics, '$.{metric_name}') IS NOT NULL
+            WHERE tr.parameter_set_id IS NOT NULL AND JSON_VALID(tr.metrics) = 1 AND JSON_EXTRACT(tr.metrics, {json_path}) IS NOT NULL
             ORDER BY metric_value {order_direction}
             LIMIT 1
         """
         
+        # No parameters needed for this query as dynamic parts are validated and inlined
         cursor.execute(query)
         result = cursor.fetchone()
         
@@ -612,14 +818,18 @@ def get_best_parameter_set_by_metric(metric_name: str, higher_is_better: bool = 
                 result['metrics'] = {}
                 
             # Remove the extracted metric_value helper column
-            result.pop('metric_value', None) 
+            result.pop('metric_value', None)
             return result
             
         return None
         
     except sqlite3.Error as e:
-        logger.error(f"Database error in get_best_parameter_set_by_metric: {e}", exc_info=True)
-        return None
+        logger.error(f"Database error in get_best_parameter_set_by_metric for metric '{metric_name}': {e}", exc_info=True)
+        # It might be better to re-raise a custom error or let DatabaseError propagate if execute_query was used
+        return None # Or raise DatabaseError(f"Failed to get best parameter set: {e}", original_error=e)
+    except ValueError as ve: # Catch the ValueError from metric_name validation
+        logger.error(f"ValueError in get_best_parameter_set_by_metric: {ve}", exc_info=True)
+        raise # Re-raise the ValueError to be handled by the caller
     finally:
         if conn_created and conn:
             conn.close() # Correct indentation
@@ -630,7 +840,8 @@ def create_model_record(
     model_path: str, 
     created_at: datetime, 
     metadata: Optional[Dict[str, Any]] = None, 
-    is_active: bool = False
+    is_active: bool = False,
+    connection: sqlite3.Connection = None
 ) -> None:
     """
     Creates a record for a trained model artifact.
@@ -643,41 +854,61 @@ def create_model_record(
         created_at: Creation timestamp
         metadata: Optional metadata for the model
         is_active: Whether to explicitly set this model as active
+        connection: Optional existing database connection to use
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    metadata_json = json.dumps(metadata) if metadata else None
-    
+    conn_created = False
     try:
-        # Create the model record, setting is_active based on explicit parameter ONLY
+        if connection:
+            conn = connection
+        else:
+            conn = get_db_connection()
+            conn_created = True
+            
+        cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO models (model_id, job_id, model_path, created_at, metadata, is_active)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO models (
+                model_id, job_id, model_path, created_at, metadata, is_active
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (model_id, job_id, model_path, created_at, metadata_json, is_active)
+            (
+                model_id, 
+                job_id, 
+                model_path, 
+                created_at.isoformat() if isinstance(created_at, datetime) else created_at,
+                json.dumps(metadata) if metadata else None,
+                1 if is_active else 0
+            )
         )
         
-        # If explicitly set as active, deactivate others
         if is_active:
+            # If this model should be active, deactivate all others
             cursor.execute(
                 """
-                UPDATE models 
-                SET is_active = 0 
+                UPDATE models
+                SET is_active = 0
                 WHERE model_id != ?
                 """,
                 (model_id,)
             )
-            logger.info(f"Model {model_id} created as active.")
             
         conn.commit()
-        logger.info(f"Created model record for model_id: {model_id}")
-    except sqlite3.Error as e:
-        logger.error(f"Database error in create_model_record for model_id {model_id}: {e}")
-        conn.rollback()
+        logger.info(f"Created model record: {model_id}, active: {is_active}")
+        
+    except Exception as e:
+        logger.error(f"Error creating model record: {e}")
+        if conn_created and 'conn' in locals():
+            try:
+                conn.rollback()
+            except Exception:
+                pass  # Already closed or other issue
         raise
     finally:
-        conn.close()
+        if conn_created and 'conn' in locals():
+            try:
+                conn.close()
+            except Exception:
+                pass  # Already closed or other issue
 
 def get_active_model(connection: sqlite3.Connection = None) -> Optional[Dict[str, Any]]:
     """
@@ -709,15 +940,31 @@ def get_active_model(connection: sqlite3.Connection = None) -> Optional[Dict[str
         )
         
         result = cursor.fetchone()
-        if result:
-            metadata = json.loads(result[2]) if result[2] else {}
+        if not result:
+            return None
             
-            return {
-                "model_id": result[0],
-                "model_path": result[1],
-                "metadata": metadata
-            }
-        return None
+        # Check how to access the result (could be dict or sqlite.Row)
+        if hasattr(result, 'keys'):  # sqlite.Row or dict
+            model_id = result['model_id']
+            model_path = result['model_path']
+            metadata_str = result['metadata'] if 'metadata' in result else None
+        else:  # tuple
+            model_id = result[0]
+            model_path = result[1]
+            metadata_str = result[2] if len(result) > 2 else None
+            
+        # Parse metadata JSON if it exists
+        try:
+            metadata = json.loads(metadata_str) if metadata_str else {}
+        except json.JSONDecodeError:
+            logger.warning(f"Could not decode metadata JSON for model {model_id}")
+            metadata = {}  # Set to empty dict on error
+            
+        return {
+            "model_id": model_id,
+            "model_path": model_path,
+            "metadata": metadata
+        }
         
     except sqlite3.Error as e:
         logger.error(f"Database error in get_active_model: {e}")
@@ -766,7 +1013,8 @@ def set_model_active(model_id: str, deactivate_others: bool = True, connection: 
             (model_id,)
         )
         
-        conn.commit()
+        if conn_created:
+            conn.commit()
         logger.info(f"Set model {model_id} as active")
         return True
         
@@ -791,6 +1039,10 @@ def get_best_model_by_metric(metric_name: str, higher_is_better: bool = True, co
     Returns:
         Dictionary with model information if a best model exists, otherwise None.
     """
+    if metric_name not in ALLOWED_METRICS:
+        logger.error(f"Invalid metric_name '{metric_name}' provided to get_best_model_by_metric.")
+        raise ValueError(f"Invalid metric_name: {metric_name}. Allowed metrics are: {ALLOWED_METRICS}")
+
     conn_created = False
     try:
         if connection:
@@ -804,22 +1056,27 @@ def get_best_model_by_metric(metric_name: str, higher_is_better: bool = True, co
         
         order_direction = "DESC" if higher_is_better else "ASC"
         
+        # Construct the JSON path safely
+        json_path = f"'$.{metric_name}'" # The metric_name is now validated
+
         # Join models and training_results to find the best metrics
         # Ensure model_id is not NULL in training_results
+        # The metric_name for JSON_EXTRACT and order_direction are now safely constructed.
         query = f"""
-            SELECT 
-                m.model_id, 
-                m.model_path, 
-                m.metadata, 
+            SELECT
+                m.model_id,
+                m.model_path,
+                m.metadata,
                 tr.metrics,
-                JSON_EXTRACT(tr.metrics, '$.{metric_name}') as metric_value
+                JSON_EXTRACT(tr.metrics, {json_path}) as metric_value
             FROM training_results tr
             JOIN models m ON tr.model_id = m.model_id
-            WHERE tr.model_id IS NOT NULL AND JSON_VALID(tr.metrics) = 1 AND JSON_EXTRACT(tr.metrics, '$.{metric_name}') IS NOT NULL
+            WHERE tr.model_id IS NOT NULL AND JSON_VALID(tr.metrics) = 1 AND JSON_EXTRACT(tr.metrics, {json_path}) IS NOT NULL
             ORDER BY metric_value {order_direction}
             LIMIT 1
         """
         
+        # No parameters needed for this query as dynamic parts are validated and inlined
         cursor.execute(query)
         result = cursor.fetchone()
         
@@ -846,14 +1103,18 @@ def get_best_model_by_metric(metric_name: str, higher_is_better: bool = True, co
                 result['metrics'] = {}
                 
             # Remove the extracted metric_value helper column
-            result.pop('metric_value', None) 
+            result.pop('metric_value', None)
             return result
             
         return None
         
     except sqlite3.Error as e:
-        logger.error(f"Database error in get_best_model_by_metric: {e}", exc_info=True)
-        return None
+        logger.error(f"Database error in get_best_model_by_metric for metric '{metric_name}': {e}", exc_info=True)
+        # It might be better to re-raise a custom error or let DatabaseError propagate if execute_query was used
+        return None # Or raise DatabaseError(f"Failed to get best model: {e}", original_error=e)
+    except ValueError as ve: # Catch the ValueError from metric_name validation
+        logger.error(f"ValueError in get_best_model_by_metric: {ve}", exc_info=True)
+        raise # Re-raise the ValueError to be handled by the caller
     finally:
         if conn_created and conn:
             conn.close() # Correct indentation
@@ -883,59 +1144,69 @@ def get_recent_models(limit: int = 5) -> List[Tuple[str, str, str, str, Optional
         models = [(row[0], row[1], row[2], row[3], row[4]) for row in rows]
 
     except sqlite3.Error as e:
-        print(f"Database error in get_recent_models: {e}")
+        logger.error(f"Database error in get_recent_models: {e}", exc_info=True)
     finally:
         conn.close()
     return models
 
-def delete_model_record_and_file(model_id: str) -> bool:
+def delete_model_record_and_file(model_id: str, connection: sqlite3.Connection = None) -> bool:
     """
     Deletes a model record from the database and its associated file from the filesystem.
     Returns True if successful, False otherwise.
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    model_path = None
-    success = False
-    
+    conn_created = False
+    actual_conn = None
     try:
+        if connection:
+            actual_conn = connection
+        else:
+            actual_conn = get_db_connection()
+            conn_created = True
+
+        cursor = actual_conn.cursor()
+        model_path = None
+        success = False # Initialize success to False
+
         # Get the model path before deleting the record
         cursor.execute("SELECT model_path FROM models WHERE model_id = ?", (model_id,))
         result = cursor.fetchone()
         if result:
-            model_path = result[0]
+            model_path = result['model_path']
         else:
-            print(f"Model record not found for deletion: {model_id}")
+            logger.warning(f"Model record not found for deletion: {model_id}")
+            # No need to close connection if it wasn't found and we might have created it
+            # but it will be handled by finally.
             return False # Record doesn't exist
 
         # Delete the database record
         cursor.execute("DELETE FROM models WHERE model_id = ?", (model_id,))
-        conn.commit()
-        print(f"Deleted model record: {model_id}")
+        actual_conn.commit()
+        logger.info(f"Deleted model record: {model_id}")
 
         # Delete the associated file if path exists
         if model_path and os.path.exists(model_path):
             try:
                 os.remove(model_path)
-                print(f"Deleted model file: {model_path}")
+                logger.info(f"Deleted model file: {model_path}")
                 success = True
             except OSError as e:
-                print(f"Error deleting model file {model_path}: {e}")
-                # Record deleted, but file deletion failed. Log and return False.
+                logger.error(f"Error deleting model file {model_path}: {e}", exc_info=True)
                 success = False
         elif model_path:
-            print(f"Model file not found for deletion (already deleted?): {model_path}")
-            success = True # Record deleted, file was already gone. Consider this success.
+            logger.warning(f"Model file not found for deletion (already deleted?): {model_path}")
+            success = True
         else:
-             print(f"Model path was not stored for model_id {model_id}, cannot delete file.")
-             success = True # Record deleted, no path to delete.
+             logger.warning(f"Model path was not stored for model_id {model_id}, cannot delete file.")
+             success = True
 
     except sqlite3.Error as e:
-        print(f"Database error in delete_model_record_and_file for model_id {model_id}: {e}")
-        conn.rollback()
+        logger.error(f"Database error in delete_model_record_and_file for model_id {model_id}: {e}", exc_info=True)
+        if conn_created and actual_conn: # Rollback only if we created the connection
+            actual_conn.rollback()
         success = False
     finally:
-        conn.close()
+        if conn_created and actual_conn:
+            actual_conn.close()
         
     return success
 
@@ -1338,7 +1609,7 @@ def delete_parameter_sets_by_ids(parameter_set_ids: List[str], connection: sqlit
         
         active_sets = cursor.fetchall()
         if active_sets:
-            active_ids = [row[0] for row in active_sets]
+            active_ids = [row['parameter_set_id'] for row in active_sets]
             result["errors"].append(f"Cannot delete active parameter sets: {', '.join(active_ids)}")
             result["failed"] += len(active_ids)
             
@@ -1455,7 +1726,7 @@ def delete_models_by_ids(model_ids: List[str], connection: sqlite3.Connection = 
         
         active_models = cursor.fetchall()
         if active_models:
-            active_ids = [row[0] for row in active_models]
+            active_ids = [row['model_id'] for row in active_models]
             result["errors"].append(f"Cannot delete active models: {', '.join(active_ids)}")
             result["failed"] += len(active_ids)
             
@@ -1475,8 +1746,8 @@ def delete_models_by_ids(model_ids: List[str], connection: sqlite3.Connection = 
             
             models_to_delete = cursor.fetchall()
             for model in models_to_delete:
-                model_id = model[0]
-                model_path = model[1]
+                model_id = model['model_id']
+                model_path = model['model_path']
                 
                 try:
                     # Delete file if it exists

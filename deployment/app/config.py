@@ -5,10 +5,21 @@ Loads configuration from environment variables or config files.
 import os
 import json
 import yaml
-from typing import List, Dict, Any, Optional, Callable
+import logging # Added
+from pathlib import Path # Added
+from typing import List, Dict, Any, Optional, Callable, Type, Tuple # Modified
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import ( # Added
+    InitSettingsSource,
+    EnvSettingsSource,
+    DotEnvSettingsSource,
+    SecretsSettingsSource,
+) # PydanticSettingsSource removed as it's likely internal
 from functools import lru_cache
+
+# Initialize logger for this module
+logger = logging.getLogger(__name__)
 
 def load_config_file(file_path: str) -> Dict[str, Any]:
     """
@@ -43,7 +54,7 @@ def get_config_values() -> Dict[str, Any]:
     try:
         return load_config_file(config_file_path)
     except Exception as e:
-        print(f"Error loading config file: {str(e)}")
+        logger.error(f"Error loading config file: {str(e)}", exc_info=True)
         return {}
 
 
@@ -96,6 +107,10 @@ class APISettings(BaseSettings):
         default="",
         description="API key for authentication"
     )
+    x_api_key: str = Field(
+        default="",
+        description="API key for X-API-Key header authentication"
+    )
     log_level: str = Field(
         default="INFO",
         description="Log level"
@@ -109,64 +124,155 @@ class APISettings(BaseSettings):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
     
+    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_api_config
+
+    @classmethod
+    def settings_customise_sources(
+        cls: Type[BaseSettings],  # Changed from settings_cls to cls
+        settings_cls_arg: Type[BaseSettings], # Added settings_cls_arg
+        init_settings: InitSettingsSource,
+        env_settings: EnvSettingsSource,
+        dotenv_settings: DotEnvSettingsSource,
+        file_secret_settings: SecretsSettingsSource,
+    ) -> Tuple[Any, ...]:
+        """
+        Customise the sources for loading settings.
+        Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
+        """
+        config_file_data: Dict[str, Any] = {}
+        # Use cls consistently
+        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+            loader_func = cls._config_loader_func
+            loaded_data = loader_func()
+            if isinstance(loaded_data, dict):
+                config_file_data = loaded_data
+        
+        custom_dict_source = lambda: config_file_data
+
+        return (
+            init_settings,
+            custom_dict_source,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
+
     # Use SettingsConfigDict for Pydantic v2 settings configuration
     model_config = SettingsConfigDict(
         env_prefix="API_",
         env_file=".env",
         extra="ignore",
-        # Configure so that values from config file take precedence over environment variables
-        env_nested_delimiter="__"
+        # Values from config file (via customize_sources) take precedence over environment variables.
+        env_nested_delimiter="__",
+        customize_sources=settings_customise_sources,
     )
-    
-    def __init__(self, **data):
-        # Merge config file values with the incoming data
-        config_values = get_api_config()
-        merged_data = {**config_values, **data}
-        super().__init__(**merged_data)
 
 
 class DatabaseSettings(BaseSettings):
     """Database specific settings."""
     path: str = Field(
-        default=os.environ.get("DATABASE_PATH", "deployment/data/plastinka.db"),
+        default="deployment/data/plastinka.db", # Static default
         description="Path to SQLite database file"
     )
+    url: str = Field(
+        default="sqlite:///deployment/data/plastinka.db", # Static default
+        description="SQLite database URL for SQLAlchemy"
+    )
+
+    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_db_config
+
+    @classmethod
+    def settings_customise_sources(
+        cls: Type[BaseSettings],
+        settings_cls_arg: Type[BaseSettings],
+        init_settings: InitSettingsSource,
+        env_settings: EnvSettingsSource,
+        dotenv_settings: DotEnvSettingsSource,
+        file_secret_settings: SecretsSettingsSource,
+    ) -> Tuple[Any, ...]:
+        """
+        Customise the sources for loading settings.
+        Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
+        """
+        config_file_data: Dict[str, Any] = {}
+        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+            loader_func = cls._config_loader_func
+            loaded_data = loader_func()
+            if isinstance(loaded_data, dict):
+                config_file_data = loaded_data
+
+        custom_dict_source = lambda: config_file_data
+        
+        return (
+            init_settings,
+            custom_dict_source,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
     
     # Use SettingsConfigDict for Pydantic v2 settings configuration
     model_config = SettingsConfigDict(
         env_prefix="DB_",
         env_file=".env",
         extra="ignore",
-        env_nested_delimiter="__"
+        env_nested_delimiter="__",
+        customize_sources=settings_customise_sources,
     )
     
-    def __init__(self, **data):
-        # Merge config file values with the incoming data
-        config_values = get_db_config()
-        merged_data = {**config_values, **data}
-        super().__init__(**merged_data)
+    def reload(self):
+        """Reload settings from environment variables"""
+        # Get latest DATABASE_PATH from environment
+        new_path = os.environ.get("DATABASE_PATH", "deployment/data/plastinka.db")
+        new_url = os.environ.get("DATABASE_URL", f"sqlite:///{new_path}")
+        
+        # Update the instance values
+        object.__setattr__(self, "path", new_path)
+        object.__setattr__(self, "url", new_url)
+        
+        return self
 
 
 class TrainJobSettings(BaseSettings):
     """Settings specific to the DataSphere training job submission."""
     input_dir: str = Field(
-        default=os.environ.get("DATASPHERE_TRAIN_JOB_INPUT_DIR", "deployment/data/datasphere_input"),
+        default="deployment/data/datasphere_input", # Static default
         description="Base directory for DataSphere training job inputs (params.json etc.)"
     )
     output_dir: str = Field(
-        default=os.environ.get("DATASPHERE_TRAIN_JOB_OUTPUT_DIR", "deployment/data/datasphere_output"),
+        default="deployment/data/datasphere_output", # Static default
         description="Base directory for DataSphere training job outputs"
     )
     job_config_path: Optional[str] = Field(
-        default=os.environ.get("DATASPHERE_TRAIN_JOB_CONFIG_PATH", None),
+        default=None, # Static default
         description="Optional path to a base DataSphere job configuration file (might not be used by submit_job)"
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls: Type[BaseSettings],
+        settings_cls_arg: Type[BaseSettings], # Parameter to accept Pydantic's settings_cls kwarg
+        init_settings: InitSettingsSource,
+        env_settings: EnvSettingsSource,
+        dotenv_settings: DotEnvSettingsSource,
+        file_secret_settings: SecretsSettingsSource,
+    ) -> Tuple[Any, ...]:
+        # For TrainJobSettings, we don't have a dedicated file section,
+        # so we just return the standard sources in default order.
+        # Environment variables should be picked up by env_settings.
+        return (
+            init_settings,
+            env_settings, # Ensure env_settings is explicitly included
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     model_config = SettingsConfigDict(
         env_prefix="DATASPHERE_TRAIN_JOB_",
         env_file=".env",
         extra="ignore",
-        env_nested_delimiter="__"
+        env_nested_delimiter="__",
+        customize_sources=settings_customise_sources, # Added customize_sources
     )
 
 
@@ -189,8 +295,6 @@ class DataSphereSettings(BaseSettings):
         default=os.environ.get("DATASPHERE_YC_PROFILE", None),
         description="Yandex Cloud CLI profile name (optional)"
     )
-    
-
     
     # Nested Train Job Settings
     train_job: TrainJobSettings = Field(default_factory=TrainJobSettings)
@@ -221,25 +325,46 @@ class DataSphereSettings(BaseSettings):
             "yc_profile": self.yc_profile
         }
     
+    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_datasphere_config
+
+    @classmethod
+    def settings_customise_sources(
+        cls: Type[BaseSettings],
+        settings_cls_arg: Type[BaseSettings],
+        init_settings: InitSettingsSource,
+        env_settings: EnvSettingsSource,
+        dotenv_settings: DotEnvSettingsSource,
+        file_secret_settings: SecretsSettingsSource,
+    ) -> Tuple[Any, ...]:
+        """
+        Customise the sources for loading settings.
+        Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
+        """
+        config_file_data: Dict[str, Any] = {}
+        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+            loader_func = cls._config_loader_func
+            loaded_data = loader_func()
+            if isinstance(loaded_data, dict):
+                config_file_data = loaded_data
+
+        custom_dict_source = lambda: config_file_data
+
+        return (
+            init_settings,
+            custom_dict_source,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
+
     # Use SettingsConfigDict for Pydantic v2 settings configuration
     model_config = SettingsConfigDict(
         env_prefix="DATASPHERE_",
         env_file=".env",
         extra="ignore",
-        env_nested_delimiter="__"
+        env_nested_delimiter="__",
+        customize_sources=settings_customise_sources,
     )
-    
-    def __init__(self, **data):
-        # Merge config file values with the incoming data
-        config_values = get_datasphere_config()
-        # Handle nested train_job settings correctly during merge
-        train_job_config = config_values.pop("train_job", {})
-        merged_data = {**config_values, **data}
-        # Merge top-level first
-        # Merge train_job settings if they exist in incoming data or config file
-        if 'train_job' in merged_data or train_job_config:
-            merged_data['train_job'] = TrainJobSettings(**{**train_job_config, **merged_data.get('train_job', {})})
-        super().__init__(**merged_data)
 
 
 class DataRetentionSettings(BaseSettings):
@@ -285,11 +410,49 @@ class DataRetentionSettings(BaseSettings):
         env_nested_delimiter="__"
     )
     
-    def __init__(self, **data):
-        # Merge config file values with the incoming data
-        config_values = get_data_retention_config()
-        merged_data = {**config_values, **data}
-        super().__init__(**merged_data)
+    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_data_retention_config
+
+    @classmethod
+    def settings_customise_sources(
+        cls: Type[BaseSettings],
+        settings_cls_arg: Type[BaseSettings],
+        init_settings: InitSettingsSource,
+        env_settings: EnvSettingsSource,
+        dotenv_settings: DotEnvSettingsSource,
+        file_secret_settings: SecretsSettingsSource,
+    ) -> Tuple[Any, ...]:
+        """
+        Customise the sources for loading settings.
+        Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
+        """
+        config_file_data: Dict[str, Any] = {}
+        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+            loader_func = cls._config_loader_func
+            loaded_data = loader_func()
+            if isinstance(loaded_data, dict):
+                config_file_data = loaded_data
+        
+        custom_dict_source = lambda: config_file_data
+
+        return (
+            init_settings,
+            custom_dict_source,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
+    
+    # model_config is inherited or defined in DataRetentionSettings if needed
+    # For this example, assuming it's similar to others if specific env_prefix is used.
+    # If DataRetentionSettings needs its own customize_sources, it should be defined here.
+    # For now, let's assume the above method is part of this class.
+    model_config = SettingsConfigDict(
+        env_prefix="RETENTION_",
+        env_file=".env",
+        extra="ignore",
+        env_nested_delimiter="__",
+        customize_sources=settings_customise_sources, # Added
+    )
 
 
 class AppSettings(BaseSettings):
@@ -346,6 +509,10 @@ class AppSettings(BaseSettings):
         default=os.environ.get("AUTO_SELECT_BEST_MODEL", "true").lower() == "true",
         description="Whether to automatically select the best model as active"
     )
+    project_root_dir: str = Field(
+        default=os.environ.get("PROJECT_ROOT_DIR", str(Path(__file__).resolve().parents[2])),
+        description="Absolute path to the project root directory."
+    )
     
     # Use SettingsConfigDict for Pydantic v2 settings configuration
     model_config = SettingsConfigDict(
@@ -354,13 +521,56 @@ class AppSettings(BaseSettings):
         env_nested_delimiter="__"
     )
     
-    def __init__(self, **data):
-        # Merge config file values with the incoming data
-        config_values = get_app_config()
-        merged_data = {**config_values, **data}
+    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_app_config
+
+    @classmethod
+    def settings_customise_sources(
+        cls: Type[BaseSettings],
+        settings_cls_arg: Type[BaseSettings],
+        init_settings: InitSettingsSource,
+        env_settings: EnvSettingsSource,
+        dotenv_settings: DotEnvSettingsSource,
+        file_secret_settings: SecretsSettingsSource,
+    ) -> Tuple[Any, ...]:
+        """
+        Customise the sources for loading settings.
+        Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
+        """
+        config_file_data: Dict[str, Any] = {}
+        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+            loader_func = cls._config_loader_func
+            loaded_data = loader_func() # For AppSettings, this loads its direct fields
+            if isinstance(loaded_data, dict):
+                config_file_data = loaded_data
         
-        # Let Pydantic handle field initialization
-        super().__init__(**merged_data)
+        custom_dict_source = lambda: config_file_data
+        
+        # Nested settings (api, db, etc.) will handle their own sources
+        # when Pydantic initializes them.
+        return (
+            init_settings,
+            custom_dict_source,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
+
+    # model_config is inherited or defined in AppSettings if needed
+    model_config = SettingsConfigDict(
+        env_file=".env", # AppSettings might not have its own prefix for direct fields
+        extra="ignore",
+        env_nested_delimiter="__", # For nested models if their env vars are prefixed by AppSettings field names
+        customize_sources=settings_customise_sources, # Added
+    )
+
+    @field_validator('project_root_dir', mode='before')
+    @classmethod
+    def _resolve_project_root(cls, v):
+        if v:
+            # Ensure the path is absolute and resolved
+            return str(Path(v).resolve())
+        # Fallback if environment variable is empty or not set, re-apply default logic
+        return str(Path(__file__).resolve().parents[2])
     
     @property
     def callback_url(self) -> str:

@@ -5,11 +5,14 @@ from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3 # Import sqlite3
+import logging
 
 from deployment.app.db.database import (
     execute_query, execute_many, get_or_create_multiindex_id,
     create_processing_run, update_processing_run
 )
+
+logger = logging.getLogger(__name__)
 
 class SQLFeatureStore:
     """Store for saving and loading pandas DataFrames to/from SQL database"""
@@ -63,19 +66,79 @@ class SQLFeatureStore:
                 status="features_saved",
                 connection=self.db_conn # Pass connection
             )
+
+    def _get_feature_config(self):
+        """Return standardized configuration for different feature types"""
+        return {
+            'stock': {
+                'table': 'fact_stock',
+                'is_date_in_index': False
+            },
+            'prices': {
+                'table': 'fact_prices',
+                'is_date_in_index': False
+            },
+            'sales': {
+                'table': 'fact_sales',
+                'is_date_in_index': True
+            },
+            'change': {
+                'table': 'fact_stock_changes',
+                'is_date_in_index': True
+            }
+        }
     
     def _save_feature(self, feature_type: str, df: pd.DataFrame, append: bool = False) -> None:
-        """Save a single feature DataFrame to the appropriate SQL table"""
-        if feature_type == 'stock':
-            self._save_stock_feature(df, append)
-        elif feature_type == 'prices':
-            self._save_prices_feature(df, append)
-        elif feature_type == 'sales':
-            self._save_sales_feature(df, append)
-        elif feature_type == 'change':
-            self._save_change_feature(df, append)
-        else:
-            print(f"Warning: Unknown feature type '{feature_type}'")
+        """Save a feature DataFrame to the appropriate SQL table using configuration"""
+        config = self._get_feature_config().get(feature_type)
+        if not config:
+            logger.warning(f"Unknown feature type '{feature_type}'")
+            return
+        
+        table = config['table']
+        is_date_in_index = config['is_date_in_index']
+        params_list = []
+        
+        for idx, row in df.iterrows():
+            try:
+                # Process data based on date position (in index or not)
+                if is_date_in_index:
+                    # Date in index
+                    date_str = self._convert_to_date_str(idx[0])
+                    multiindex_id = self._get_multiindex_id(idx[1:])
+                    # Try to get the value from feature_type column
+                    value = row.get(feature_type, 0.0)
+                else:
+                    # Date not in index (stock/prices)
+                    multiindex_id = self._get_multiindex_id(idx)
+                    
+                    if feature_type == 'stock' and not row.empty:
+                        date_str = self._convert_to_date_str(row.index[0])
+                        value = row.iloc[0]
+                    else:
+                        # For prices use current date
+                        date_str = datetime.now().strftime('%Y-%m-%d')
+                        # Try to get from column named like feature_type+'s'
+                        value = row.get(feature_type + 's', 0.0)  # e.g., "prices" column
+                
+                # Convert to float (all values are stored as REAL)
+                value_converted = self._convert_to_float(value)
+                
+                params_list.append((
+                    multiindex_id,
+                    date_str,
+                    value_converted
+                ))
+            except Exception as e:
+                logger.error(f"Error processing {feature_type} data row: {e}", exc_info=True)
+        
+        # Batch insert data
+        if params_list:
+            execute_many(
+                f"INSERT OR REPLACE INTO {table} (multiindex_id, data_date, value) VALUES (?, ?, ?)",
+                params_list,
+                connection=self.db_conn # Pass connection
+            )
     
     def _convert_to_date_str(self, date_value: Any) -> str:
         """Convert various date formats to a standard date string."""
@@ -104,7 +167,7 @@ class SQLFeatureStore:
             try:
                 return int(float(value))
             except (ValueError, TypeError):
-                print(f"Warning: Could not convert {value} of type {type(value)} to int, using {default}")
+                logger.warning(f"Could not convert {value} of type {type(value)} to int, using {default}")
                 return default
     
     def _convert_to_float(self, value: Any, default: float = 0.0) -> float:
@@ -118,182 +181,8 @@ class SQLFeatureStore:
             try:
                 return float(value)
             except (ValueError, TypeError):
-                print(f"Warning: Could not convert {value} of type {type(value)} to float, using {default}")
+                logger.warning(f"Could not convert {value} of type {type(value)} to float, using {default}")
                 return default
-    
-    def _handle_row(self, operation_fn, idx, row, *args):
-        """Generic error handling wrapper for row processing."""
-        try:
-            return operation_fn(idx, row, *args)
-        except Exception as e:
-            feature_type = args[0] if args else "unknown"
-            print(f"Error processing {feature_type} data row: {e}")
-            return None  # Skip this row
-    
-    def _create_row_processor(self, feature_type, date_col=None, value_col=None, is_date_in_index=False, value_conversion='float'):
-        """
-        Создает функцию для обработки строк разных типов данных.
-        
-        Args:
-            feature_type: Тип признака (stock, prices, sales, change)
-            date_col: Имя столбца с датой (если дата не в индексе)
-            value_col: Имя столбца со значением
-            is_date_in_index: Флаг, указывающий, что дата находится в индексе (первый уровень)
-            value_conversion: Тип конвертации значения ('int' или 'float')
-        
-        Returns:
-            Функция для обработки строк данного типа признаков
-        """
-        def process_row(idx, row, *args):
-            # Получаем multiindex_id, обрабатывая индекс по-разному в зависимости от is_date_in_index
-            if is_date_in_index:
-                # Для индексов, где дата - первый уровень (sales, change)
-                date_str = self._convert_to_date_str(idx[0])
-                multiindex_id = self._get_multiindex_id(idx[1:])
-            else:
-                # Для индексов без даты в индексе (stock, prices)
-                multiindex_id = self._get_multiindex_id(idx)
-                
-                # Для цен используем текущую дату
-                if feature_type == 'prices':
-                    date_str = datetime.now().strftime('%Y-%m-%d')
-            
-            # Получаем значение и конвертируем его в правильный тип
-            if feature_type == 'stock':
-                # Упрощенная логика для stock с одной колонкой-датой (согласно JSON)
-                if not row.empty:
-                    col_date = row.index[0]  # Имя единственной колонки (это Timestamp)
-                    value = row.iloc[0]      # Значение в этой колонке
-
-                    col_date_str = self._convert_to_date_str(col_date)
-                    # Конвертируем значение в float, как указано в JSON
-                    value_float = self._convert_to_float(value)
-
-                    # Возвращаем список из одного кортежа
-                    return [(
-                        multiindex_id,
-                        col_date_str,
-                        value_float
-                    )]
-                else:
-                    # Обработка случая пустой строки, если необходимо
-                    return []
-            else:
-                # Для других типов данных (prices, sales, change)
-                if value_col:
-                    # Получаем значение из указанного столбца
-                    if value_conversion == 'int':
-                        value_converted = self._convert_to_int(row.get(value_col, 0))
-                    else:  # 'float'
-                        value_converted = self._convert_to_float(row.get(value_col, 0.0))
-                    
-                    # Для sales, change, prices используем date_str, определенный выше
-                    return [(
-                        multiindex_id,
-                        date_str,
-                        value_converted
-                    )]
-                
-            return []
-        
-        return process_row
-    
-    def _save_stock_feature(self, df: pd.DataFrame, append: bool = False) -> None:
-        """Save stock feature to fact_stock table"""
-        # Convert MultiIndex DataFrame to list of tuples for batch insert
-        params_list = []
-        
-        # Создаем процессор строк для stock
-        process_stock_row = self._create_row_processor(
-            feature_type='stock',
-            is_date_in_index=False
-        )
-        
-        # Process each row with error handling
-        for idx, row in df.iterrows():
-            processed_rows = self._handle_row(process_stock_row, idx, row, 'stock')
-            if processed_rows:
-                params_list.extend(processed_rows)
-        
-        # Batch insert data
-        if params_list:
-            execute_many(
-                "INSERT OR REPLACE INTO fact_stock (multiindex_id, snapshot_date, quantity) VALUES (?, ?, ?)",
-                params_list,
-                connection=self.db_conn # Pass connection
-            )
-    
-    def _save_prices_feature(self, df: pd.DataFrame, append: bool = False) -> None:
-        """Save prices feature to fact_prices table"""
-        params_list = []
-        
-        process_prices_row = self._create_row_processor(
-            feature_type='prices',
-            value_col='prices', # Specify the column name for prices
-            is_date_in_index=False,
-            value_conversion='float'
-        )
-        
-        for idx, row in df.iterrows():
-            processed_rows = self._handle_row(process_prices_row, idx, row, 'prices')
-            if processed_rows:
-                params_list.extend(processed_rows)
-                
-        if params_list:
-            execute_many(
-                "INSERT OR REPLACE INTO fact_prices (multiindex_id, price_date, price) VALUES (?, ?, ?)",
-                params_list,
-                connection=self.db_conn # Pass connection
-            )
-            
-    def _save_sales_feature(self, df: pd.DataFrame, append: bool = False) -> None:
-        """Save sales feature to fact_sales table"""
-        params_list = []
-        
-        # Sales data has date in the first level of the index
-        process_sales_row = self._create_row_processor(
-            feature_type='sales',
-            value_col='sales', # Assuming the column name is 'sales'
-            is_date_in_index=True,
-            value_conversion='float'
-        )
-        
-        for idx, row in df.iterrows():
-            processed_rows = self._handle_row(process_sales_row, idx, row, 'sales')
-            if processed_rows:
-                params_list.extend(processed_rows)
-                
-        if params_list:
-            execute_many(
-                "INSERT OR REPLACE INTO fact_sales (multiindex_id, sale_date, quantity) VALUES (?, ?, ?)",
-                params_list,
-                connection=self.db_conn # Pass connection
-            )
-            
-    def _save_change_feature(self, df: pd.DataFrame, append: bool = False) -> None:
-        """Save stock change feature to fact_stock_changes table"""
-        params_list = []
-        
-        # Stock change data also has date in the first level of the index
-        process_change_row = self._create_row_processor(
-            feature_type='change',
-            value_col='change', # Assuming the column name is 'change'
-            is_date_in_index=True,
-            value_conversion='float'
-        )
-        
-        for idx, row in df.iterrows():
-            processed_rows = self._handle_row(process_change_row, idx, row, 'change')
-            if processed_rows:
-                params_list.extend(processed_rows)
-                
-        if params_list:
-            execute_many(
-                "INSERT OR REPLACE INTO fact_stock_changes (multiindex_id, change_date, quantity_change) VALUES (?, ?, ?)",
-                params_list,
-                connection=self.db_conn # Pass connection
-            )
-            
     
     def _get_multiindex_id(self, idx) -> int:
         """Retrieve or create multiindex_id based on index values"""
@@ -329,17 +218,13 @@ class SQLFeatureStore:
             start_date: Optional[str] = None, 
             end_date: Optional[str] = None
     ) -> Dict[str, pd.DataFrame]:
-        """Load all features from SQL database up to a cutoff date"""
-            
-        features = {
-            'stock': self._load_stock_feature(start_date, end_date),
-            'prices': self._load_prices_feature(start_date, end_date),
-            'sales': self._load_sales_feature(start_date, end_date),
-            'change': self._load_change_feature(start_date, end_date),
-        }
+        """Load all features from SQL database with optional date range filtering"""
+        features = {}
         
-        # Remove empty DataFrames
-        features = {k: v for k, v in features.items() if v is not None and not v.empty}
+        for feature_type in self._get_feature_config().keys():
+            df = self._load_feature(feature_type, start_date, end_date)
+            if df is not None and not df.empty:
+                features[feature_type] = df
         
         return features
 
@@ -376,175 +261,86 @@ class SQLFeatureStore:
             'release_type', 'recording_decade', 'release_decade', 'style', 'record_year'
         ])
 
-    def _load_stock_feature(
-            self, 
-            start_date: Optional[str] = None, 
-            end_date: Optional[str] = None
-    ) -> Optional[pd.DataFrame]:
-        """Load stock feature from fact_stock table"""
-        query = "SELECT multiindex_id, snapshot_date, quantity FROM fact_stock"
+    def _load_feature(self, feature_type: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """Load feature from database using configuration"""
+        config = self._get_feature_config().get(feature_type)
+        if not config:
+            logger.warning(f"Unknown feature type '{feature_type}'")
+            return None
+        
+        table = config['table']
+        
+        # Build query with standardized column names
+        query = f"SELECT multiindex_id, data_date, value FROM {table}"
         params = []
         
+        # Add date filters
         if start_date:
-            query += " WHERE snapshot_date >= ?"
+            query += " WHERE data_date >= ?"
             params.append(start_date)
             
         if end_date:
-            query += " AND snapshot_date <= ?"
+            query += f"{' AND' if start_date else ' WHERE'} data_date <= ?"
             params.append(end_date)
-            
-        data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
         
+        # For prices, sort by date to get latest price later
+        if feature_type == 'prices':
+            query += " ORDER BY multiindex_id, data_date DESC"
+        
+        # Execute query
+        data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
         if not data:
             return None
-            
+        
+        # Process results with standardized column names
         df = pd.DataFrame(data)
-        df['snapshot_date'] = pd.to_datetime(df['snapshot_date'])
+        df['data_date'] = pd.to_datetime(df['data_date'])
         
-        # Pivot table to get dates as columns
-        pivot_df = df.pivot_table(index='multiindex_id', columns='snapshot_date', values='quantity')
-        
-        # Rebuild the original MultiIndex
-        original_index = self._build_multiindex_from_mapping(pivot_df.index.tolist())
-        pivot_df.index = original_index
-        
-        return pivot_df
-
-    def _load_prices_feature(
-            self, 
-            start_date: Optional[str] = None, 
-            end_date: Optional[str] = None
-    ) -> Optional[pd.DataFrame]:
-        """Load prices feature from fact_prices table"""
-        # Prices usually represent the latest known price, so cutoff might not apply directly
-        # We might want the latest price before or on the cutoff date
-        # For simplicity, let's just load all for now, filtering can be added if needed
-        
-        query = "SELECT multiindex_id, price_date, price FROM fact_prices ORDER BY multiindex_id, price_date DESC"
-        params = []
-        
-        if start_date:
-            query += " WHERE price_date >= ?"
-            params.append(start_date)
+        # Handle different processing for different feature types
+        if feature_type == 'prices':
+            # Get the latest price for each multiindex_id
+            latest_prices = df.loc[df.groupby('multiindex_id')['data_date'].idxmax()]
             
-        if end_date:
-            query += " AND price_date <= ?"
-            params.append(end_date)
+            # Rebuild the original MultiIndex
+            original_index = self._build_multiindex_from_mapping(latest_prices['multiindex_id'].tolist())
             
-        data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
-        
-        if not data:
-            return None
+            # Create a DataFrame with the correct index and the price column
+            result_df = pd.DataFrame({'prices': latest_prices['value'].values}, index=original_index)
             
-        df = pd.DataFrame(data)
-        
-        # Get the latest price for each multiindex_id
-        latest_prices = df.loc[df.groupby('multiindex_id')['price_date'].idxmax()]
-        
-        # Rebuild the original MultiIndex
-        original_index = self._build_multiindex_from_mapping(latest_prices['multiindex_id'].tolist())
-        
-        # Create a DataFrame with the correct index and the price column
-        result_df = pd.DataFrame({'prices': latest_prices['price'].values}, index=original_index)
-        
-        return result_df
-
-    def _load_sales_feature(
-            self, 
-            start_date: Optional[str] = None, 
-            end_date: Optional[str] = None
-    ) -> Optional[pd.DataFrame]:
-        """Load sales feature from fact_sales table"""
-        query = "SELECT multiindex_id, sale_date, quantity FROM fact_sales"
-        params = []
-        
-        if start_date:
-            query += " WHERE sale_date >= ?"
-            params.append(start_date)
+        elif feature_type == 'stock':
+            # Pivot table to get dates as columns
+            pivot_df = df.pivot_table(index='multiindex_id', columns='data_date', values='value')
             
-        if end_date:
-            query += " AND sale_date <= ?"
-            params.append(end_date)
+            # Rebuild the original MultiIndex
+            original_index = self._build_multiindex_from_mapping(pivot_df.index.tolist())
+            pivot_df.index = original_index
+            result_df = pivot_df
             
-        data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
-        
-        if not data:
-            return None
+        else:  # 'sales' or 'change'
+            # For features with date in index
+            all_ids = df['multiindex_id'].unique().tolist()
+            full_index = self._build_multiindex_from_mapping(all_ids)
             
-        df = pd.DataFrame(data)
-        df['sale_date'] = pd.to_datetime(df['sale_date'])
-        
-        # Pivot table to get dates as columns
-        # We need to get the mapping first to create the full index
-        all_ids = df['multiindex_id'].unique().tolist()
-        full_index = self._build_multiindex_from_mapping(all_ids)
-        
-        # Map multiindex_id back to the full index tuple for pivoting
-        id_to_tuple_map = {id_val: index_tuple for id_val, index_tuple in zip(all_ids, full_index)}
-        df['full_index'] = df['multiindex_id'].map(id_to_tuple_map)
-        
-        # Pivot with the full index information
-        pivot_df = df.pivot_table(index='full_index', columns='sale_date', values='quantity')
-        
-        # Name the value column
-        pivot_df.columns.name = None # Remove name from columns index
-        pivot_df.rename_axis(None, axis=1, inplace=True)
-        # We need to structure it like the input: index=(date, multiindex...), column='sales'
-        stacked_df = pivot_df.stack().reset_index()
-        stacked_df.rename(columns={0: 'sales', 'level_0': 'full_index', 'level_1': 'sale_date'}, inplace=True)
-        
-        # Create the final MultiIndex (date, barcode, artist, ...)
-        final_index = pd.MultiIndex.from_tuples(
-            [(row['sale_date'], *row['full_index']) for idx, row in stacked_df.iterrows()],
-            names=['date'] + list(full_index.names)
-        )
-        
-        result_df = pd.DataFrame({'sales': stacked_df['sales'].values}, index=final_index)
-        
-        return result_df
-
-    def _load_change_feature(
-            self, 
-            start_date: Optional[str] = None, 
-            end_date: Optional[str] = None
-    ) -> Optional[pd.DataFrame]:
-        """Load stock change feature from fact_stock_changes table"""
-        query = "SELECT multiindex_id, change_date, quantity_change FROM fact_stock_changes"
-        params = []
-        
-        if start_date:
-            query += " WHERE change_date >= ?"
-            params.append(start_date)
+            # Map multiindex_id back to the full index tuple
+            id_to_tuple_map = {id_val: index_tuple for id_val, index_tuple in zip(all_ids, full_index)}
+            df['full_index'] = df['multiindex_id'].map(id_to_tuple_map)
             
-        if end_date:
-            query += " AND change_date <= ?"
-            params.append(end_date)
+            # Convert to the required structure with date in index
+            # Pivot with full index information
+            pivot_df = df.pivot_table(index='full_index', columns='data_date', values='value')
             
-        data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
-        
-        if not data:
-            return None
+            # Stack to get MultiIndex format
+            stacked_df = pivot_df.stack().reset_index()
+            column_name = feature_type  # 'sales' or 'change'
+            stacked_df.rename(columns={0: column_name, 'level_0': 'full_index', 'level_1': 'data_date'}, inplace=True)
             
-        df = pd.DataFrame(data)
-        df['change_date'] = pd.to_datetime(df['change_date'])
-        
-        # Similar pivoting and restructuring as sales data
-        all_ids = df['multiindex_id'].unique().tolist()
-        full_index = self._build_multiindex_from_mapping(all_ids)
-        id_to_tuple_map = {id_val: index_tuple for id_val, index_tuple in zip(all_ids, full_index)}
-        df['full_index'] = df['multiindex_id'].map(id_to_tuple_map)
-        
-        pivot_df = df.pivot_table(index='full_index', columns='change_date', values='quantity_change')
-        
-        stacked_df = pivot_df.stack().reset_index()
-        stacked_df.rename(columns={0: 'change', 'level_0': 'full_index', 'level_1': 'change_date'}, inplace=True)
-        
-        final_index = pd.MultiIndex.from_tuples(
-            [(row['change_date'], *row['full_index']) for idx, row in stacked_df.iterrows()],
-            names=['date'] + list(full_index.names)
-        )
-        
-        result_df = pd.DataFrame({'change': stacked_df['change'].values}, index=final_index)
+            # Create the final MultiIndex (date, barcode, artist, ...)
+            final_index = pd.MultiIndex.from_tuples(
+                [(row['data_date'], *row['full_index']) for _, row in stacked_df.iterrows()],
+                names=['date'] + list(full_index.names)
+            )
+            
+            result_df = pd.DataFrame({column_name: stacked_df[column_name].values}, index=final_index)
         
         return result_df
 

@@ -4,30 +4,29 @@ from unittest.mock import patch, MagicMock
 import os
 import time
 from datetime import datetime
+from unittest.mock import PropertyMock # Added
 
 # Assuming your FastAPI app instance is created in deployment/app/main.py
 # Adjust the import path if necessary
-from deployment.app.main import app 
+from deployment.app.main import app
 from deployment.app.api.health import (
-    HealthResponse, 
-    SystemStatsResponse, 
-    RetryStatsResponse, 
-    ComponentHealth, 
-    check_database, 
-    check_environment, 
+    HealthResponse,
+    SystemStatsResponse,
+    RetryStatsResponse,
+    ComponentHealth,
+    check_database,
+    check_environment,
     start_time
 )
 from deployment.app.config import settings # Needed for DB path in check_database test
 
-# Fixture for the TestClient
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
+TEST_X_API_KEY = "test_x_api_key_value_health"
+
+# Using the global client fixture from conftest.py
 
 # --- Test Helper Functions ---
 
-@patch("app.api.health.sqlite3")
+@patch("deployment.app.api.health.sqlite3")
 def test_check_database_healthy(mock_sqlite3):
     """Test check_database returns healthy when connection and tables are ok."""
     mock_conn = MagicMock()
@@ -51,7 +50,7 @@ def test_check_database_healthy(mock_sqlite3):
     )
     mock_conn.close.assert_called_once()
 
-@patch("app.api.health.sqlite3")
+@patch("deployment.app.api.health.sqlite3")
 def test_check_database_degraded_missing_tables(mock_sqlite3):
     """Test check_database returns degraded if tables are missing."""
     mock_conn = MagicMock()
@@ -68,7 +67,7 @@ def test_check_database_degraded_missing_tables(mock_sqlite3):
     assert set(result.details["missing_tables"]) == {'cloud_function_executions', 'cloud_storage_objects'}
     mock_conn.close.assert_called_once()
 
-@patch("app.api.health.sqlite3")
+@patch("deployment.app.api.health.sqlite3")
 def test_check_database_unhealthy_connection_error(mock_sqlite3):
     """Test check_database returns unhealthy on connection error."""
     mock_sqlite3.connect.side_effect = Exception("Connection failed")
@@ -97,8 +96,8 @@ def test_check_environment_degraded():
 
 # --- Test API Endpoints ---
 
-@patch("app.api.health.check_database")
-@patch("app.api.health.check_environment")
+@patch("deployment.app.api.health.check_database")
+@patch("deployment.app.api.health.check_environment")
 def test_health_check_endpoint_healthy(mock_check_env, mock_check_db, client):
     """Test /health endpoint returns healthy status."""
     mock_check_db.return_value = ComponentHealth(status="healthy")
@@ -119,8 +118,8 @@ def test_health_check_endpoint_healthy(mock_check_env, mock_check_db, client):
     mock_check_db.assert_called_once()
     mock_check_env.assert_called_once()
 
-@patch("app.api.health.check_database")
-@patch("app.api.health.check_environment")
+@patch("deployment.app.api.health.check_database")
+@patch("deployment.app.api.health.check_environment")
 def test_health_check_endpoint_unhealthy_db(mock_check_env, mock_check_db, client):
     """Test /health endpoint returns unhealthy if database is unhealthy."""
     mock_check_db.return_value = ComponentHealth(status="unhealthy", details={"error": "DB down"})
@@ -135,8 +134,8 @@ def test_health_check_endpoint_unhealthy_db(mock_check_env, mock_check_db, clien
     assert data["components"]["database"]["details"] == {"error": "DB down"}
     assert data["components"]["config"]["status"] == "healthy"
 
-@patch("app.api.health.check_database")
-@patch("app.api.health.check_environment")
+@patch("deployment.app.api.health.check_database")
+@patch("deployment.app.api.health.check_environment")
 def test_health_check_endpoint_degraded_config(mock_check_env, mock_check_db, client):
     """Test /health endpoint returns degraded if config is degraded."""
     mock_check_db.return_value = ComponentHealth(status="healthy")
@@ -151,8 +150,9 @@ def test_health_check_endpoint_degraded_config(mock_check_env, mock_check_db, cl
     assert data["components"]["config"]["status"] == "degraded"
     assert data["components"]["config"]["details"] == {"missing": ["VAR"]}
 
-@patch("app.api.health.psutil")
-def test_system_stats_endpoint(mock_psutil, client):
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+@patch("deployment.app.api.health.psutil")
+def test_system_stats_endpoint(mock_psutil, mock_server_api_key, client):
     """Test /health/system endpoint returns system statistics."""
     mock_process = MagicMock()
     mock_process.memory_info.return_value.rss = 50 * 1024 * 1024 # 50 MB
@@ -164,7 +164,7 @@ def test_system_stats_endpoint(mock_psutil, client):
     mock_psutil.disk_usage.return_value.percent = 75.0
     mock_psutil.Process.return_value = mock_process
     
-    response = client.get("/health/system")
+    response = client.get("/health/system", headers={"X-API-Key": TEST_X_API_KEY})
     
     assert response.status_code == 200
     data = response.json()
@@ -178,8 +178,27 @@ def test_system_stats_endpoint(mock_psutil, client):
     
     mock_psutil.Process.assert_called_once_with(os.getpid())
 
-@patch("app.api.health.get_retry_statistics")
-def test_retry_statistics_endpoint(mock_get_stats, client):
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+def test_system_stats_unauthorized_missing_key(mock_server_api_key, client):
+    response = client.get("/health/system")
+    assert response.status_code == 401
+    assert "Not authenticated: X-API-Key header is missing" in response.json()["error"]["message"]
+
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+def test_system_stats_unauthorized_invalid_key(mock_server_api_key, client):
+    response = client.get("/health/system", headers={"X-API-Key": "wrong_key"})
+    assert response.status_code == 401
+    assert "Invalid X-API-Key" in response.json()["error"]["message"]
+
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=""))
+def test_system_stats_server_key_not_configured(mock_server_api_key, client):
+    response = client.get("/health/system", headers={"X-API-Key": "any_key"})
+    assert response.status_code == 500
+    assert "X-API-Key authentication is not configured on the server" in response.json()["error"]["message"]
+
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+@patch("deployment.app.api.health.get_retry_statistics")
+def test_retry_statistics_endpoint(mock_get_stats, mock_server_api_key, client):
     """Test /health/retry-stats endpoint returns retry statistics."""
     sample_stats = {
         "total_retries": 10,
@@ -193,7 +212,7 @@ def test_retry_statistics_endpoint(mock_get_stats, client):
     }
     mock_get_stats.return_value = sample_stats
     
-    response = client.get("/health/retry-stats")
+    response = client.get("/health/retry-stats", headers={"X-API-Key": TEST_X_API_KEY})
     
     assert response.status_code == 200
     data = response.json()
@@ -205,10 +224,29 @@ def test_retry_statistics_endpoint(mock_get_stats, client):
     assert data["timestamp"] == sample_stats["timestamp"]
     mock_get_stats.assert_called_once()
 
-@patch("app.api.health.reset_retry_statistics")
-def test_reset_retry_stats_endpoint(mock_reset_stats, client):
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+def test_retry_statistics_unauthorized_missing_key(mock_server_api_key, client):
+    response = client.get("/health/retry-stats")
+    assert response.status_code == 401
+    assert "Not authenticated: X-API-Key header is missing" in response.json()["error"]["message"]
+
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+def test_retry_statistics_unauthorized_invalid_key(mock_server_api_key, client):
+    response = client.get("/health/retry-stats", headers={"X-API-Key": "wrong_key"})
+    assert response.status_code == 401
+    assert "Invalid X-API-Key" in response.json()["error"]["message"]
+
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=""))
+def test_retry_statistics_server_key_not_configured(mock_server_api_key, client):
+    response = client.get("/health/retry-stats", headers={"X-API-Key": "any_key"})
+    assert response.status_code == 500
+    assert "X-API-Key authentication is not configured on the server" in response.json()["error"]["message"]
+
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+@patch("deployment.app.api.health.reset_retry_statistics")
+def test_reset_retry_stats_endpoint(mock_reset_stats, mock_server_api_key, client):
     """Test /health/retry-stats/reset endpoint calls reset function."""
-    response = client.post("/health/retry-stats/reset")
+    response = client.post("/health/retry-stats/reset", headers={"X-API-Key": TEST_X_API_KEY})
     
     assert response.status_code == 200
     data = response.json()
@@ -216,6 +254,24 @@ def test_reset_retry_stats_endpoint(mock_reset_stats, client):
     assert "Retry statistics reset successfully" in data["message"]
     mock_reset_stats.assert_called_once()
 
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+def test_reset_retry_stats_unauthorized_missing_key(mock_server_api_key, client):
+    response = client.post("/health/retry-stats/reset")
+    assert response.status_code == 401
+    assert "Not authenticated: X-API-Key header is missing" in response.json()["error"]["message"]
+
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+def test_reset_retry_stats_unauthorized_invalid_key(mock_server_api_key, client):
+    response = client.post("/health/retry-stats/reset", headers={"X-API-Key": "wrong_key"})
+    assert response.status_code == 401
+    assert "Invalid X-API-Key" in response.json()["error"]["message"]
+
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=""))
+def test_reset_retry_stats_server_key_not_configured(mock_server_api_key, client):
+    response = client.post("/health/retry-stats/reset", headers={"X-API-Key": "any_key"})
+    assert response.status_code == 500
+    assert "X-API-Key authentication is not configured on the server" in response.json()["error"]["message"]
+
 # Add more tests for edge cases if necessary
 # e.g., what happens if psutil raises an exception?
-# Consider testing the logger calls if important. 
+# Consider testing the logger calls if important.

@@ -212,28 +212,29 @@ The application uses SQLite with a star schema design:
 ```
 deployment/
 ├── app/
-│   ├── api/                  # API routes for different endpoints
-│   ├── db/                   # Database schema and operations
-│   ├── models/               # API data models (Pydantic)
-│   ├── services/             # Business logic services
-│   ├── utils/                # Utility functions
-│   ├── config.py             # Configuration management
-│   └── main.py               # FastAPI application setup
+│   ├── api/                  # API routes and request/response models (e.g., models_params.py)
+│   ├── db/                   # Database schema, operations, and data retention logic
+│   ├── services/             # Business logic services (auth, data processing, DataSphere interaction)
+│   ├── utils/                # Utility functions (error handling, validation, retry logic)
+│   ├── config.py             # Configuration management (Pydantic settings)
+│   └── main.py               # FastAPI application setup and main entry point
 ├── datasphere/
-│   ├── client.py             # Yandex DataSphere client
-│   ├── prepare_datasets.py   # Dataset preparation for ML
-│   └── datasphere_job/       # Code executed in DataSphere
-│       ├── train_and_predict.py  # Model training and prediction
-│       └── requirements.txt      # Dependencies for cloud execution
-├── data/                     # Data storage (created at runtime)
-│   ├── uploads/              # Temporary storage for uploads
-│   ├── predictions/          # Saved predictions
-│   └── reports/              # Generated reports
-├── infrastructure/           # Terraform IaC for cloud resources
-├── logs/                     # Application logs
+│   ├── client.py             # Yandex DataSphere client for API interactions
+│   ├── prepare_datasets.py   # Scripts for preparing datasets for DataSphere jobs
+│   └── datasphere_job/       # Code and dependencies executed within DataSphere
+│       ├── train_and_predict.py  # Core model training and prediction script for DataSphere
+│       └── requirements.txt      # Python dependencies for the DataSphere job
+│                                 # (Note: The main `plastinka_sales_predictor` package is built as a wheel and installed from the job's input archive)
+├── data/                     # Data storage (partially created at runtime)
+│   ├── plastinka.db          # SQLite database file
+│   ├── models_repository/    # Storage for trained model artifacts (e.g., .onnx files)
+│   ├── uploads/              # Temporary storage for uploaded files (runtime)
+│   ├── predictions/          # Saved prediction outputs (runtime)
+│   └── reports/              # Generated reports (runtime)
+├── logs/                     # Application logs (created at runtime)
 ├── scripts/                  # Deployment and utility scripts
-│   └── check_environment.py  # Environment validation
-└── run.py                    # Runner script for the API
+│   └── check_environment.py  # Script to validate environment setup
+└── run.py                    # Main runner script for the API application
 ```
 
 ## Troubleshooting

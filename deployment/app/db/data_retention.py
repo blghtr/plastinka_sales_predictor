@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Dict
 
 from ..config import settings
-from .database import get_db_connection
+from .database import get_db_connection, ALLOWED_METRICS # Import ALLOWED_METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -230,15 +230,25 @@ def cleanup_old_models(models_to_keep: Optional[int] = None,
         
         order_direction = "DESC" if higher_is_better else "ASC"
         
+        if default_metric not in ALLOWED_METRICS:
+            logger.error(f"Invalid default_metric '{default_metric}' provided to cleanup_models_for_active_parameter_sets.")
+            # Fallback to a safe default or raise an error
+            # For now, let's raise an error as this indicates a configuration issue.
+            raise ValueError(f"Invalid default_metric: {default_metric}. Allowed metrics are: {ALLOWED_METRICS}")
+
+        json_path = f"'$.{default_metric}'" # metric_name is validated
+
         for param_set_id in active_param_sets:
             # Get models for this parameter set, sorted by metric
-            cursor.execute(f"""
-                SELECT m.model_id, m.model_path 
+            # The default_metric for JSON_EXTRACT and order_direction are now safely constructed.
+            query = f"""
+                SELECT m.model_id, m.model_path
                 FROM models m
                 JOIN training_results tr ON m.model_id = tr.model_id
                 WHERE tr.parameter_set_id = ?
-                ORDER BY json_extract(tr.metrics, '$.{default_metric}') {order_direction}
-            """, (param_set_id,))
+                ORDER BY json_extract(tr.metrics, {json_path}) {order_direction}
+            """
+            cursor.execute(query, (param_set_id,))
             
             models = cursor.fetchall()
             
