@@ -45,6 +45,19 @@ def mock_settings_and_uuid(monkeypatch): # Combined with uuid mock
     # After reloading, any subsequent import or access to deployment.app.config.settings
     # by the datasphere_service module should get a freshly initialized settings object.
 
+    # --- Mock _build_and_stage_wheel after service reload ---
+    dummy_staged_wheel_name = 'plastinka_sales_predictor-0.1.0-dummy-service-fixture.whl'
+    def _mocked_bsaw_for_fixture(job_id: str, project_root: Path, target_input_dir: Path) -> Path:
+        # target_input_dir is typically /tmp/ds_input_test due to env var mocking above
+        return target_input_dir / dummy_staged_wheel_name
+
+    monkeypatch.setattr(
+        datasphere_service, # The reloaded module object
+        "_build_and_stage_wheel", # The name of the function to patch, as a string
+        _mocked_bsaw_for_fixture
+    )
+    # --- End _build_and_stage_wheel mock ---
+
     # Mock uuid.uuid4 for predictable ds_job_run_suffix
     fixed_uuid_hex = "fixeduuid000" 
     mock_uuid_obj = MagicMock()
@@ -311,7 +324,17 @@ environment:
         if path_str_normalized.endswith(normalized_metrics_suffix) and mode == 'r':
             return unittest_mock_open(read_data=mock_metrics_content)()
 
-        # 4. Fallback to original open for any other file operations
+        # 4. Handle writing the wheel file (destination of shutil.copy)
+        # Expected path: <mock_context_base_input_dir>/plastinka_sales_predictor-*.whl
+        if ('w' in mode) and \
+           path_str_normalized.startswith(mock_context_base_input_dir) and \
+           path_str_normalized.endswith('.whl') and \
+           'plastinka_sales_predictor' in path_str_normalized:
+            # print(f"DEBUG MOCK: Intercepted write to WHEEL file: {path_str_normalized}")
+            return unittest_mock_open()() # Simulate successful open for write
+
+        # 5. Fallback to original open for any other file operations
+        # print(f"DEBUG MOCK: Falling back to original_open for: {path_str_normalized}, mode: {mode}")
         return original_open(path_str_original, mode=mode, *args, **kwargs)
 
     with patch("builtins.open", selective_mock_open):
@@ -360,7 +383,7 @@ async def test_run_job_success_base(
 
     # Patch tempfile.mkdtemp to control the temporary directory name
     fixed_temp_dir = "/tmp/fixed_temp_dir_for_archive"
-    monkeypatch.setattr('tempfile.mkdtemp', lambda prefix="": fixed_temp_dir)
+    monkeypatch.setattr('tempfile.mkdtemp', lambda suffix=None, prefix=None, dir=None: fixed_temp_dir)
 
     active_ps_id = "active-ps-for-base-test"
     active_params_data = {

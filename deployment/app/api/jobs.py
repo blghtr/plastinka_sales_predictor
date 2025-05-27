@@ -169,10 +169,51 @@ async def create_data_upload_job(
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
     except FileExistsError as e:
-        logger.error(f"Temporary directory for job {job_id} already exists: {e}", exc_info=True)
-        # Если задание уже создано, но директорию создать не удалось, возможно, стоит отменить задание
-        if job_id: update_job_status(job_id, JobStatus.FAILED.value, error_message="Failed to create temporary directory")
-        error = ErrorDetail(message="Failed to initialize job resources", code="internal_error", status_code=500, details={"error": str(e)})
+        # temp_job_dir and job_id are guaranteed to be set if error is from temp_job_dir.mkdir()
+        detailed_error_reason = f"Path {temp_job_dir} for job {job_id} already exists. Original error: {e}"
+        logger.error(f"FileExistsError for job {job_id}: Initial error for path {temp_job_dir}. Original: {e}", exc_info=True)
+
+        if temp_job_dir.is_dir(): # Check if the conflicting path is a directory
+            try:
+                dir_contents = os.listdir(temp_job_dir)
+                if not dir_contents:
+                    detailed_error_reason = (f"Temporary directory {temp_job_dir} for job {job_id} already existed but was empty. "
+                                             "This might be a quick retry or incomplete cleanup.")
+                    logger.warning(detailed_error_reason)
+                else:
+                    # Log only the first few items to prevent overly long log messages
+                    preview_contents = dir_contents[:5]
+                    has_more_items = "..." if len(dir_contents) > 5 else ""
+                    detailed_error_reason = (f"Temporary directory {temp_job_dir} for job {job_id} already existed and was NOT empty "
+                                             f"(contains {len(dir_contents)} items: {preview_contents}{has_more_items}). This indicates a conflict.")
+                    logger.error(detailed_error_reason)
+            except Exception as list_dir_exc:
+                detailed_error_reason = (f"Temporary directory {temp_job_dir} for job {job_id} existed, "
+                                         f"but an error occurred while checking its contents: {list_dir_exc}.")
+                logger.error(detailed_error_reason, exc_info=True)
+        elif temp_job_dir.is_file():
+            detailed_error_reason = f"Path {temp_job_dir} for job {job_id} already existed as a FILE, not a directory."
+            logger.error(detailed_error_reason)
+        else: # Exists but is not a dir or file (e.g. broken symlink) or check failed
+             detailed_error_reason = (f"Path {temp_job_dir} for job {job_id} already existed, but it's not a regular file or directory, "
+                                      f"or its status is inaccessible. Original error: {e}")
+             logger.error(detailed_error_reason)
+        
+        # Fail the job with the detailed reason
+        if job_id:
+            update_job_status(job_id, JobStatus.FAILED.value, error_message=detailed_error_reason)
+        
+        error = ErrorDetail(
+            message="Failed to initialize job resources: A path conflict occurred.",
+            code="job_resource_conflict", # More specific error code
+            status_code=500,
+            details={
+                "job_id": job_id,
+                "path": str(temp_job_dir),
+                "reason": detailed_error_reason,
+                "original_exception": str(e)
+            }
+        )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
     except Exception as e:

@@ -195,7 +195,10 @@ def test_execute_many_transaction(temp_db):
         )
     except DatabaseError:
         print("DEBUG: Caught expected DatabaseError from execute_many")
-        # Rollback should have been called by execute_many even though we provided the connection
+        # With an external connection, execute_many does not roll back. The caller (this test) must.
+        if conn:
+            print("DEBUG: Rolling back transaction on external connection in test_execute_many_transaction")
+            conn.rollback()
     
     # Verify no new data was inserted (rollback)
     cursor.execute("SELECT COUNT(*) FROM test_batch")

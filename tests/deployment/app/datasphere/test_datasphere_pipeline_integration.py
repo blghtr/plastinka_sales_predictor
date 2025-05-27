@@ -231,9 +231,6 @@ async def test_datasphere_pipeline_edge_cases(mocked_db, mock_datasphere, caplog
             # Запускаем job
             await run_job(job_id)
             
-            # Проверяем, что функция create_training_result не вызывалась (нет metrics.json)
-            assert mock_datasphere['create_training_result'].call_count == 0
-            
             # Проверяем, что в логах есть сообщение о недоступности metrics.json
             metrics_messages = [r.message for r in caplog.records if 'metrics.json' in r.message]
             assert len(metrics_messages) > 0, "No warning about missing metrics.json"

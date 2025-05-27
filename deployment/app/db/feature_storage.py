@@ -26,11 +26,24 @@ class SQLFeatureStore:
             from deployment.app.db.database import get_db_connection # Import locally to avoid circular dependency issues
             self.db_conn = get_db_connection()
             self._conn_created_internally = True
-        
-    def __del__(self):
+
+    def __enter__(self):
+        # Connection is already established in __init__
+        # If self.db_conn is None here, it means get_db_connection() failed in __init__
+        # or an invalid connection was passed.
+        # For now, we assume __init__ handles connection setup.
+        # If more robust error handling for failed connection in __init__ is needed,
+        # it could be added here or __init__ could raise an error.
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         # Close the connection only if it was created internally by this instance
         if self._conn_created_internally and self.db_conn:
-            self.db_conn.close()
+            try:
+                self.db_conn.close()
+            except Exception as e:
+                logger.error(f"Error closing internally managed DB connection: {e}", exc_info=True)
+        # Do not suppress exceptions, return None or False (implicitly)
 
     def create_run(self, cutoff_date: str, source_files: str) -> int:
         """Create a new processing run and store its ID"""
@@ -119,7 +132,7 @@ class SQLFeatureStore:
                         # For prices use current date
                         date_str = datetime.now().strftime('%Y-%m-%d')
                         # Try to get from column named like feature_type+'s'
-                        value = row.get(feature_type + 's', 0.0)  # e.g., "prices" column
+                        value = row.get(feature_type, 0.0)  # e.g., "prices" column
                 
                 # Convert to float (all values are stored as REAL)
                 value_converted = self._convert_to_float(value)

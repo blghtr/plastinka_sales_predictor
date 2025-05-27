@@ -132,6 +132,12 @@ def client(
         )
         # Import settings here to ensure it's the version affected by the patch.dict
         from deployment.app.config import settings
+        
+        # Explicitly call reload on the db settings object after module reload and env patch
+        # to ensure it picks up the patched DATABASE_URL for its 'url' and 'path' attributes.
+        print(f"[DEBUG] Before settings.db.reload(): settings.db.url={settings.db.url}, settings.db.path={settings.db.path}")
+        settings.db.reload()
+        print(f"[DEBUG] After settings.db.reload(): settings.db.url={settings.db.url}, settings.db.path={settings.db.path}")
 
         # Ensure the settings object reflects the patched DATABASE_URL and API_KEY
         print(f"[DEBUG] settings.db.url: {settings.db.url}")

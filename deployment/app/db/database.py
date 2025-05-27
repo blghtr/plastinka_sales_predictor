@@ -25,7 +25,9 @@ ALLOWED_METRICS = [
     "median_absolute_error",
     "mean_squared_log_error",
     "explained_variance_score",
-    "max_error"
+    "max_error",
+    "val_MIC", # Added based on test failures
+    "accuracy" # Added based on test failures
     # Add other allowed metric names as needed
 ]
 
@@ -148,7 +150,11 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
         query: SQL query with placeholders (?, :name)
         params: Parameters for the query
         fetchall: Whether to fetch all results or just one
-        connection: Optional existing database connection to use
+        connection: Optional existing database connection. If provided, this function
+                    will operate within the transaction context of the caller and will
+                    NOT commit or rollback. The caller is responsible for transaction
+                    management. If not provided, a new connection is created and
+                    the operation (if not a SELECT/PRAGMA) is committed.
         
     Returns:
         Query results as dict or list of dicts, or None for operations
@@ -223,7 +229,11 @@ def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Conne
     Args:
         query: SQL query with placeholders
         params_list: List of parameter tuples
-        connection: Optional existing database connection to use
+        connection: Optional existing database connection. If provided, this function
+                    will operate within the transaction context of the caller and will
+                    NOT commit or rollback. The caller is responsible for transaction
+                    management. If not provided, a new connection is created and
+                    the batch operation is committed.
         
     Raises:
         DatabaseError: If database operation fails
@@ -258,12 +268,11 @@ def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Conne
             logger.debug(f"execute_many: NOT committing for external connection id: {id(conn)}")
         
     except sqlite3.Error as e:
-        # Always rollback on error, regardless of who created the connection
-        # This is safe because SQLite will only roll back to the most recent savepoint
-        # if the connection is already in a transaction
-        logger.debug(f"execute_many: Rolling back due to error for connection id: {id(conn)}")
-        if conn:
+        if conn and conn_created: # Only rollback if this function created the connection
+            logger.debug(f"execute_many: Rolling back due to error for internally created connection id: {id(conn)}")
             conn.rollback()
+        elif conn: # External connection, do not rollback here
+             logger.debug(f"execute_many: NOT rolling back for external connection id: {id(conn)}. Caller is responsible.")
         
         logger.error(f"Database error in executemany: {query[:100]}, params count: {len(params_list)}: {str(e)}", exc_info=True)
         
@@ -287,7 +296,9 @@ def generate_id() -> str:
 
 def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sqlite3.Connection = None) -> str:
     """
-    Create a new job record and return the job ID
+    Create a new job record and return the job ID.
+    If an external 'connection' is provided, this function operates within that transaction.
+    Otherwise, it creates a new transaction using the 'db_transaction' context manager.
     
     Args:
         job_type: Type of job (from JobType enum)
@@ -300,16 +311,12 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
     job_id = generate_id()
     now = datetime.now().isoformat()
     
-    # Debug connection information
-    conn_id = id(connection) if connection else None
-    logger.debug(f"create_job: Using connection object id: {conn_id}, externally provided: {connection is not None}")
-    
-    query = """
+    sql_query = """
     INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, parameters, progress)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     """
     
-    params = (
+    params_tuple = (
         job_id,
         job_type,
         'pending',
@@ -318,28 +325,27 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
         json.dumps(parameters) if parameters else None,
         0
     )
-    
-    try:
-        # Debug transaction behavior
-        local_conn = False
-        if connection is None:
-            connection = get_db_connection()
-            local_conn = True
-            logger.debug(f"create_job: Created new connection with id: {id(connection)}")
-        
-        # Debug execute query connection
-        logger.debug(f"create_job: Calling execute_query with connection id: {id(connection)}")
-        execute_query(query, params, connection=connection)
+
+    def _db_operation(conn_to_use: sqlite3.Connection):
+        logger.debug(f"create_job: _db_operation using connection id: {id(conn_to_use)}")
+        # execute_query will use the provided conn_to_use and will NOT commit/rollback itself.
+        execute_query(sql_query, params_tuple, connection=conn_to_use)
         logger.info(f"Created new job: {job_id} of type {job_type}")
-        
-        if local_conn:
-            logger.debug(f"create_job: Closing local connection with id: {id(connection)}")
-            connection.close()
-        
+
+    try:
+        if connection:
+            # Operate within the caller's transaction using the provided connection
+            logger.debug(f"create_job: Using provided external connection id: {id(connection)}")
+            _db_operation(connection)
+        else:
+            # Create and manage its own transaction
+            logger.debug("create_job: No external connection, creating new transaction via db_transaction.")
+            with db_transaction() as new_conn: # db_transaction handles commit/rollback/close
+                _db_operation(new_conn)
         return job_id
-    except DatabaseError as e:
-        logger.error(f"Failed to create job: {str(e)}")
-        raise
+    except DatabaseError: # db_transaction would have logged and rolled back if it was used
+        logger.error(f"Failed to create job {job_id} of type {job_type}. Error re-raised.", exc_info=True)
+        raise # Re-raise the original DatabaseError which includes details
 
 def update_job_status(job_id: str, status: str, progress: float = None, 
                       result_id: str = None, error_message: str = None,

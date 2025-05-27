@@ -168,6 +168,8 @@ def predict_sales(model, predict_dataset: 'PlastinkaTrainingTSDataset') -> pd.Da
             targets,
             future_covariates,
             labels,
+            predict_dataset._index_names_mapping,
+            predict_dataset.scaler,
         )
 
         logger.info("Prediction dataframe successfully formed.")
@@ -250,7 +252,19 @@ def main(input, output):
     
     wheel_file_path = wheel_files[0]
     print(f"Found wheel file: {wheel_file_path}")
-    print(f"Attempting to install {wheel_file_path} using pip...")
+
+    # Log wheel details for security auditing
+    try:
+        wheel_filename = os.path.basename(wheel_file_path)
+        wheel_size_bytes = os.path.getsize(wheel_file_path)
+        wheel_mod_timestamp = os.path.getmtime(wheel_file_path)
+        # datetime is imported at the top of the file
+        wheel_mod_time_str = datetime.fromtimestamp(wheel_mod_timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
+        print(f"  Wheel Details: Name='{wheel_filename}', Size={wheel_size_bytes} bytes, Last Modified='{wheel_mod_time_str}'")
+    except OSError as e:
+        print(f"  WARNING: Could not retrieve full details for wheel file '{wheel_file_path}': {e}")
+    
+    print(f"Attempting to install '{os.path.basename(wheel_file_path)}' using pip...")
 
     try:
         # Using check=True to automatically raise CalledProcessError on non-zero exit status.

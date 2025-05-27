@@ -107,30 +107,30 @@ class TestDataRetention(unittest.TestCase):
         -- Fact tables for historical data
         CREATE TABLE IF NOT EXISTS fact_sales (
             multiindex_id INTEGER,
-            sale_date DATE,
+            data_date DATE,
             quantity REAL,
-            PRIMARY KEY (multiindex_id, sale_date)
+            PRIMARY KEY (multiindex_id, data_date)
         );
 
         CREATE TABLE IF NOT EXISTS fact_stock (
             multiindex_id INTEGER,
-            snapshot_date DATE,
+            data_date DATE,
             quantity REAL,
-            PRIMARY KEY (multiindex_id, snapshot_date)
+            PRIMARY KEY (multiindex_id, data_date)
         );
 
         CREATE TABLE IF NOT EXISTS fact_prices (
             multiindex_id INTEGER,
-            price_date DATE,
+            data_date DATE,
             price DECIMAL(10,2),
-            PRIMARY KEY (multiindex_id, price_date)
+            PRIMARY KEY (multiindex_id, data_date)
         );
 
         CREATE TABLE IF NOT EXISTS fact_stock_changes (
             multiindex_id INTEGER,
-            change_date DATE,
+            data_date DATE,
             quantity_change REAL,
-            PRIMARY KEY (multiindex_id, change_date)
+            PRIMARY KEY (multiindex_id, data_date)
         );
         """)
         self.conn.commit()
@@ -297,22 +297,22 @@ class TestDataRetention(unittest.TestCase):
         
         # Insert data into tables
         self.cursor.executemany(
-            "INSERT INTO fact_sales (multiindex_id, sale_date, quantity) VALUES (?, ?, ?)",
+            "INSERT INTO fact_sales (multiindex_id, data_date, quantity) VALUES (?, ?, ?)",
             sales_data
         )
         
         self.cursor.executemany(
-            "INSERT INTO fact_stock (multiindex_id, snapshot_date, quantity) VALUES (?, ?, ?)",
+            "INSERT INTO fact_stock (multiindex_id, data_date, quantity) VALUES (?, ?, ?)",
             stock_data
         )
         
         self.cursor.executemany(
-            "INSERT INTO fact_prices (multiindex_id, price_date, price) VALUES (?, ?, ?)",
+            "INSERT INTO fact_prices (multiindex_id, data_date, price) VALUES (?, ?, ?)",
             prices_data
         )
         
         self.cursor.executemany(
-            "INSERT INTO fact_stock_changes (multiindex_id, change_date, quantity_change) VALUES (?, ?, ?)",
+            "INSERT INTO fact_stock_changes (multiindex_id, data_date, quantity_change) VALUES (?, ?, ?)",
             changes_data
         )
         
@@ -405,19 +405,33 @@ class TestDataRetention(unittest.TestCase):
         one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
         
         self.cursor.execute(
-            "SELECT COUNT(*) FROM fact_sales WHERE sale_date < ?", 
+            "SELECT COUNT(*) FROM fact_sales WHERE data_date < ?",
             (one_year_ago,)
         )
         old_sales = self.cursor.fetchone()[0]
         
         self.cursor.execute(
-            "SELECT COUNT(*) FROM fact_stock WHERE snapshot_date < ?", 
+            "SELECT COUNT(*) FROM fact_stock WHERE data_date < ?",
             (one_year_ago,)
         )
         old_stock = self.cursor.fetchone()[0]
+
+        self.cursor.execute(
+            "SELECT COUNT(*) FROM fact_prices WHERE data_date < ?",
+            (one_year_ago,)
+        )
+        old_prices = self.cursor.fetchone()[0]
+
+        self.cursor.execute(
+            "SELECT COUNT(*) FROM fact_stock_changes WHERE data_date < ?",
+            (one_year_ago,)
+        )
+        old_stock_changes = self.cursor.fetchone()[0]
         
         self.assertEqual(old_sales, 0, "Should have no sales records older than 1 year")
         self.assertEqual(old_stock, 0, "Should have no stock records older than 1 year")
+        self.assertEqual(old_prices, 0, "Should have no price records older than 1 year")
+        self.assertEqual(old_stock_changes, 0, "Should have no stock change records older than 1 year")
     
     def test_cleanup_old_models(self):
         """Test cleaning up old models"""

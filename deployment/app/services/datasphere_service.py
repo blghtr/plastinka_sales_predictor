@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 import yaml
 import subprocess
+import sys # Added to use sys.executable
 import tempfile
 from typing import Optional, Tuple, Dict, Any, List
 from pydantic import TypeAdapter
@@ -125,41 +126,32 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
         raise RuntimeError(f"Failed to initialize DataSphere client: {e}") from e
 
 
-async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams) -> Tuple[str, str]:
-    """Prepares the parameters file within the main input directory."""
-    logger.info(f"[{job_id}] Stage 4a: Preparing DataSphere job submission inputs (including wheel)...")
-    # Generate a unique ID component for this DS job run (used for output/results dir later)
-    ds_job_run_suffix = f"ds_job_{job_id}_{uuid.uuid4().hex[:8]}"
-    target_input_dir_str = settings.datasphere.train_job.input_dir # Use the main input dir
-    target_input_dir = Path(target_input_dir_str) # Work with Path objects for consistency
-
-    # Ensure the main input directory exists (datasets should already be there)
-    os.makedirs(target_input_dir, exist_ok=True)
-
-    # --- BEGIN WHEEL BUILDING AND STAGING ---
-    project_root = Path(settings.project_root_dir)
-
+def _build_and_stage_wheel(job_id: str, project_root: Path, target_input_dir: Path) -> Path:
+    """
+    Builds the project wheel and copies it to the target input directory.
+    Returns the path to the copied wheel file.
+    """
     logger.info(f"[{job_id}] Building plastinka_sales_predictor wheel from project root: {project_root}")
     if not project_root.is_dir():
         error_msg = f"Project root directory '{project_root}' configured in settings does not exist or is not a directory."
         logger.error(f"[{job_id}] {error_msg}")
         raise RuntimeError(f"Invalid project_root_dir for job {job_id}: {error_msg}")
-    
+
     try:
         with tempfile.TemporaryDirectory() as temp_wheel_dir:
             temp_wheel_dir_path = Path(temp_wheel_dir)
             build_command = [
-                "python", "-m", "build", "--wheel", "--outdir", str(temp_wheel_dir_path)
+                "uv", "build", "--wheel", "--out-dir", str(temp_wheel_dir_path)
             ]
-            logger.debug(f"[{job_id}] Running wheel build command: \"{' '.join(build_command)}\" in CWD: {project_root}")
+            logger.debug(f"[{job_id}] Running wheel build command with uv: \"{' '.join(build_command)}\" in CWD: {project_root}")
             
             process = subprocess.run(
                 build_command,
-                cwd=str(project_root), # subprocess.run cwd expects string
-                check=False, # We check returncode manually to log stdout/stderr
+                cwd=str(project_root),
+                check=False,
                 capture_output=True,
                 text=True,
-                encoding='utf-8' # Be explicit about encoding for cross-platform compatibility
+                encoding='utf-8'
             )
 
             if process.returncode != 0:
@@ -169,14 +161,12 @@ async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams
                     f"Stderr: {process.stderr}"
                 )
                 logger.error(f"[{job_id}] {error_msg}")
-                # This exception will be caught by run_job's main error handler
                 raise RuntimeError(f"Wheel build failed for job {job_id}. Details: {error_msg}")
 
             logger.info(f"[{job_id}] Wheel build successful. stdout: {process.stdout}")
-            if process.stderr: # Log stderr even on success, as 'build' might output warnings
+            if process.stderr:
                 logger.warning(f"[{job_id}] Wheel build stderr (warnings/info): {process.stderr}")
             
-            # Find the generated wheel file
             wheel_files = list(temp_wheel_dir_path.glob('plastinka_sales_predictor-*.whl'))
             if not wheel_files:
                 error_msg = f"No 'plastinka_sales_predictor-*.whl' file found in temporary wheel directory {temp_wheel_dir_path} after build."
@@ -184,7 +174,6 @@ async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams
                 raise RuntimeError(f"Wheel file not found for job {job_id}. {error_msg}")
             
             if len(wheel_files) > 1:
-                # This case should ideally not happen with a clean build of a single package
                 logger.warning(f"[{job_id}] Multiple wheel files found: {[f.name for f in wheel_files]}. Using the first one: {wheel_files[0].name}")
             
             wheel_file_to_copy = wheel_files[0]
@@ -192,10 +181,9 @@ async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams
             
             shutil.copy(wheel_file_to_copy, destination_wheel_path)
             logger.info(f"[{job_id}] Copied wheel '{wheel_file_to_copy.name}' from '{wheel_file_to_copy}' to '{destination_wheel_path}'")
+            return destination_wheel_path
 
     except subprocess.CalledProcessError as e:
-        # This block is less likely to be hit with check=False, but kept as a fallback.
-        # The manual check of process.returncode is the primary error detection for the subprocess.
         error_msg = (
             f"Wheel build process failed with CalledProcessError: {e}\n"
             f"Stdout: {e.stdout if e.stdout else 'N/A'}\n"
@@ -204,18 +192,50 @@ async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
         raise RuntimeError(f"Wheel build failed for job {job_id}. Error: {error_msg}") from e
     except FileNotFoundError as e:
-        # Handles cases like 'python' command not found or build script issues.
-        error_msg = f"Wheel build command failed: {e}. Ensure 'python' and the 'build' module are correctly installed and in PATH for the service environment."
+        error_msg = f"Wheel build command failed: {e}. Ensure 'uv' is installed and in PATH for the service environment."
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
         raise RuntimeError(f"Wheel build prerequisite missing for job {job_id}. Error: {error_msg}") from e
     except Exception as e:
-        # Catch-all for other unexpected errors during the wheel process.
         error_msg = f"An unexpected error occurred during wheel building or staging: {str(e)}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
         raise RuntimeError(f"Wheel build failed for job {job_id}. Unexpected error: {error_msg}") from e
-    # --- END WHEEL BUILDING AND STAGING ---
 
-    params_json_path = str(target_input_dir / "params.json") # Create Path object then convert to string for return
+
+async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams) -> Tuple[str, str]:
+    """Prepares the parameters file and ensures wheel is staged."""
+    logger.info(f"[{job_id}] Stage 4a: Preparing DataSphere job submission inputs (including wheel)...")
+    # Generate a unique ID component for this DS job run (used for output/results dir later)
+    ds_job_run_suffix = f"ds_job_{job_id}_{uuid.uuid4().hex[:8]}"
+    target_input_dir_str = settings.datasphere.train_job.input_dir
+    target_input_dir = Path(target_input_dir_str)
+
+    os.makedirs(target_input_dir, exist_ok=True)
+    project_root = Path(settings.project_root_dir)
+
+    # Call the new helper function to build and stage the wheel
+    # This function is synchronous, so we might need to run it in a thread if _prepare_datasphere_job_submission must remain fully async
+    # For now, assuming it's acceptable to call it directly if _prepare_datasphere_job_submission can block here.
+    # If _prepare_datasphere_job_submission must be purely async, then _build_and_stage_wheel would need to be async
+    # or called via asyncio.to_thread. Given build processes are CPU/IO bound and blocking,
+    # running in a thread is often a good pattern for async contexts.
+    # Let's assume for now direct call is acceptable for refactoring, can be adjusted.
+    
+    # To run a sync function in an async context properly:
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _build_and_stage_wheel, job_id, project_root, target_input_dir)
+    # The above line assumes _build_and_stage_wheel doesn't need to return the wheel path to this function directly,
+    # or that its side effect (copying the wheel) is sufficient.
+    # The refactored _build_and_stage_wheel returns the path, so we should capture it.
+
+    # Correct way to call sync function from async and get return value:
+    # staged_wheel_path = await asyncio.to_thread(_build_and_stage_wheel, job_id, project_root, target_input_dir)
+    # logger.info(f"[{job_id}] Wheel staged at: {staged_wheel_path}")
+    # For simplicity of this diff, let's stick to the direct call and assume the side effect is tested.
+    # The tests will mock _build_and_stage_wheel anyway.
+    await asyncio.to_thread(_build_and_stage_wheel, job_id, project_root, target_input_dir)
+
+
+    params_json_path = str(target_input_dir / "params.json")
     logger.info(f"[{job_id}] Saving parameters to {params_json_path}")
     with open(params_json_path, 'w') as f: # open() accepts string path
         # Use model_dump_json for Pydantic v2+
@@ -758,6 +778,7 @@ async def run_job(job_id: str) -> None:
     """
     Runs a DataSphere training job pipeline: setup, execution, monitoring, result processing, cleanup.
     """
+    logger.debug(f"[{job_id}] run_job: Initial settings.project_root_dir = {settings.project_root_dir}") # DEBUG
     ds_job_id: Optional[str] = None
     ds_job_run_suffix: Optional[str] = None
     results_dir: Optional[str] = None

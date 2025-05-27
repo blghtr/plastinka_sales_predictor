@@ -232,10 +232,9 @@ def test_get_best_model_by_metric(setup_db_with_data):
     assert best_model["metrics"]["mape"] == 9.8
     
     # Get best model by non-existent metric
-    best_model = get_best_model_by_metric("nonexistent_metric", connection=conn)
-    
-    # Should return None
-    assert best_model is None
+    with pytest.raises(ValueError) as excinfo_model:
+        get_best_model_by_metric("nonexistent_metric", connection=conn)
+    assert "Invalid metric_name: nonexistent_metric" in str(excinfo_model.value)
 
 def test_get_best_parameter_set_by_metric(setup_db_with_data):
     """Test getting the best parameter set based on a metric"""
@@ -250,10 +249,9 @@ def test_get_best_parameter_set_by_metric(setup_db_with_data):
     assert best_params["metrics"]["mape"] == 9.8
     
     # Get best parameter set by non-existent metric
-    best_params = get_best_parameter_set_by_metric("nonexistent_metric", connection=conn)
-    
-    # Should return None
-    assert best_params is None
+    with pytest.raises(ValueError) as excinfo_params:
+        get_best_parameter_set_by_metric("nonexistent_metric", connection=conn)
+    assert "Invalid metric_name: nonexistent_metric" in str(excinfo_params.value)
 
 def test_delete_model_record_and_file(setup_db_with_data):
     """Test deleting a model record and its file"""

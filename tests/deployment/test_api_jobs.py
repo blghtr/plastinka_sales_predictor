@@ -6,6 +6,7 @@ from io import BytesIO
 import uuid
 from pathlib import Path
 import json
+import os # Added for os.listdir mocking
 
 # Adjust imports based on your project structure
 from deployment.app.main import app
@@ -226,6 +227,239 @@ async def test_create_data_upload_job_db_error(
     assert "database_error" in response.text # This will now check the correct error from the app
     assert "DB connection lost" in response.text # This will now check the correct error from the app
     mock_create_job.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("deployment.app.api.jobs.settings.temp_upload_dir", new_callable=PropertyMock(return_value="./temp_test_uploads"))
+@patch("deployment.app.api.jobs.update_job_status") # Mock update_job_status
+@patch("deployment.app.api.jobs._save_uploaded_file", new_callable=AsyncMock) # Mock to prevent actual file saving
+@patch("deployment.app.api.jobs.validate_date_format", return_value=(True, "2022-09-30"))
+@patch("deployment.app.api.jobs.validate_excel_file_upload", new_callable=AsyncMock)
+@patch("deployment.app.api.jobs.validate_stock_file", return_value=(True, None))
+@patch("deployment.app.api.jobs.validate_sales_file", return_value=(True, None))
+@patch("deployment.app.api.jobs.create_job") # Keep create_job mocked
+@patch("deployment.app.api.jobs.BackgroundTasks.add_task") # Keep add_task mocked
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+async def test_create_data_upload_job_file_exists_empty_dir(
+    mock_server_api_key, mock_add_task, mock_create_job, mock_validate_sales,
+    mock_validate_stock, mock_validate_excel, mock_validate_date,
+    mock_save_file, mock_update_job_status, mock_settings_temp_dir, client
+):
+    """Test FileExistsError when temp job directory exists but is empty."""
+    job_id = str(uuid.uuid4())
+    mock_create_job.return_value = job_id
+
+    base_temp_dir_path = Path(mock_settings_temp_dir)
+    # temp_job_dir_path_str = str(base_temp_dir_path / job_id)
+
+    files = [
+        ("stock_file", ("stock.xlsx", BytesIO(b"s"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+        ("sales_files", ("sales1.xlsx", BytesIO(b"s1"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) # Add a sales file
+    ]
+    data = {"cutoff_date": "30.09.2022"}
+
+    # Determine the expected path strings
+    expected_base_temp_dir_str = str(base_temp_dir_path) # Should be "./temp_test_uploads"
+    expected_temp_job_dir_str = str(base_temp_dir_path / job_id)
+    expected_sales_dir_str = str(Path(expected_temp_job_dir_str) / "sales")
+
+    # Create mock Path instances that will be returned by our custom constructor
+    mock_base_temp_dir_instance = MagicMock(spec=Path)
+    mock_temp_job_dir_instance = MagicMock(spec=Path)
+    mock_sales_subdir_instance = MagicMock(spec=Path)
+
+    # Configure mock_base_temp_dir_instance
+    mock_base_temp_dir_instance.__str__ = MagicMock(return_value=expected_base_temp_dir_str)
+    mock_base_temp_dir_instance.mkdir = MagicMock() # To allow base_temp_dir.mkdir(parents=True, exist_ok=True)
+    mock_base_temp_dir_instance.__truediv__ = MagicMock(return_value=mock_temp_job_dir_instance) # base_temp_dir / job_id
+
+    # Configure mock_temp_job_dir_instance
+    mock_temp_job_dir_instance.__str__ = MagicMock(return_value=expected_temp_job_dir_str)
+    mock_temp_job_dir_instance.mkdir.side_effect = lambda parents=False, exist_ok=False: FileExistsError("Simulated FileExistsError") if not exist_ok else None
+    mock_temp_job_dir_instance.is_dir.return_value = True
+    mock_temp_job_dir_instance.is_file.return_value = False
+    mock_temp_job_dir_instance.__truediv__ = MagicMock(return_value=mock_sales_subdir_instance) # temp_job_dir / "sales"
+    
+    # Configure mock_sales_subdir_instance
+    mock_sales_subdir_instance.__str__ = MagicMock(return_value=expected_sales_dir_str)
+    mock_sales_subdir_instance.mkdir = MagicMock() # To allow sales_dir.mkdir(exist_ok=True)
+
+
+    def custom_path_constructor(path_arg):
+        if str(path_arg) == expected_base_temp_dir_str: # Path(settings.temp_upload_dir)
+            return mock_base_temp_dir_instance
+        # This constructor might be called for other paths too, e.g. inside _save_uploaded_file
+        # For those, return a generic MagicMock<Path> that doesn't interfere.
+        generic_path_mock = MagicMock(spec=Path)
+        generic_path_mock.__truediv__ = MagicMock(return_value=MagicMock(spec=Path)) # generic / "filename"
+        generic_path_mock.exists = MagicMock(return_value=False) # Avoid issues in os.remove if it's called
+        return generic_path_mock
+
+    with patch("deployment.app.api.jobs.os.listdir", return_value=[]) as mock_os_listdir, \
+         patch("deployment.app.api.jobs.Path", side_effect=custom_path_constructor) as mock_path_constructor_class:
+        
+        response = client.post("/api/v1/jobs/data-upload", files=files, data=data, headers={"X-API-Key": TEST_X_API_KEY})
+
+    assert response.status_code == 500
+    resp_json = response.json()
+    assert resp_json["error"]["code"] == "job_resource_conflict"
+    assert f"Temporary directory {str(base_temp_dir_path / job_id)} for job {job_id} already existed but was empty" in resp_json["error"]["details"]["reason"]
+    
+    mock_update_job_status.assert_called_once()
+    args, _ = mock_update_job_status.call_args
+    assert args[0] == job_id
+    assert args[1] == JobStatus.FAILED.value
+    assert f"Temporary directory {str(base_temp_dir_path / job_id)} for job {job_id} already existed but was empty" in args[2]
+
+@pytest.mark.asyncio
+@patch("deployment.app.api.jobs.settings.temp_upload_dir", new_callable=PropertyMock(return_value="./temp_test_uploads"))
+@patch("deployment.app.api.jobs.update_job_status")
+@patch("deployment.app.api.jobs._save_uploaded_file", new_callable=AsyncMock)
+@patch("deployment.app.api.jobs.validate_date_format", return_value=(True, "2022-09-30"))
+@patch("deployment.app.api.jobs.validate_excel_file_upload", new_callable=AsyncMock)
+@patch("deployment.app.api.jobs.validate_stock_file", return_value=(True, None))
+@patch("deployment.app.api.jobs.validate_sales_file", return_value=(True, None))
+@patch("deployment.app.api.jobs.create_job")
+@patch("deployment.app.api.jobs.BackgroundTasks.add_task")
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+async def test_create_data_upload_job_file_exists_non_empty_dir(
+    mock_server_api_key, mock_add_task, mock_create_job, mock_validate_sales,
+    mock_validate_stock, mock_validate_excel, mock_validate_date,
+    mock_save_file, mock_update_job_status, mock_settings_temp_dir, client
+):
+    """Test FileExistsError when temp job directory exists and is NOT empty."""
+    job_id = str(uuid.uuid4())
+    mock_create_job.return_value = job_id
+    base_temp_dir_path = Path(mock_settings_temp_dir)
+
+    files = [
+        ("stock_file", ("stock.xlsx", BytesIO(b"s"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+        ("sales_files", ("sales1.xlsx", BytesIO(b"s1"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) # Add a sales file
+    ]
+    data = {"cutoff_date": "30.09.2022"}
+
+    # Determine the expected path strings
+    expected_base_temp_dir_str = str(base_temp_dir_path)
+    expected_temp_job_dir_str = str(base_temp_dir_path / job_id)
+    expected_sales_dir_str = str(Path(expected_temp_job_dir_str) / "sales")
+
+    mock_base_temp_dir_instance = MagicMock(spec=Path)
+    mock_temp_job_dir_instance = MagicMock(spec=Path)
+    mock_sales_subdir_instance = MagicMock(spec=Path)
+
+    mock_base_temp_dir_instance.__str__ = MagicMock(return_value=expected_base_temp_dir_str)
+    mock_base_temp_dir_instance.mkdir = MagicMock()
+    mock_base_temp_dir_instance.__truediv__ = MagicMock(return_value=mock_temp_job_dir_instance)
+
+    mock_temp_job_dir_instance.__str__ = MagicMock(return_value=expected_temp_job_dir_str)
+    mock_temp_job_dir_instance.mkdir.side_effect = lambda parents=False, exist_ok=False: FileExistsError("Simulated FileExistsError") if not exist_ok else None
+    mock_temp_job_dir_instance.is_dir.return_value = True
+    mock_temp_job_dir_instance.is_file.return_value = False
+    mock_temp_job_dir_instance.__truediv__ = MagicMock(return_value=mock_sales_subdir_instance)
+    
+    mock_sales_subdir_instance.__str__ = MagicMock(return_value=expected_sales_dir_str)
+    mock_sales_subdir_instance.mkdir = MagicMock()
+
+    def custom_path_constructor(path_arg):
+        if str(path_arg) == expected_base_temp_dir_str:
+            return mock_base_temp_dir_instance
+        generic_path_mock = MagicMock(spec=Path)
+        generic_path_mock.__truediv__ = MagicMock(return_value=MagicMock(spec=Path))
+        generic_path_mock.exists = MagicMock(return_value=False)
+        return generic_path_mock
+
+    with patch("deployment.app.api.jobs.os.listdir", return_value=["dummy.txt", "another.log"]) as mock_os_listdir, \
+         patch("deployment.app.api.jobs.Path", side_effect=custom_path_constructor) as mock_path_constructor_class:
+        
+        response = client.post("/api/v1/jobs/data-upload", files=files, data=data, headers={"X-API-Key": TEST_X_API_KEY})
+
+    assert response.status_code == 500
+    resp_json = response.json()
+    assert resp_json["error"]["code"] == "job_resource_conflict"
+    expected_reason_part = f"Temporary directory {str(base_temp_dir_path / job_id)} for job {job_id} already existed and was NOT empty"
+    assert expected_reason_part in resp_json["error"]["details"]["reason"]
+    assert "contains 2 items: ['dummy.txt', 'another.log']" in resp_json["error"]["details"]["reason"]
+    
+    mock_update_job_status.assert_called_once()
+    args, _ = mock_update_job_status.call_args
+    assert args[0] == job_id
+    assert args[1] == JobStatus.FAILED.value
+    assert expected_reason_part in args[2]
+
+@pytest.mark.asyncio
+@patch("deployment.app.api.jobs.settings.temp_upload_dir", new_callable=PropertyMock(return_value="./temp_test_uploads"))
+@patch("deployment.app.api.jobs.update_job_status")
+@patch("deployment.app.api.jobs._save_uploaded_file", new_callable=AsyncMock)
+@patch("deployment.app.api.jobs.validate_date_format", return_value=(True, "2022-09-30"))
+@patch("deployment.app.api.jobs.validate_excel_file_upload", new_callable=AsyncMock)
+@patch("deployment.app.api.jobs.validate_stock_file", return_value=(True, None))
+@patch("deployment.app.api.jobs.validate_sales_file", return_value=(True, None))
+@patch("deployment.app.api.jobs.create_job")
+@patch("deployment.app.api.jobs.BackgroundTasks.add_task")
+@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
+async def test_create_data_upload_job_file_exists_as_file(
+    mock_server_api_key, mock_add_task, mock_create_job, mock_validate_sales,
+    mock_validate_stock, mock_validate_excel, mock_validate_date,
+    mock_save_file, mock_update_job_status, mock_settings_temp_dir, client
+):
+    """Test FileExistsError when path exists as a file."""
+    job_id = str(uuid.uuid4())
+    mock_create_job.return_value = job_id
+    base_temp_dir_path = Path(mock_settings_temp_dir)
+
+    files = [
+        ("stock_file", ("stock.xlsx", BytesIO(b"s"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+        ("sales_files", ("sales1.xlsx", BytesIO(b"s1"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) # Add a sales file
+    ]
+    data = {"cutoff_date": "30.09.2022"}
+
+    # Determine the expected path strings
+    expected_base_temp_dir_str = str(base_temp_dir_path)
+    expected_temp_job_dir_str = str(base_temp_dir_path / job_id)
+    expected_sales_dir_str = str(Path(expected_temp_job_dir_str) / "sales")
+
+    mock_base_temp_dir_instance = MagicMock(spec=Path)
+    mock_temp_job_dir_instance = MagicMock(spec=Path)
+    mock_sales_subdir_instance = MagicMock(spec=Path)
+
+    mock_base_temp_dir_instance.__str__ = MagicMock(return_value=expected_base_temp_dir_str)
+    mock_base_temp_dir_instance.mkdir = MagicMock()
+    mock_base_temp_dir_instance.__truediv__ = MagicMock(return_value=mock_temp_job_dir_instance)
+
+    mock_temp_job_dir_instance.__str__ = MagicMock(return_value=expected_temp_job_dir_str)
+    mock_temp_job_dir_instance.mkdir.side_effect = lambda parents=False, exist_ok=False: FileExistsError("Simulated FileExistsError") if not exist_ok else None
+    mock_temp_job_dir_instance.is_dir.return_value = False # Key for this test
+    mock_temp_job_dir_instance.is_file.return_value = True  # Key for this test
+    mock_temp_job_dir_instance.__truediv__ = MagicMock(return_value=mock_sales_subdir_instance)
+    
+    mock_sales_subdir_instance.__str__ = MagicMock(return_value=expected_sales_dir_str)
+    mock_sales_subdir_instance.mkdir = MagicMock()
+
+    def custom_path_constructor(path_arg):
+        if str(path_arg) == expected_base_temp_dir_str:
+            return mock_base_temp_dir_instance
+        generic_path_mock = MagicMock(spec=Path)
+        generic_path_mock.__truediv__ = MagicMock(return_value=MagicMock(spec=Path))
+        generic_path_mock.exists = MagicMock(return_value=False)
+        return generic_path_mock
+
+    # os.listdir should raise NotADirectoryError if temp_job_dir is a file (is_dir=False)
+    with patch("deployment.app.api.jobs.os.listdir", side_effect=NotADirectoryError) as mock_os_listdir, \
+         patch("deployment.app.api.jobs.Path", side_effect=custom_path_constructor) as mock_path_constructor_class:
+        
+        response = client.post("/api/v1/jobs/data-upload", files=files, data=data, headers={"X-API-Key": TEST_X_API_KEY})
+
+    assert response.status_code == 500
+    resp_json = response.json()
+    assert resp_json["error"]["code"] == "job_resource_conflict"
+    expected_reason = f"Path {str(base_temp_dir_path / job_id)} for job {job_id} already existed as a FILE, not a directory."
+    assert resp_json["error"]["details"]["reason"] == expected_reason
+    
+    mock_update_job_status.assert_called_once()
+    args, _ = mock_update_job_status.call_args
+    assert args[0] == job_id
+    assert args[1] == JobStatus.FAILED.value
+    assert args[2] == expected_reason
 
 # --- Test /api/v1/jobs/training ---
 

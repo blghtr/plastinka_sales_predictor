@@ -6,16 +6,22 @@ from pathlib import Path
 
 # Create necessary directories
 def create_directories():
-    directories = [
-        "deployment/data",
-        "deployment/data/uploads",
-        "deployment/data/predictions",
-        "deployment/data/reports",
-        "deployment/logs"
+    # Define paths relative to this script's location
+    script_dir = Path(__file__).resolve().parent
+    
+    # Directories to be created relative to script_dir (which is '.../deployment/')
+    relative_dirs = [
+        "data",                 # -> deployment/data
+        "data/uploads",         # -> deployment/data/uploads
+        "data/predictions",     # -> deployment/data/predictions
+        "data/reports",         # -> deployment/data/reports
+        "logs"                  # -> deployment/logs
     ]
     
-    for directory in directories:
-        Path(directory).mkdir(parents=True, exist_ok=True)
+    for rel_dir in relative_dirs:
+        # Construct the absolute path relative to the script directory
+        abs_dir_path = script_dir / rel_dir
+        abs_dir_path.mkdir(parents=True, exist_ok=True)
 
 # Parse command line arguments
 def parse_args():

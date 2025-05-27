@@ -14,6 +14,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("env_checker")
 
+# Define the project root relative to this script's location
+# This script is in deployment/scripts/, so project_root is ../../
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
 # Define required environment variables
 REQUIRED_VARS = {
     # Cloud Storage
@@ -56,12 +60,13 @@ def check_environment():
     return missing
 
 
-def generate_env_template(output_path=""):
+def generate_env_template(output_path=None): # Changed default to None
     """Generate a template .env file with all variables."""
-    if not output_path:
-        output_path = Path(os.getcwd()) / ".env.template"
+    if output_path is None: # Check against None
+        # Default to .env.template in the project root
+        output_path = PROJECT_ROOT / ".env.template"
     else:
-        output_path = Path(output_path)
+        output_path = Path(output_path) # Convert provided path string to Path object
         
     if output_path.exists():
         logger.warning(f"File {output_path} already exists. Will not overwrite.")
@@ -99,11 +104,14 @@ def main():
         for var in missing:
             logger.warning(f"  - {var}: {REQUIRED_VARS[var]}")
         
-        # Create .env.template file if it doesn't exist
-        if not Path(".env").exists() and not Path(".env.template").exists():
-            logger.info("No .env file found. Generating template...")
-            generate_env_template()
-            logger.info("Please fill the template with your values and rename it to .env")
+        # Create .env.template file in project root if .env or .env.template doesn't exist there
+        env_file_path = PROJECT_ROOT / ".env"
+        env_template_file_path = PROJECT_ROOT / ".env.template"
+
+        if not env_file_path.exists() and not env_template_file_path.exists():
+            logger.info(f"No {env_file_path.name} or {env_template_file_path.name} found in project root ({PROJECT_ROOT}). Generating template...")
+            generate_env_template() # This will default to PROJECT_ROOT / ".env.template"
+            logger.info(f"Please fill {env_template_file_path} with your values and rename it to {env_file_path.name} in the project root.")
             
         return 1
     else:

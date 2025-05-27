@@ -114,14 +114,14 @@ def cleanup_old_historical_data(
     try:
         # Clean up sales data
         cursor.execute(
-            "SELECT COUNT(*) FROM fact_sales WHERE sale_date < ?", 
+            "SELECT COUNT(*) FROM fact_sales WHERE data_date < ?",
             (sales_cutoff_str,)
         )
         sales_count = cursor.fetchone()[0]
         
         if sales_count > 0:
             cursor.execute(
-                "DELETE FROM fact_sales WHERE sale_date < ?", 
+                "DELETE FROM fact_sales WHERE data_date < ?",
                 (sales_cutoff_str,)
             )
             result["sales"] = sales_count
@@ -129,14 +129,14 @@ def cleanup_old_historical_data(
         
         # Clean up stock data
         cursor.execute(
-            "SELECT COUNT(*) FROM fact_stock WHERE snapshot_date < ?", 
+            "SELECT COUNT(*) FROM fact_stock WHERE data_date < ?",
             (stock_cutoff_str,)
         )
         stock_count = cursor.fetchone()[0]
         
         if stock_count > 0:
             cursor.execute(
-                "DELETE FROM fact_stock WHERE snapshot_date < ?", 
+                "DELETE FROM fact_stock WHERE data_date < ?",
                 (stock_cutoff_str,)
             )
             result["stock"] = stock_count
@@ -144,14 +144,14 @@ def cleanup_old_historical_data(
         
         # Clean up stock change data
         cursor.execute(
-            "SELECT COUNT(*) FROM fact_stock_changes WHERE change_date < ?", 
+            "SELECT COUNT(*) FROM fact_stock_changes WHERE data_date < ?",
             (stock_cutoff_str,)
         )
         changes_count = cursor.fetchone()[0]
         
         if changes_count > 0:
             cursor.execute(
-                "DELETE FROM fact_stock_changes WHERE change_date < ?", 
+                "DELETE FROM fact_stock_changes WHERE data_date < ?",
                 (stock_cutoff_str,)
             )
             result["stock_changes"] = changes_count
@@ -159,14 +159,14 @@ def cleanup_old_historical_data(
         
         # Clean up price data
         cursor.execute(
-            "SELECT COUNT(*) FROM fact_prices WHERE price_date < ?", 
+            "SELECT COUNT(*) FROM fact_prices WHERE data_date < ?",
             (sales_cutoff_str,)
         )
         prices_count = cursor.fetchone()[0]
         
         if prices_count > 0:
             cursor.execute(
-                "DELETE FROM fact_prices WHERE price_date < ?", 
+                "DELETE FROM fact_prices WHERE data_date < ?",
                 (sales_cutoff_str,)
             )
             result["prices"] = prices_count

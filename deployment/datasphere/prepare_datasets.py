@@ -14,7 +14,6 @@ import os
 
 
 DEFAULT_OUTPUT_DIR = './datasets/' # Default location if not specified
-DEFAULT_CUTOFF_DATE = '30-09-2022'
 DEFAULT_STATIC_FEATURES = [
     'Конверт',
     'Тип',
@@ -73,7 +72,7 @@ def prepare_datasets(raw_features: dict, end_date: str, config: dict, output_dir
     try:
         # 1. Stock Features (using get_stock_features from prepare_datasets.py)
         features['stock_features'] = get_stock_features(
-            features['stock'], features['change'] 
+            features['stock'], features.get('change', pd.DataFrame())
         )
 
         # 2. Determine Cutoff Date if not provided

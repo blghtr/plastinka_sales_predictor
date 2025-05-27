@@ -11,6 +11,7 @@ import tempfile
 import asyncio
 from datetime import datetime, timedelta
 from contextlib import ExitStack
+import logging
 
 from deployment.app.db.database import (
     get_db_connection, 
@@ -424,6 +425,8 @@ def temp_db():
     """
     yield from setup_temp_db()
 
+logger = logging.getLogger(__name__)
+
 @pytest.fixture
 def mock_datasphere():
     """
@@ -497,7 +500,30 @@ def mock_datasphere():
     mock_settings.datasphere.train_job.job_config_path = 'config.yaml'
     mock_settings.datasphere.max_polls = 2
     mock_settings.datasphere.poll_interval = 0.1
+    mock_settings.max_models_to_keep = 5 # Added to fix TypeError
+    
+    # Determine actual project root for wheel building
+    actual_project_root = Path(__file__).parent.parent.parent.parent.parent # .. -> datasphere -> app -> deployment -> tests -> project_root
+    mock_settings.project_root_dir = str(actual_project_root)
+    print(f"DEBUG [mock_datasphere fixture]: Mocking settings.project_root_dir to: {actual_project_root}")
+
     patches['settings'] = patch('deployment.app.services.datasphere_service.settings', mock_settings)
+
+    # --- Mock the new _build_and_stage_wheel function ---
+    # This function is now responsible for all wheel building and staging.
+    # It should return the path to the (mocked) staged wheel.
+    dummy_staged_wheel_name = 'plastinka_sales_predictor-0.1.0-dummy.whl'
+    # Use the input_dir from mock_settings for consistency in the mock's return value
+    mock_staged_wheel_path = Path(mock_settings.datasphere.train_job.input_dir) / dummy_staged_wheel_name
+    
+    # _build_and_stage_wheel is synchronous, so use MagicMock, not AsyncMock
+    mock_build_and_stage_wheel = MagicMock(return_value=mock_staged_wheel_path)
+    
+    patches['_build_and_stage_wheel'] = patch(
+        'deployment.app.services.datasphere_service._build_and_stage_wheel',
+        mock_build_and_stage_wheel # Use the MagicMock directly as the new value for the patch
+    )
+    # --- End mock for _build_and_stage_wheel ---
     
     # Настройка мока _prepare_job_datasets с корректной оберткой async
     mock_prepare_datasets = AsyncMock()
@@ -535,18 +561,6 @@ def mock_datasphere():
         side_effect=wrapped_save_model
     )
     
-    # Настройка мока create_training_result с корректной оберткой async, если он async
-    mock_create_training = AsyncMock()
-    mock_create_training.return_value = None
-    
-    async def wrapped_create_training(*args, **kwargs):
-        return await mock_create_training(*args, **kwargs)
-    
-    patches['create_training_result'] = patch(
-        'deployment.app.services.datasphere_service.create_training_result',
-        side_effect=wrapped_create_training
-    )
-    
     # Настройка мока для save_predictions_to_db
     def mock_save_predictions(predictions_path, job_id, model_id, direct_db_connection=None):
         """
@@ -573,15 +587,30 @@ def mock_datasphere():
     mock_metrics_content = json.dumps({"mape": 15.3, "rmse": 5.7, "mae": 3.2, "r2": 0.85})
     
     # Создаем патч для open, который будет обрабатывать разные файлы по-разному
-    mock_open_instance = mock_open(read_data=mock_file_content)
+    original_open = open # Store the original open
+
+    # mock_open_instance for default YAML config
+    mock_yaml_open_instance = mock_open(read_data=mock_file_content)
     
     def mock_open_side_effect(file_path, *args, **kwargs):
+        str_file_path = str(file_path)
         # Для metrics.json возвращаем метрики
-        if file_path.endswith('metrics.json'):
-            mock_metrics = mock_open(read_data=mock_metrics_content)
-            return mock_metrics(file_path, *args, **kwargs)
-        # Для YAML конфига и всего остального возвращаем стандартное содержимое
-        return mock_open_instance(file_path, *args, **kwargs)
+        if str_file_path.endswith('metrics.json'):
+            # Return a mock file handle that will provide mock_metrics_content when read
+            return mock_open(read_data=mock_metrics_content)(file_path, *args, **kwargs)
+        elif str_file_path.endswith('params.json'):
+            # Return a mock file handle that will act as if it's being written to.
+            # This avoids FileNotFoundError if input_dir isn't ready for original_open.
+            logger.debug(f"mock_open_side_effect providing mock_open for writing: {str_file_path}")
+            return mock_open()(file_path, *args, **kwargs)
+        # Для YAML конфига (если это он)
+        elif str_file_path.endswith(('.yaml', '.yml')): # Adjusted to use tuple
+            # Return a mock file handle that will provide mock_file_content (original YAML content)
+            return mock_open(read_data=mock_file_content)(file_path, *args, **kwargs)
+        
+        # Fallback for any other file paths
+        logger.warning(f"mock_open_side_effect falling back to original_open for: {str_file_path}")
+        return original_open(file_path, *args, **kwargs)
     
     patches['open'] = patch('builtins.open', side_effect=mock_open_side_effect)
     

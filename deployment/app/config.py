@@ -8,7 +8,7 @@ import yaml
 import logging # Added
 from pathlib import Path # Added
 from typing import List, Dict, Any, Optional, Callable, Type, Tuple # Modified
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import ( # Added
     InitSettingsSource,
@@ -221,14 +221,51 @@ class DatabaseSettings(BaseSettings):
     )
     
     def reload(self):
-        """Reload settings from environment variables"""
-        # Get latest DATABASE_PATH from environment
-        new_path = os.environ.get("DATABASE_PATH", "deployment/data/plastinka.db")
-        new_url = os.environ.get("DATABASE_URL", f"sqlite:///{new_path}")
-        
-        # Update the instance values
-        object.__setattr__(self, "path", new_path)
-        object.__setattr__(self, "url", new_url)
+        """
+        Reload settings from environment variables and validate them.
+        If validation fails, the original settings are retained and an error is logged.
+        """
+        current_path = self.path
+        current_url = self.url
+
+        try:
+            # Get latest DATABASE_PATH and DATABASE_URL from environment
+            # Use the current values as defaults if environment variables are not set
+            # This differs slightly from the original, which had hardcoded defaults.
+            # This change makes reloading more about *overriding* with env vars if present.
+            env_path = os.environ.get("DATABASE_PATH")
+            env_url = os.environ.get("DATABASE_URL")
+
+            new_values = {}
+            if env_path is not None:
+                new_values["path"] = env_path
+            if env_url is not None:
+                new_values["url"] = env_url
+            
+            # If no new values from env, no need to reload or validate
+            if not new_values:
+                logger.info("DatabaseSettings.reload() called, but no relevant environment variables (DATABASE_PATH, DATABASE_URL) found to update.")
+                return self
+
+            # Create a dictionary with all current values, then update with new ones
+            # This ensures all fields are present for validation if only one is being updated via env
+            merged_values_for_validation = self.model_dump()
+            merged_values_for_validation.update(new_values)
+
+            # Validate the potentially new values by attempting to create a new model instance
+            validated_settings = DatabaseSettings.model_validate(merged_values_for_validation)
+            
+            # Update the instance values from the validated settings
+            # Use object.__setattr__ to bypass Pydantic's own protections if they exist here
+            object.__setattr__(self, "path", validated_settings.path)
+            object.__setattr__(self, "url", validated_settings.url)
+            logger.info(f"DatabaseSettings reloaded and validated. Path: '{self.path}', URL: '{self.url}'")
+
+        except ValidationError as e:
+            logger.error(f"Failed to reload and validate DatabaseSettings: {e}. "
+                         f"Original settings remain (Path: '{current_path}', URL: '{current_url}').")
+            # Optionally, re-raise the error or handle it as per application requirements
+            # For now, we log and keep original settings.
         
         return self
 
