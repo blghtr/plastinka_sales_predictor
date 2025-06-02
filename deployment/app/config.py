@@ -528,6 +528,10 @@ class AppSettings(BaseSettings):
         default=int(os.environ.get("MAX_MODELS_TO_KEEP", 5)), 
         description="Maximum number of trained model artifacts to keep locally"
     )
+    file_storage_dir: str = Field(
+        default=os.environ.get("FILE_STORAGE_DIR", "./uploads"),
+        description="Base directory for storing uploaded files (models, reports, etc.)"
+    )
     
     # Model and parameters selection settings
     default_metric: str = Field(
@@ -628,6 +632,14 @@ class AppSettings(BaseSettings):
     def is_testing(self) -> bool:
         """Check if the application is running in testing mode."""
         return self.env.lower() == "testing"
+
+    @property
+    def model_storage_dir(self) -> str:
+        """Directory for storing model files inside file_storage_dir."""
+        import os
+        path = os.path.join(self.file_storage_dir, "models")
+        os.makedirs(path, exist_ok=True)
+        return path
 
 
 # Create a global instance of the settings

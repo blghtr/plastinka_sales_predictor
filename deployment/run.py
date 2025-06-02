@@ -3,6 +3,16 @@ import uvicorn
 import os
 import argparse
 from pathlib import Path
+import sys
+
+# Find the project root directory (one level up from deployment)
+script_dir = Path(__file__).resolve().parent
+project_root = script_dir.parent
+
+# Add the project root to sys.path
+# This allows importing modules like 'deployment.app.main' correctly
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 # Create necessary directories
 def create_directories():
@@ -46,7 +56,8 @@ def main():
         host=args.host,
         port=args.port,
         reload=args.reload,
-        workers=args.workers
+        workers=args.workers,
+        app_dir="."
     )
 
 if __name__ == "__main__":

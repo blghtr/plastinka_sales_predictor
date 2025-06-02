@@ -49,18 +49,25 @@ def load_data(start_date=None, end_date=None):
     return features
 
 
-def prepare_datasets(raw_features: dict, end_date: str, config: dict, output_dir: str | None = None) -> tuple[
+def prepare_datasets(raw_features: dict, config: dict, output_dir: str | None = None) -> tuple[
     PlastinkaTrainingTSDataset, PlastinkaTrainingTSDataset
 ]:
     """
     Loads data from DB, prepares features, creates full dataset.
     Saves train and validation datasets to the specified output_dir.
+    
+    Args:
+        raw_features: Dictionary of raw features loaded from the database.
+        config: Dictionary containing training configuration.
+        output_dir: Directory to save the prepared datasets.
+    
+    Returns:
+        Tuple of (train_dataset, val_dataset)
     """
     # Determine the save directory
     save_directory = output_dir if output_dir is not None else DEFAULT_OUTPUT_DIR
     os.makedirs(save_directory, exist_ok=True) # Ensure the directory exists
 
-    end_date_str = end_date
     logger.info("Starting feature preparation...")
 
     # Validate required raw features exist
@@ -75,29 +82,10 @@ def prepare_datasets(raw_features: dict, end_date: str, config: dict, output_dir
             features['stock'], features.get('change', pd.DataFrame())
         )
 
-        # 2. Determine Cutoff Date if not provided
-        if end_date is None:
-            latest_date = features['sales'].index.get_level_values('_date').max()
-            if (latest_date + timedelta(days=1)).month == latest_date.month:
-                end_date_str = latest_date.replace(day=1)
-            else:
-                end_date_str = latest_date + timedelta(days=1)
-            
-            end_date = end_date_str.strftime('%d-%m-%Y')
-            logger.info(f"Determined cutoff date: {end_date}")
-        end_date = pd.to_datetime(end_date_str, dayfirst=True)
+        # 2. Create Sales Pivot Table
+        sales_pivot = get_monthly_sales_pivot(features['sales'])
 
-        # 3. Filter data based on cutoff date
-        rounded_sales = features['sales'][
-            features['sales'].index.get_level_values('_date') < end_date
-        ]
-        rounded_stocks = features['stock_features'][
-            features['stock_features'].index < end_date
-        ]
-        # 4. Create Sales Pivot Table
-        sales_pivot = get_monthly_sales_pivot(rounded_sales)
-
-        # 5. Initialize Transformers (as per prepare_datasets.py example)
+        # 3. Initialize Transformers (as per prepare_datasets.py example)
         static_transformer = MultiColumnLabelBinarizer()
         scaler = GlobalLogMinMaxScaler()
 
@@ -106,14 +94,14 @@ def prepare_datasets(raw_features: dict, end_date: str, config: dict, output_dir
 
         logger.info('Creating full dataset...')
         dataset = PlastinkaTrainingTSDataset(
-            stock_features=rounded_stocks,
+            stock_features=features['stock_features'],
             monthly_sales=sales_pivot,
-            static_transformer=None,
+            static_transformer=static_transformer,
             static_features=DEFAULT_STATIC_FEATURES,
-            scaler=None,
+            scaler=scaler,
             input_chunk_length=input_chunk_length,
             output_chunk_length=output_chunk_length,
-            save_dir=None,
+            save_dir=save_directory,
             dataset_name='full',
             past_covariates_span=14,
             past_covariates_fnames=DEFAULT_PAST_COVARIATES_FNAMES,
@@ -132,7 +120,6 @@ def prepare_datasets(raw_features: dict, end_date: str, config: dict, output_dir
             transformer=static_transformer
         )
         train_dataset.save(
-            save_dir=save_directory,
             dataset_name='train'
         )
 
@@ -143,13 +130,10 @@ def prepare_datasets(raw_features: dict, end_date: str, config: dict, output_dir
             window=(dataset.L - length, dataset.L),
             scaler=scaler,
             transformer=static_transformer
-        )
+        )     
         val_dataset.save(
-            save_dir=save_directory,
             dataset_name='val'
         )
-        
-
         logger.info('Datasets created.')
     except Exception as e:
         logger.error(f"Error during feature preparation: {e}", exc_info=True)
@@ -161,8 +145,17 @@ def prepare_datasets(raw_features: dict, end_date: str, config: dict, output_dir
 def get_datasets(start_date=None, end_date=None, config=None, output_dir: str | None = None):
     """
     Loads data from DB, prepares features, creates and saves datasets to output_dir.
+    
+    Args:
+        start_date: Start date for data loading.
+        end_date: End date for data loading.
+        config: Dictionary containing training configuration.
+        output_dir: Directory to save the prepared datasets.
+    
+    Returns:
+        Tuple of (train_dataset, val_dataset)
     """
     raw_features = load_data(start_date, end_date)
     # Pass the output_dir down to the preparation function
-    return prepare_datasets(raw_features, end_date, config, output_dir)
+    return prepare_datasets(raw_features, config, output_dir)
 

@@ -62,10 +62,12 @@ def get_db_connection(db_path_override: Optional[Union[str, Path]] = None):
 
         current_db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(current_db_path))
+        logger.debug(f"DEBUG: get_db_connection - opened connection with id: {id(conn)}, path: {current_db_path}")
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.row_factory = dict_factory
         return conn
     except Exception as e:
+        logger.debug(f"DEBUG: get_db_connection - error creating connection: {str(e)}")
         logger.error(f"Failed to connect to database: {str(e)}", exc_info=True)
         raise DatabaseError(f"Database connection failed: {str(e)}", original_error=e)
 
@@ -155,7 +157,7 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
                     NOT commit or rollback. The caller is responsible for transaction
                     management. If not provided, a new connection is created and
                     the operation (if not a SELECT/PRAGMA) is committed.
-        
+                    
     Returns:
         Query results as dict or list of dicts, or None for operations
         
@@ -169,17 +171,34 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
     try:
         if connection:
             conn = connection
+            logger.debug(f"DEBUG: execute_query - Using provided connection with id: {id(conn)}")
             logger.debug(f"execute_query: Using provided connection with id: {id(conn)}")
-            logger.debug(f"execute_query: Connection isolation level: {conn.isolation_level}")
+            
+            try:
+                logger.debug(f"DEBUG: execute_query - Connection isolation level: {conn.isolation_level}")
+                logger.debug(f"execute_query: Connection isolation level: {conn.isolation_level}")
+            except Exception as e:
+                logger.debug(f"DEBUG: execute_query - Error checking connection state: {str(e)}")
+                # Throw detailed exception instead of continuing with invalid connection
+                raise DatabaseError(
+                    message=f"Connection validation failed: {str(e)}",
+                    query=query,
+                    params=params,
+                    original_error=e
+                )
         else:
             conn = get_db_connection()
             conn_created = True
+            logger.debug(f"DEBUG: execute_query - Created new connection with id: {id(conn)}")
             logger.debug(f"execute_query: Created new connection with id: {id(conn)}")
-            logger.debug(f"execute_query: Connection isolation level: {conn.isolation_level}")
             
+            logger.debug(f"DEBUG: execute_query - Connection isolation level: {conn.isolation_level}")
+            logger.debug(f"execute_query: Connection isolation level: {conn.isolation_level}")
+        
         conn.row_factory = dict_factory
         cursor = conn.cursor()
         
+        logger.debug(f"DEBUG: execute_query - Executing query: {query[:50]}...")
         cursor.execute(query, params)
         
         if query.strip().upper().startswith(("SELECT", "PRAGMA")):
@@ -190,19 +209,24 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
         else:
             # Only commit if this function created the connection
             if conn_created:
+                logger.debug(f"DEBUG: execute_query - Committing changes for connection id: {id(conn)}")
                 logger.debug(f"execute_query: Committing changes for connection id: {id(conn)}")
                 conn.commit()
             else:
+                logger.debug(f"DEBUG: execute_query - NOT committing changes for external connection id: {id(conn) if conn else None}")
                 logger.debug(f"execute_query: NOT committing changes for external connection id: {id(conn) if conn else None}")
             result = None
             
         return result
         
     except sqlite3.Error as e:
+        logger.debug(f"DEBUG: execute_query - SQLite error: {str(e)}")
         if conn and conn_created:
+            logger.debug(f"DEBUG: execute_query - Rolling back changes for connection id: {id(conn)}")
             logger.debug(f"execute_query: Rolling back changes for connection id: {id(conn)}")
             conn.rollback()
         else:
+            logger.debug(f"DEBUG: execute_query - NOT rolling back for external connection id: {id(conn) if conn else None}")
             logger.debug(f"execute_query: NOT rolling back for external connection id: {id(conn) if conn else None}")
         
         # Log with limited parameter data for security
@@ -216,11 +240,13 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
             original_error=e
         )
     finally:
-        if cursor:
-            cursor.close()
-        if conn and conn_created:
-            logger.debug(f"execute_query: Closing locally created connection with id: {id(conn)}")
-            conn.close()
+        # Close the connection if it was created here
+        if conn_created and conn:
+            try:
+                logger.debug(f"DEBUG: execute_query - Closing connection with id: {id(conn)}")
+                conn.close()
+            except Exception as close_e:
+                logger.debug(f"DEBUG: execute_query - Error closing connection: {str(close_e)}")
 
 def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Connection = None) -> None:
     """
@@ -294,7 +320,7 @@ def generate_id() -> str:
     """Generate a unique ID for jobs or results"""
     return str(uuid.uuid4())
 
-def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sqlite3.Connection = None) -> str:
+def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sqlite3.Connection = None, status: str = 'pending') -> str:
     """
     Create a new job record and return the job ID.
     If an external 'connection' is provided, this function operates within that transaction.
@@ -304,6 +330,7 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
         job_type: Type of job (from JobType enum)
         parameters: Dictionary of job parameters
         connection: Optional existing database connection to use
+        status: Initial job status (default: 'pending')
         
     Returns:
         Generated job ID
@@ -319,7 +346,7 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
     params_tuple = (
         job_id,
         job_type,
-        'pending',
+        status,
         now,
         now,
         json.dumps(parameters) if parameters else None,
@@ -361,6 +388,7 @@ def update_job_status(job_id: str, status: str, progress: float = None,
         result_id: Optional result ID if job completed
         error_message: Optional error message if job failed
         status_message: Optional detailed status message (stored in job_status_history)
+        
         connection: Optional existing database connection to use
     """
     now = datetime.now().isoformat()
@@ -368,7 +396,7 @@ def update_job_status(job_id: str, status: str, progress: float = None,
     # Debug connection information
     conn_id = id(connection) if connection else None
     logger.debug(f"update_job_status: Using connection object id: {conn_id}, externally provided: {connection is not None}")
-    
+
     # Build query and parameters list
     query_parts = ["UPDATE jobs SET updated_at = ?"]
     params = [now]
@@ -376,19 +404,19 @@ def update_job_status(job_id: str, status: str, progress: float = None,
     if status:
         query_parts.append("status = ?")
         params.append(status)
-    
+        
     if progress is not None:
         query_parts.append("progress = ?")
         params.append(progress)
-    
+        
     if result_id:
         query_parts.append("result_id = ?")
         params.append(result_id)
-    
+        
     if error_message:
         query_parts.append("error_message = ?")
         params.append(error_message)
-    
+        
     query = ", ".join(query_parts) + " WHERE job_id = ?"
     params.append(job_id)
     
@@ -397,6 +425,14 @@ def update_job_status(job_id: str, status: str, progress: float = None,
     if not connection:
         connection = get_db_connection()
         conn_created = True
+        logger.debug(f"DEBUG: update_job_status - Created new connection with id: {id(connection)}")
+    else:
+        logger.debug(f"DEBUG: update_job_status - Using existing connection with id: {id(connection)}")
+        # Проверка состояния соединения
+        try:
+            logger.debug(f"DEBUG: update_job_status - Connection isolation level: {connection.isolation_level}")
+        except Exception as e:
+            logger.debug(f"DEBUG: update_job_status - Error checking connection state: {str(e)}")
     
     try:
         # Update the job status
@@ -413,8 +449,8 @@ def update_job_status(job_id: str, status: str, progress: float = None,
             
             if table_exists:
                 history_query = """
-                    INSERT INTO job_status_history 
-                    (job_id, status, progress, status_message, updated_at) 
+                    INSERT INTO job_status_history
+                    (job_id, status, progress, status_message, updated_at)
                     VALUES (?, ?, ?, ?, ?)
                 """
                 history_params = (job_id, status, progress or 0, status_message, now)
@@ -425,16 +461,25 @@ def update_job_status(job_id: str, status: str, progress: float = None,
         
         if conn_created:
             connection.commit()
-            
+            logger.debug(f"DEBUG: update_job_status - Committed changes for connection id: {id(connection)}")
+        
         logger.info(f"Updated job {job_id}: status={status}, progress={progress}, message={status_message}")
     except DatabaseError as e:
+        logger.debug(f"DEBUG: update_job_status - Database error: {str(e)}")
         if conn_created:
-            connection.rollback()
-        logger.error(f"Failed to update job {job_id}: {str(e)}")
+            try:
+                connection.rollback()
+                logger.debug(f"DEBUG: update_job_status - Rolled back changes for connection id: {id(connection)}")
+            except Exception as rollback_error:
+                logger.debug(f"DEBUG: update_job_status - Error during rollback: {str(rollback_error)}")
         raise
     finally:
         if conn_created:
-            connection.close()
+            try:
+                connection.close()
+                logger.debug(f"DEBUG: update_job_status - Closed connection with id: {id(connection)}")
+            except Exception as close_error:
+                logger.debug(f"DEBUG: update_job_status - Error closing connection: {str(close_error)}")
 
 def get_job(job_id: str, connection: sqlite3.Connection = None) -> Dict:
     """
@@ -531,23 +576,23 @@ def create_data_upload_result(job_id: str, records_processed: int,
         logger.error(f"Failed to create data upload result for job {job_id}")
         raise
 
-def create_or_get_parameter_set(
-    parameters_dict: Dict[str, Any],
+def create_or_get_config(
+    config_dict: Dict[str, Any],
     is_active: bool = False,
     connection: sqlite3.Connection = None
 ) -> str:
     """
-    Creates a parameter set record if it doesn't exist, based on a hash of the parameters.
-    If `is_active` is True, this set will be marked active, deactivating others.
-    Returns the parameter_set_id.
+    Creates a config record if it doesn't exist, based on a hash of the config.
+    If `is_active` is True, this config will be marked active, deactivating others.
+    Returns the config_id.
 
     Args:
-        parameters_dict: Dictionary of parameters
-        is_active: Whether to explicitly set this parameter set as active
+        config_dict: Dictionary of config
+        is_active: Whether to explicitly set this config as active
         connection: Optional existing database connection to use
 
     Returns:
-        Parameter set ID (hash)
+        Config ID (hash)
     """
     conn_created = False
     try:
@@ -559,70 +604,70 @@ def create_or_get_parameter_set(
             
         cursor = conn.cursor()
         
-        # Hash the JSON representation of the parameters for a stable ID
-        parameters_json = json.dumps(parameters_dict, sort_keys=True)
-        parameter_set_id = hashlib.md5(parameters_json.encode()).hexdigest()
+        # Hash the JSON representation of the config for a stable ID
+        config_json = json.dumps(config_dict, sort_keys=True)
+        config_id = hashlib.md5(config_json.encode()).hexdigest()
         
-        # Check if this parameter set already exists
+        # Check if this config already exists
         cursor.execute(
-            "SELECT parameter_set_id FROM parameter_sets WHERE parameter_set_id = ?",
-            (parameter_set_id,)
+            "SELECT config_id FROM configs WHERE config_id = ?",
+            (config_id,)
         )
         
         if not cursor.fetchone():
-            # Create the parameter set
+            # Create the config
             now = datetime.now().isoformat()
             
             cursor.execute(
                 """
-                INSERT INTO parameter_sets (parameter_set_id, parameters, is_active, created_at)
+                INSERT INTO configs (config_id, config, is_active, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (parameter_set_id, parameters_json, 1 if is_active else 0, now)
+                (config_id, config_json, 1 if is_active else 0, now)
             )
             
             if is_active:
-                # If this parameter set should be active, deactivate all others
+                # If this config should be active, deactivate all others
                 cursor.execute(
                     """
-                    UPDATE parameter_sets
+                    UPDATE configs
                     SET is_active = 0
-                    WHERE parameter_set_id != ?
+                    WHERE config_id != ?
                     """,
-                    (parameter_set_id,)
+                    (config_id,)
                 )
                 
             if conn_created: # Only commit if this function created the connection
                 conn.commit()
-            logger.info(f"Created parameter set: {parameter_set_id}, active: {is_active}")
+            logger.info(f"Created config: {config_id}, active: {is_active}")
         elif is_active:
-            # If the parameter set already exists but needs to be set as active
+            # If the config already exists but needs to be set as active
             cursor.execute(
                 """
-                UPDATE parameter_sets
+                UPDATE configs
                 SET is_active = 0
-                WHERE parameter_set_id != ?
+                WHERE config_id != ?
                 """,
-                (parameter_set_id,)
+                (config_id,)
             )
             
             cursor.execute(
                 """
-                UPDATE parameter_sets
+                UPDATE configs
                 SET is_active = 1
-                WHERE parameter_set_id = ?
+                WHERE config_id = ?
                 """,
-                (parameter_set_id,)
+                (config_id,)
             )
             
             if conn_created: # Only commit if this function created the connection
                 conn.commit()
-            logger.info(f"Set existing parameter set {parameter_set_id} as active")
+            logger.info(f"Set existing config {config_id} as active")
             
-        return parameter_set_id
+        return config_id
         
     except Exception as e:
-        logger.error(f"Error with parameter set: {e}")
+        logger.error(f"Error with config: {e}")
         if conn_created and 'conn' in locals():
             try:
                 conn.rollback()
@@ -636,12 +681,11 @@ def create_or_get_parameter_set(
             except Exception:
                 pass  # Already closed or other issue
 
-def get_active_parameter_set(connection: sqlite3.Connection = None) -> Optional[Dict[str, Any]]:
+def get_active_config(connection: sqlite3.Connection = None) -> Optional[Dict[str, Any]]:
     """
-    Returns the currently active parameter set or None if none is active.
-    
+    Returns the currently active config or None if none is active.
     Returns:
-        Dictionary with parameter_set_id and parameters fields if an active set exists,
+        Dictionary with config_id and config fields if an active config exists,
         otherwise None.
     """
     conn_created = False
@@ -651,43 +695,39 @@ def get_active_parameter_set(connection: sqlite3.Connection = None) -> Optional[
         else:
             conn = get_db_connection()
             conn_created = True
-            
+        logger.debug(f"[DEBUG] get_active_config: conn id={id(conn)}, conn_created={conn_created}")
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT parameter_set_id, parameters
-            FROM parameter_sets 
+            SELECT config_id, config
+            FROM configs 
             WHERE is_active = 1 
             LIMIT 1
             """
         )
-        
         result = cursor.fetchone()
+        logger.debug(f"[DEBUG] get_active_config: found result={result}")
         if not result:
             return None
-            
-        # Handle both tuple and sqlite.Row result types
+        # ... existing code ...
         if hasattr(result, 'keys'):  # sqlite.Row
-            parameter_set_id = result['parameter_set_id']
-            parameters_json = result['parameters']
+            config_id = result['config_id']
+            config_json = result['config']
         else:  # tuple
-            parameter_set_id = result[0]
-            parameters_json = result[1]
-            
-        # Parse the parameters JSON
+            config_id = result[0]
+            config_json = result[1]
         try:
-            parameters = json.loads(parameters_json) if parameters_json else {}
+            config = json.loads(config_json) if config_json else {}
         except (json.JSONDecodeError, TypeError):
-            logger.error(f"Error parsing parameters JSON: {parameters_json}")
-            parameters = {}
-            
+            logger.error(f"Error parsing config JSON: {config_json}")
+            config = {}
+        logger.debug(f"[DEBUG] get_active_config: returning config_id={config_id}")
         return {
-            "parameter_set_id": parameter_set_id,
-            "parameters": parameters
+            "config_id": config_id,
+            "config": config
         }
-        
     except Exception as e:
-        logger.error(f"Error getting active parameter set: {e}")
+        logger.error(f"Error getting active config: {e}")
         return None
     finally:
         if conn_created and 'conn' in locals():
@@ -696,13 +736,13 @@ def get_active_parameter_set(connection: sqlite3.Connection = None) -> Optional[
             except Exception:
                 pass  # Already closed or other issue
 
-def set_parameter_set_active(parameter_set_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None) -> bool:
+def set_config_active(config_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None) -> bool:
     """
-    Sets a parameter set as active and optionally deactivates others.
+    Sets a config as active and optionally deactivates others.
     
     Args:
-        parameter_set_id: The parameter set ID to activate
-        deactivate_others: Whether to deactivate all other parameter sets
+        config_id: The config ID to activate
+        deactivate_others: Whether to deactivate all other configs
         connection: Optional existing database connection to use
         
     Returns:
@@ -718,41 +758,41 @@ def set_parameter_set_active(parameter_set_id: str, deactivate_others: bool = Tr
             
         cursor = conn.cursor()
         
-        # First check if parameter set exists
+        # First check if config exists
         cursor.execute(
-            "SELECT 1 FROM parameter_sets WHERE parameter_set_id = ?",
-            (parameter_set_id,)
+            "SELECT 1 FROM configs WHERE config_id = ?",
+            (config_id,)
         )
         
         if not cursor.fetchone():
-            logger.error(f"Parameter set {parameter_set_id} not found")
+            logger.error(f"Config {config_id} not found")
             return False
             
         if deactivate_others:
-            cursor.execute("UPDATE parameter_sets SET is_active = 0")
+            cursor.execute("UPDATE configs SET is_active = 0")
             
         cursor.execute(
-            "UPDATE parameter_sets SET is_active = 1 WHERE parameter_set_id = ?",
-            (parameter_set_id,)
+            "UPDATE configs SET is_active = 1 WHERE config_id = ?",
+            (config_id,)
         )
         
         if conn_created:
             conn.commit()
-        logger.info(f"Set parameter set {parameter_set_id} as active")
+        logger.info(f"Set config {config_id} as active")
         return True
         
     except sqlite3.Error as e:
         if conn_created and conn:
             conn.rollback()
-        logger.error(f"Error setting parameter set {parameter_set_id} as active: {e}")
+        logger.error(f"Error setting config {config_id} as active: {e}")
         return False
     finally:
         if conn_created and conn:
             conn.close()
 
-def get_best_parameter_set_by_metric(metric_name: str, higher_is_better: bool = True, connection: sqlite3.Connection = None) -> Optional[Dict[str, Any]]:
+def get_best_config_by_metric(metric_name: str, higher_is_better: bool = True, connection: sqlite3.Connection = None) -> Optional[Dict[str, Any]]:
     """
-    Returns the parameter set with the best metric value based on training_results.
+    Returns the config with the best metric value based on training_results.
     
     Args:
         metric_name: The name of the metric to use for evaluation
@@ -760,11 +800,11 @@ def get_best_parameter_set_by_metric(metric_name: str, higher_is_better: bool = 
         connection: Optional existing database connection to use
         
     Returns:
-        Dictionary with parameter_set_id, parameters, and metrics fields if a best set exists,
+        Dictionary with config_id, config, and metrics fields if a best config exists,
         otherwise None.
     """
     if metric_name not in ALLOWED_METRICS:
-        logger.error(f"Invalid metric_name '{metric_name}' provided to get_best_parameter_set_by_metric.")
+        logger.error(f"Invalid metric_name '{metric_name}' provided to get_best_config_by_metric.")
         raise ValueError(f"Invalid metric_name: {metric_name}. Allowed metrics are: {ALLOWED_METRICS}")
 
     conn_created = False
@@ -783,18 +823,18 @@ def get_best_parameter_set_by_metric(metric_name: str, higher_is_better: bool = 
         # Construct the JSON path safely
         json_path = f"'$.{metric_name}'" # The metric_name is now validated
         
-        # Join parameter_sets and training_results to find the best metrics
-        # Ensure parameter_set_id is not NULL in training_results
+        # Join configs and training_results to find the best metrics
+        # Ensure config_id is not NULL in training_results
         # The metric_name for JSON_EXTRACT and order_direction are now safely constructed.
         query = f"""
             SELECT
-                ps.parameter_set_id,
-                ps.parameters,
+                c.config_id,
+                c.config,
                 tr.metrics,
                 JSON_EXTRACT(tr.metrics, {json_path}) as metric_value
             FROM training_results tr
-            JOIN parameter_sets ps ON tr.parameter_set_id = ps.parameter_set_id
-            WHERE tr.parameter_set_id IS NOT NULL AND JSON_VALID(tr.metrics) = 1 AND JSON_EXTRACT(tr.metrics, {json_path}) IS NOT NULL
+            JOIN configs c ON tr.config_id = c.config_id
+            WHERE tr.config_id IS NOT NULL AND JSON_VALID(tr.metrics) = 1 AND JSON_EXTRACT(tr.metrics, {json_path}) IS NOT NULL
             ORDER BY metric_value {order_direction}
             LIMIT 1
         """
@@ -805,20 +845,20 @@ def get_best_parameter_set_by_metric(metric_name: str, higher_is_better: bool = 
         
         if result:
             # Parse JSON fields
-            if result.get('parameters'):
+            if result.get('config'):
                  try:
-                     result['parameters'] = json.loads(result['parameters'])
+                     result['config'] = json.loads(result['config'])
                  except json.JSONDecodeError:
-                     logger.warning(f"Could not decode parameters JSON for parameter_set {result['parameter_set_id']}")
-                     result['parameters'] = {} # Set to empty dict on error
+                     logger.warning(f"Could not decode config JSON for config {result['config_id']}")
+                     result['config'] = {} # Set to empty dict on error
             else:
-                result['parameters'] = {}
+                result['config'] = {}
 
             if result.get('metrics'):
                  try:
                      result['metrics'] = json.loads(result['metrics'])
                  except json.JSONDecodeError:
-                     logger.warning(f"Could not decode metrics JSON for parameter_set {result['parameter_set_id']} in training_results")
+                     logger.warning(f"Could not decode metrics JSON for config {result['config_id']} in training_results")
                      result['metrics'] = {} # Set to empty dict on error
             else:
                 result['metrics'] = {}
@@ -830,11 +870,11 @@ def get_best_parameter_set_by_metric(metric_name: str, higher_is_better: bool = 
         return None
         
     except sqlite3.Error as e:
-        logger.error(f"Database error in get_best_parameter_set_by_metric for metric '{metric_name}': {e}", exc_info=True)
+        logger.error(f"Database error in get_best_config_by_metric for metric '{metric_name}': {e}", exc_info=True)
         # It might be better to re-raise a custom error or let DatabaseError propagate if execute_query was used
-        return None # Or raise DatabaseError(f"Failed to get best parameter set: {e}", original_error=e)
+        return None # Or raise DatabaseError(f"Failed to get best config: {e}", original_error=e)
     except ValueError as ve: # Catch the ValueError from metric_name validation
-        logger.error(f"ValueError in get_best_parameter_set_by_metric: {ve}", exc_info=True)
+        logger.error(f"ValueError in get_best_config_by_metric: {ve}", exc_info=True)
         raise # Re-raise the ValueError to be handled by the caller
     finally:
         if conn_created and conn:
@@ -1219,16 +1259,16 @@ def delete_model_record_and_file(model_id: str, connection: sqlite3.Connection =
 def create_training_result(
     job_id: str, 
     model_id: str, 
-    parameter_set_id: str,
+    config_id: str,
     metrics: Dict[str, Any], 
-    parameters: Dict[str, Any],
+    config: Dict[str, Any],
     duration: Optional[int],
     connection: sqlite3.Connection = None # Allow passing connection for transaction
 ) -> str:
     """Creates a record for a completed training job and handles auto-activation."""
     result_id = str(uuid.uuid4())
     metrics_json = json.dumps(metrics)
-    parameters_json = json.dumps(parameters) # Parameters used for this specific training run
+    config_json = json.dumps(config) # Parameters used for this specific training run
     
     conn_created = False
     try:
@@ -1243,11 +1283,11 @@ def create_training_result(
         # Insert the training result
         query = """
         INSERT INTO training_results 
-        (result_id, job_id, model_id, parameter_set_id, metrics, parameters, duration)
+        (result_id, job_id, model_id, config_id, metrics, config, duration)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """
         params = (
-            result_id, job_id, model_id, parameter_set_id, metrics_json, parameters_json, duration
+            result_id, job_id, model_id, config_id, metrics_json, config_json, duration
         )
         cursor.execute(query, params)
         logger.info(f"Created training result: {result_id} for job: {job_id}")
@@ -1255,18 +1295,18 @@ def create_training_result(
         # --- Auto-activation logic ---
         from deployment.app.config import settings # Import settings here
 
-        # Auto-activate best parameter set
-        if settings.auto_select_best_params:
-            best_param_set = get_best_parameter_set_by_metric(
+        # Auto-activate best config
+        if settings.auto_select_best_configs:
+            best_config = get_best_config_by_metric(
                 metric_name=settings.default_metric,
                 higher_is_better=settings.default_metric_higher_is_better,
                 connection=conn # Use the same connection
             )
-            if best_param_set and best_param_set.get("parameter_set_id"):
-                logger.info(f"Auto-activating best parameter set: {best_param_set['parameter_set_id']}")
-                set_parameter_set_active(best_param_set["parameter_set_id"], connection=conn)
+            if best_config and best_config.get("config_id"):
+                logger.info(f"Auto-activating best config: {best_config['config_id']}")
+                set_config_active(best_config["config_id"], connection=conn)
             else:
-                logger.warning(f"Auto-select params enabled, but couldn't find best parameter set by metric '{settings.default_metric}'")
+                logger.warning(f"Auto-select configs enabled, but couldn't find best config by metric '{settings.default_metric}'")
 
 
         # Auto-activate best model
@@ -1530,16 +1570,16 @@ def get_or_create_multiindex_id(barcode: str, artist: str, album: str,
         logger.error("Failed to get or create multiindex mapping")
         raise 
 
-def get_parameter_sets(limit: int = 5, connection: sqlite3.Connection = None) -> List[Dict[str, Any]]:
+def get_configs(limit: int = 5, connection: sqlite3.Connection = None) -> List[Dict[str, Any]]:
     """
-    Retrieves a list of parameter sets ordered by creation date.
+    Retrieves a list of configs ordered by creation date.
     
     Args:
-        limit: Maximum number of parameter sets to return
+        limit: Maximum number of configs to return
         connection: Optional existing database connection to use
         
     Returns:
-        List of parameter sets with their details
+        List of configs with their details
     """
     conn_created = False
     try:
@@ -1554,9 +1594,8 @@ def get_parameter_sets(limit: int = 5, connection: sqlite3.Connection = None) ->
         
         cursor.execute(
             """
-            SELECT parameter_set_id, parameters, created_at, is_active, 
-                   default_metric_name, default_metric_value
-            FROM parameter_sets
+            SELECT config_id, config, created_at, is_active
+            FROM configs
             ORDER BY created_at DESC
             LIMIT ?
             """,
@@ -1565,30 +1604,30 @@ def get_parameter_sets(limit: int = 5, connection: sqlite3.Connection = None) ->
         
         results = cursor.fetchall()
         for result in results:
-            if 'parameters' in result and result['parameters']:
-                result['parameters'] = json.loads(result['parameters'])
+            if 'config' in result and result['config']:
+                result['config'] = json.loads(result['config'])
                 
         return results
         
     except sqlite3.Error as e:
-        logger.error(f"Database error in get_parameter_sets: {e}")
+        logger.error(f"Database error in get_configs: {e}")
         return []
     finally:
         if conn_created and conn:
             conn.close()
 
-def delete_parameter_sets_by_ids(parameter_set_ids: List[str], connection: sqlite3.Connection = None) -> Dict[str, Any]:
+def delete_configs_by_ids(config_ids: List[str], connection: sqlite3.Connection = None) -> Dict[str, Any]:
     """
-    Deletes multiple parameter sets by their IDs.
+    Deletes multiple configs by their IDs.
     
     Args:
-        parameter_set_ids: List of parameter set IDs to delete
+        config_ids: List of config IDs to delete
         connection: Optional existing database connection to use
         
     Returns:
         Dict with results: {"successful": count, "failed": count, "errors": [list of errors]}
     """
-    if not parameter_set_ids:
+    if not config_ids:
         return {"successful": 0, "failed": 0, "errors": []}
         
     conn_created = False
@@ -1603,31 +1642,31 @@ def delete_parameter_sets_by_ids(parameter_set_ids: List[str], connection: sqlit
             
         cursor = conn.cursor()
         
-        # Check for active parameter sets that would be deleted
-        placeholders = ','.join(['?'] * len(parameter_set_ids))
+        # Check for active configs that would be deleted
+        placeholders = ','.join(['?'] * len(config_ids))
         cursor.execute(
             f"""
-            SELECT parameter_set_id FROM parameter_sets 
-            WHERE is_active = 1 AND parameter_set_id IN ({placeholders})
+            SELECT config_id FROM configs 
+            WHERE is_active = 1 AND config_id IN ({placeholders})
             """, 
-            parameter_set_ids
+            config_ids
         )
         
-        active_sets = cursor.fetchall()
-        if active_sets:
-            active_ids = [row['parameter_set_id'] for row in active_sets]
-            result["errors"].append(f"Cannot delete active parameter sets: {', '.join(active_ids)}")
+        active_configs = cursor.fetchall()
+        if active_configs:
+            active_ids = [row['config_id'] for row in active_configs]
+            result["errors"].append(f"Cannot delete active configs: {', '.join(active_ids)}")
             result["failed"] += len(active_ids)
             
-            # Remove active sets from deletion list
-            parameter_set_ids = [ps_id for ps_id in parameter_set_ids if ps_id not in active_ids]
+            # Remove active configs from deletion list
+            config_ids = [cfg_id for cfg_id in config_ids if cfg_id not in active_ids]
             
-        if parameter_set_ids:
-            # Delete non-active parameter sets
-            placeholders = ','.join(['?'] * len(parameter_set_ids))
+        if config_ids:
+            # Delete non-active configs
+            placeholders = ','.join(['?'] * len(config_ids))
             cursor.execute(
-                f"DELETE FROM parameter_sets WHERE parameter_set_id IN ({placeholders})",
-                parameter_set_ids
+                f"DELETE FROM configs WHERE config_id IN ({placeholders})",
+                config_ids
             )
             
             result["successful"] = cursor.rowcount
@@ -1638,10 +1677,10 @@ def delete_parameter_sets_by_ids(parameter_set_ids: List[str], connection: sqlit
     except sqlite3.Error as e:
         if conn_created and conn:
             conn.rollback()
-        error_msg = f"Error deleting parameter sets: {str(e)}"
+        error_msg = f"Error deleting configs: {str(e)}"
         logger.error(error_msg)
         result["errors"].append(error_msg)
-        result["failed"] += len(parameter_set_ids)
+        result["failed"] += len(config_ids)
         return result
     finally:
         if conn_created and conn:
@@ -1785,3 +1824,41 @@ def delete_models_by_ids(model_ids: List[str], connection: sqlite3.Connection = 
     finally:
         if conn_created and conn:
             conn.close() 
+
+def get_effective_config(settings, logger=None, connection=None):
+    """
+    Returns the active config if it exists, otherwise the best by metric.
+    Raises ValueError if neither exists.
+    Args:
+        settings: AppSettings instance (или объект с default_metric и default_metric_higher_is_better)
+        logger: Optional logger for info/error messages
+        connection: Optional sqlite3.Connection to use (для тестов с in-memory БД)
+    Returns:
+        dict: config data (как возвращает get_active_config или get_best_config_by_metric)
+    Raises:
+        ValueError: если ни один сет не найден
+    """
+    logger.debug("[DEBUG] get_effective_config: called")
+    active_config_data = get_active_config(connection=connection)
+    logger.debug(f"[DEBUG] get_effective_config: active_config_data={active_config_data}")
+    if active_config_data:
+        if logger:
+            logger.info(f"Found active config: {active_config_data['config_id']}")
+        return active_config_data
+    # Fallback: best by metric
+    metric_name = getattr(settings, 'default_metric', None)
+    higher_is_better = getattr(settings, 'default_metric_higher_is_better', True)
+    best_config_data = get_best_config_by_metric(
+        metric_name,
+        higher_is_better,
+        connection=connection
+    )
+    logger.debug(f"[DEBUG] get_effective_config: best_config_data={best_config_data}")
+    if best_config_data:
+        if logger:
+            logger.info(f"Using best config by {metric_name}: {best_config_data['config_id']}")
+        return best_config_data
+    error_msg = "No active config and no best config by metric available"
+    if logger:
+        logger.error(error_msg)
+    raise ValueError(error_msg) 

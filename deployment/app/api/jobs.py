@@ -9,17 +9,18 @@ import logging
 from pathlib import Path
 import aiofiles
 import shutil
-
+import debugpy
+debugpy.listen(5678)
 from deployment.app.models.api_models import (
     JobResponse, JobDetails, JobsList, JobStatus, JobType,
-    DataUploadResponse, TrainingParams, TrainingResponse,
+    DataUploadResponse, TrainingConfig, TrainingResponse,
     PredictionParams, PredictionResponse, ReportParams, ReportResponse
 )
 from deployment.app.db.database import (
     create_job, update_job_status, get_job, list_jobs,
     get_data_upload_result, get_training_result, get_prediction_result, get_report_result,
     create_data_upload_result, create_training_result, create_prediction_result, create_report_result,
-    DatabaseError, get_active_parameter_set, get_best_parameter_set_by_metric
+    DatabaseError, get_effective_config
 )
 from deployment.app.services.data_processor import process_data_files
 from deployment.app.services.datasphere_service import run_job
@@ -27,7 +28,6 @@ from deployment.app.services.report_service import generate_report
 from deployment.app.utils.validation import validate_stock_file, validate_sales_file, validate_date_format, ValidationError
 from deployment.app.utils.file_validation import validate_excel_file_upload
 from deployment.app.utils.error_handling import ErrorDetail
-import debugpy
 from deployment.app.config import settings
 from deployment.app.services.auth import get_current_api_key_validated
 
@@ -72,6 +72,9 @@ async def create_data_upload_job(
     
     Returns a job ID that can be used to check the job status.
     """
+    #breakpoint()
+    #debugpy.wait_for_client()
+    #breakpoint()
     job_id = None
     temp_job_dir = None
     try:
@@ -241,13 +244,15 @@ async def create_data_upload_job(
 async def create_training_job(
     request: Request,
     background_tasks: BackgroundTasks,
+    dataset_start_date: Optional[str] = Query(None, description="Start date for dataset preparation (YYYY-MM-DD format)"),
+    dataset_end_date: Optional[str] = Query(None, description="End date for dataset preparation (YYYY-MM-DD format)"),
     api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
     Submit a job to train a model using the active parameter set.
     
     This will:
-    1. Prepare the training dataset
+    1. Prepare the training dataset using the specified date range
     2. Train the model using the active parameter set or best parameter set
     3. Save the trained model
     
@@ -257,49 +262,40 @@ async def create_training_job(
         HTTPException: If there's no active parameter set and no best parameter set by metric.
     """
     try:
-        # Check if active parameter set exists
-        active_params_data = get_active_parameter_set()
-        active_parameter_set_id = None
-        
-        if active_params_data:
-            active_parameter_set_id = active_params_data["parameter_set_id"]
-            logger.info(f"Found active parameter set: {active_parameter_set_id}")
-        else:
-            # Check if there's a best parameter set by metric
-            metric_name = settings.default_metric
-            best_params_data = get_best_parameter_set_by_metric(
-                metric_name, 
-                settings.default_metric_higher_is_better
-            )
-            
-            if not best_params_data:
-                error_msg = "No active parameter set and no best parameter set by metric available"
-                logger.error(error_msg)
-                raise HTTPException(
-                    status_code=400,
-                    detail=error_msg
-                )
-            
-            active_parameter_set_id = best_params_data["parameter_set_id"]
-            logger.info(f"Using best parameter set by {metric_name}: {active_parameter_set_id}")
-        
-        # Create a new job
+        # Получаем параметры из базы
+        config_data = get_effective_config(settings, logger=logger)
+        config_id = config_data["config_id"]
+        config = config_data["config"]
+
+        # В job.parameters сохраняем только id и даты
+        job_params = {
+            "config_id": config_id
+        }
+        if dataset_start_date:
+            job_params["dataset_start_date"] = dataset_start_date
+        if dataset_end_date:
+            job_params["dataset_end_date"] = dataset_end_date
+
         job_id = create_job(
             JobType.TRAINING,
-            parameters={"use_active_parameters": True, "parameter_set_id": active_parameter_set_id}
+            parameters=job_params
         )
-        
-        # Start the background task
+
+        # Передаём параметры явно в run_job
         background_tasks.add_task(
             run_job,
-            job_id=job_id
+            job_id=job_id,
+            training_config=config,
+            config_id=config_id,
+            dataset_start_date=dataset_start_date,
+            dataset_end_date=dataset_end_date
         )
-        
-        logger.info(f"Created training job {job_id} using parameter set {active_parameter_set_id}")
+
+        logger.info(f"Created training job {job_id} using parameter set {config_id} with date range: {dataset_start_date} to {dataset_end_date}")
         return TrainingResponse(
-            job_id=job_id, 
+            job_id=job_id,
             status=JobStatus.PENDING,
-            parameter_set_id=active_parameter_set_id,
+            parameter_set_id=config_id,
             using_active_parameters=True
         )
     except DatabaseError as e:

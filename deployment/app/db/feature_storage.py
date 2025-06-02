@@ -373,18 +373,33 @@ class FeatureStoreFactory:
         else:
             raise ValueError(f"Unsupported feature store type: {store_type}")
 
-def save_features(features: Dict[str, pd.DataFrame], 
-                 cutoff_date: str, 
+def save_features(features: Dict[str, pd.DataFrame],
+                 cutoff_date: str,
                  source_files: str,
                  store_type: str = 'sql', **kwargs) -> int:
     """Helper function to save features using a specific store type"""
-    store = FeatureStoreFactory.get_store(store_type=store_type, **kwargs)
-    run_id = store.create_run(cutoff_date, source_files)
-    store.save_features(features)
-    store.complete_run()
-    return run_id
+    
+    # Use an existing connection if provided, otherwise use db_transaction
+    if 'connection' in kwargs and kwargs['connection'] is not None:
+        conn = kwargs.pop('connection')
+        store = FeatureStoreFactory.get_store(store_type=store_type, connection=conn, **kwargs)
+        run_id = store.create_run(cutoff_date, source_files)
+        store.save_features(features)
+        store.complete_run()
+        # NOTE: COMMIT/ROLLBACK is the responsibility of the caller when using a provided connection
+        return run_id
+    else:
+        # Use db_transaction context manager for automatic commit/rollback
+        from deployment.app.db.database import db_transaction # Import locally to avoid potential circular deps
+        with db_transaction() as conn:
+            store = FeatureStoreFactory.get_store(store_type=store_type, connection=conn, **kwargs)
+            run_id = store.create_run(cutoff_date, source_files)
+            store.save_features(features)
+            store.complete_run()
+            # COMMIT/ROLLBACK handled by db_transaction context manager
+        return run_id
 
-def load_features(store_type: str = 'sql', 
+def load_features(store_type: str = 'sql',
                   start_date: Optional[str] = None,
                   end_date: Optional[str] = None,
                   **kwargs) -> Dict[str, pd.DataFrame]:

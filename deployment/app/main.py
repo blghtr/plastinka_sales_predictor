@@ -1,3 +1,4 @@
+import debugpy
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +18,7 @@ from deployment.app.db.schema import init_db
 # Import API routers
 from deployment.app.api.jobs import router as jobs_router
 from deployment.app.api.health import router as health_router
-from deployment.app.api.models_params import router as models_params_router
+from deployment.app.api.models_configs import router as models_params_router
 from deployment.app.api.admin import router as admin_router
 
 # Import utils
@@ -71,13 +72,17 @@ def check_environment():
 async def lifespan(app: FastAPI):
     # Startup logic
     logger.info("Initializing application")
-    
     # Check environment variables
     check_environment()
-    
+    # Get database path from environment variable
+    db_path = os.getenv("DATABASE_URL")
+    if not db_path:
+        logger.error("DATABASE_URL environment variable not set")
+        raise ValueError("DATABASE_URL environment variable not set")
+
     # Initialize database
     try:
-        if init_db():
+        if init_db(db_path=db_path):
             logger.info("Database initialized successfully")
         else:
             logger.warning("Database initialization completed with warnings")

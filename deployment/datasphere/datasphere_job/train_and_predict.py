@@ -251,20 +251,41 @@ def main(input, output):
         sys.exit(1)
     
     wheel_file_path = wheel_files[0]
+    wheel_filename = os.path.basename(wheel_file_path)
     print(f"Found wheel file: {wheel_file_path}")
+
+    # SECURITY: Validate wheel filename matches expected pattern
+    import re
+    # Expected pattern: plastinka_sales_predictor-{version}-{python_tag}-{abi_tag}-{platform_tag}.whl
+    # Example: plastinka_sales_predictor-0.1.0-py3-none-any.whl
+    wheel_pattern_regex = r'^plastinka_sales_predictor-[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9\.]+)?-py[0-9]+-none-any\.whl$'
+    if not re.match(wheel_pattern_regex, wheel_filename):
+        print(f"ERROR: Wheel filename '{wheel_filename}' does not match expected pattern. Exiting for security reasons.")
+        print("Expected pattern: plastinka_sales_predictor-x.y.z[-suffix]-py3-none-any.whl")
+        sys.exit(1)
 
     # Log wheel details for security auditing
     try:
-        wheel_filename = os.path.basename(wheel_file_path)
         wheel_size_bytes = os.path.getsize(wheel_file_path)
         wheel_mod_timestamp = os.path.getmtime(wheel_file_path)
         # datetime is imported at the top of the file
         wheel_mod_time_str = datetime.fromtimestamp(wheel_mod_timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
         print(f"  Wheel Details: Name='{wheel_filename}', Size={wheel_size_bytes} bytes, Last Modified='{wheel_mod_time_str}'")
+        
+        # SECURITY: Check for reasonable file size (between 100KB and 50MB)
+        if wheel_size_bytes < 100 * 1024:  # 100 KB
+            print(f"WARNING: Wheel file is suspiciously small ({wheel_size_bytes} bytes). Continuing but with caution.")
+        if wheel_size_bytes > 50 * 1024 * 1024:  # 50 MB
+            print(f"WARNING: Wheel file is unusually large ({wheel_size_bytes} bytes). Continuing but with caution.")
+            
+        # SECURITY: Validate wheel file was created within a reasonable timeframe (not older than 30 days)
+        thirty_days_ago = time.time() - (30 * 24 * 60 * 60)
+        if wheel_mod_timestamp < thirty_days_ago:
+            print(f"WARNING: Wheel file is more than 30 days old (modified on {wheel_mod_time_str}). Continuing but with caution.")
     except OSError as e:
         print(f"  WARNING: Could not retrieve full details for wheel file '{wheel_file_path}': {e}")
     
-    print(f"Attempting to install '{os.path.basename(wheel_file_path)}' using pip...")
+    print(f"Attempting to install '{wheel_filename}' using pip...")
 
     try:
         # Using check=True to automatically raise CalledProcessError on non-zero exit status.
@@ -293,19 +314,36 @@ def main(input, output):
         print(f"ERROR: An unexpected error occurred during pip install: {str(e)}. Exiting.")
         sys.exit(1)
     
+    # SECURITY: Verify the installed package
+    try:
+        verify_result = subprocess.run(
+            ["pip", "show", "plastinka-sales-predictor"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print("Installed package verification:")
+        print(verify_result.stdout)
+    except Exception as e:
+        print(f"WARNING: Could not verify installed package: {str(e)}")
+    
     print("Plastinka_sales_predictor wheel installed successfully.")
     # --- END WHEEL INSTALLATION ---
 
     # --- PSP IMPORTS AND LOGGER CONFIGURATION ---
     # These imports are moved here from global scope to ensure they happen after wheel installation.
-    from plastinka_sales_predictor import (
-        configure_logger,
-        prepare_for_training,
-        train_model as _train_model,
-        extract_early_stopping_callback
-    )
-    # PlastinkaTrainingTSDataset is needed for loading datasets and type hints (now strings).
-    from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset
+    try:
+        from plastinka_sales_predictor import (
+            configure_logger,
+            prepare_for_training,
+            train_model as _train_model,
+            extract_early_stopping_callback
+        )
+        # PlastinkaTrainingTSDataset is needed for loading datasets and type hints (now strings).
+        from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset
+    except ImportError as e:
+        print(f"ERROR: Failed to import required modules from plastinka_sales_predictor after installation: {str(e)}. Exiting.")
+        sys.exit(1)
     
     # Configure the logger for the rest of the script
     # This re-assigns the global 'logger' variable.
@@ -329,8 +367,6 @@ def main(input, output):
     with open(input, 'r') as f:
         input_dict = json.load(f)
         config = input_dict['config']
-        start_date = datetime.strptime(input_dict["start_date"], "%Y-%m-%d")
-        end_date = datetime.strptime(input_dict["end_date"], "%Y-%m-%d")
 
     # Load pre-prepared datasets
     # The 'input' variable from click.option is the path to params.json

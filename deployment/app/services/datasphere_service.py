@@ -16,14 +16,14 @@ from typing import Optional, Tuple, Dict, Any, List
 from pydantic import TypeAdapter
 from deployment.app.db.database import (
     update_job_status, 
-    create_training_result, 
-    create_or_get_parameter_set,
+    create_training_result,
+    create_or_get_config,
     create_model_record,
     get_recent_models,
     delete_model_record_and_file,
-    get_active_parameter_set,
-    get_best_parameter_set_by_metric,
-    set_parameter_set_active,
+    get_active_config,
+    get_best_config_by_metric,
+    set_config_active,
     get_active_model,
     get_best_model_by_metric,
     set_model_active,
@@ -33,12 +33,16 @@ from deployment.app.db.database import (
     create_prediction_result,
     get_or_create_multiindex_id,
     execute_many,
-    get_db_connection
+    get_db_connection,
+    get_effective_config
 )
-from deployment.app.models.api_models import JobStatus, TrainingParams
+from deployment.app.models.api_models import JobStatus, TrainingConfig
 from deployment.app.config import AppSettings
 from deployment.datasphere.client import DataSphereClient
 from deployment.datasphere.prepare_datasets import get_datasets
+
+import debugpy
+debugpy.listen(5678)
 
 # Initialize settings
 settings = AppSettings()
@@ -59,45 +63,21 @@ logger = logging.getLogger(__name__)
 
 # Helper Functions for run_job stages
 
-async def _get_job_parameters(job_id: str) -> Tuple[TrainingParams, int]:
-    """Gets active parameters, validates them, and returns params object and ID."""
-    logger.info(f"[{job_id}] Stage 1: Getting job parameters...")
-    active_params_data = get_active_parameter_set()
-
-    if not active_params_data:
-        error_msg = "No active parameter set found."
-        logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
-        raise ValueError(error_msg)
-
-    # Use TypeAdapter for validation in Pydantic v2+
-    adapter = TypeAdapter(TrainingParams)
-    params = adapter.validate_python(active_params_data["parameters"])
-    
-    parameter_set_id = active_params_data["parameter_set_id"]
-    logger.info(f"[{job_id}] Using parameters from active parameter set: {parameter_set_id}")
-    update_job_status(job_id, JobStatus.RUNNING.value, progress=5, status_message="Parameters loaded.")
-    return params, parameter_set_id
 
 
-async def _prepare_job_datasets(job_id: str, params: TrainingParams) -> None:
+
+async def _prepare_job_datasets(job_id: str, config: TrainingConfig, start_date_for_dataset: str = None, end_date_for_dataset: str = None) -> None:
     """Prepares datasets required for the job."""
     logger.info(f"[{job_id}] Stage 2: Preparing datasets...")
     target_input_dir = settings.datasphere.train_job.input_dir
     os.makedirs(target_input_dir, exist_ok=True) # Ensure target directory exists
 
-    additional_params_for_dataset = params.additional_params if params.additional_params else {}
-    start_date_for_dataset = additional_params_for_dataset.get("dataset_start_date")
-    end_date_for_dataset = additional_params_for_dataset.get("dataset_end_date")
-
     logger.info(f"[{job_id}] Calling get_datasets with start_date: {start_date_for_dataset}, end_date: {end_date_for_dataset}, outputting to: {target_input_dir}")
-    # Assuming get_datasets accepts an output_dir argument or similar mechanism
-    # to control where data is saved. Adjust call signature as needed.
     try:
         get_datasets(
             start_date=start_date_for_dataset,
             end_date=end_date_for_dataset,
-            config=params,
+            config=config,
             output_dir=target_input_dir # Explicitly pass target directory
         )
         logger.info(f"[{job_id}] Datasets prepared in {target_input_dir}.")
@@ -201,9 +181,10 @@ def _build_and_stage_wheel(job_id: str, project_root: Path, target_input_dir: Pa
         raise RuntimeError(f"Wheel build failed for job {job_id}. Unexpected error: {error_msg}") from e
 
 
-async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams) -> Tuple[str, str]:
+async def _prepare_datasphere_job_submission(job_id: str, config: TrainingConfig) -> Tuple[str, str]:
     """Prepares the parameters file and ensures wheel is staged."""
     logger.info(f"[{job_id}] Stage 4a: Preparing DataSphere job submission inputs (including wheel)...")
+    # TODO: НУЖЕН РАФОКТОРИНГ: ГРЯЗНО И НЕПОНЯТНО. СОВЕРШЕННО ЯВНО ИСПОЛЬЗУЕТСЯ НЕВОВРЕМЯ, НЕ КОНТРОЛИРУЕТСЯ ОЧИСТКА И ВЕРСИИ
     # Generate a unique ID component for this DS job run (used for output/results dir later)
     ds_job_run_suffix = f"ds_job_{job_id}_{uuid.uuid4().hex[:8]}"
     target_input_dir_str = settings.datasphere.train_job.input_dir
@@ -219,32 +200,21 @@ async def _prepare_datasphere_job_submission(job_id: str, params: TrainingParams
     # or called via asyncio.to_thread. Given build processes are CPU/IO bound and blocking,
     # running in a thread is often a good pattern for async contexts.
     # Let's assume for now direct call is acceptable for refactoring, can be adjusted.
-    
-    # To run a sync function in an async context properly:
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _build_and_stage_wheel, job_id, project_root, target_input_dir)
-    # The above line assumes _build_and_stage_wheel doesn't need to return the wheel path to this function directly,
-    # or that its side effect (copying the wheel) is sufficient.
-    # The refactored _build_and_stage_wheel returns the path, so we should capture it.
-
-    # Correct way to call sync function from async and get return value:
-    # staged_wheel_path = await asyncio.to_thread(_build_and_stage_wheel, job_id, project_root, target_input_dir)
-    # logger.info(f"[{job_id}] Wheel staged at: {staged_wheel_path}")
-    # For simplicity of this diff, let's stick to the direct call and assume the side effect is tested.
     # The tests will mock _build_and_stage_wheel anyway.
     await asyncio.to_thread(_build_and_stage_wheel, job_id, project_root, target_input_dir)
 
 
-    params_json_path = str(target_input_dir / "params.json")
-    logger.info(f"[{job_id}] Saving parameters to {params_json_path}")
-    with open(params_json_path, 'w') as f: # open() accepts string path
+
+    config_json_path = str(target_input_dir / "config.json")
+    logger.info(f"[{job_id}] Saving training config to {config_json_path}")
+    with open(config_json_path, 'w') as f: # open() accepts string path
         # Use model_dump_json for Pydantic v2+
-        json.dump(params.model_dump(), f, indent=2) # Save parameters
+        json.dump(config.model_dump(), f, indent=2) # Save training config
 
     # Note: Progress update moved to after archiving
     # update_job_status(job_id, JobStatus.RUNNING.value, progress=20, status_message="DataSphere job inputs (including wheel) prepared.")
     # Return the suffix for identifying the run and the path to the params file (within input_dir)
-    return ds_job_run_suffix, params_json_path # Keep params_json_path for potential direct use if needed, though zipped
+    return ds_job_run_suffix, config_json_path # Keep config_json_path for potential direct use if needed, though zipped
 
 
 async def _archive_input_directory(job_id: str, input_dir: str) -> str:
@@ -274,27 +244,194 @@ async def _archive_input_directory(job_id: str, input_dir: str) -> str:
         raise RuntimeError(f"Failed to create input archive: {e}") from e
 
 
-async def _submit_and_monitor_datasphere_job(
-    job_id: str,
-    client: DataSphereClient,
-    ds_job_run_suffix: str, # Unique identifier for this run
-    ds_job_specific_output_base_dir: str, # Directory for this run's outputs/results
-    params_json_path: str
-) -> Tuple[str, str, Dict[str, Any] | None, str | None, str | None, int]:
-    """Submits the job to DataSphere using static config, monitors, and downloads results."""
-    logger.info(f"[{job_id}] Stage 5: Submitting and monitoring DataSphere job {ds_job_run_suffix}...")
-    static_config_path = settings.datasphere.train_job.job_config_path
+async def _submit_datasphere_job(job_id: str, client: DataSphereClient, static_config_path: str) -> str:
+    """
+    Submits a job to DataSphere and returns the DS job ID.
+    
+    Args:
+        job_id: The job ID in our system
+        client: Initialized DataSphere client
+        static_config_path: Path to the static configuration file
+        
+    Returns:
+        The DataSphere job ID
+        
+    Raises:
+        FileNotFoundError: If the config file doesn't exist
+        RuntimeError: If job submission fails
+    """
     if not os.path.exists(static_config_path):
         error_msg = f"DataSphere job config YAML not found at: {static_config_path}"
         logger.error(f"[{job_id}] {error_msg}")
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
 
-    logger.info(f"[{job_id}] Submitting job to DataSphere using static config: {static_config_path} (expecting input.zip)")
+    logger.info(f"[{job_id}] Submitting job to DataSphere using static config: {static_config_path}")
 
-    ds_job_id = client.submit_job(config_path=static_config_path)
-    logger.info(f"[{job_id}] DataSphere Job submitted, DS Job ID: {ds_job_id} (Run Suffix: {ds_job_run_suffix})")
-    update_job_status(job_id, JobStatus.RUNNING.value, progress=25, status_message=f"DS Job {ds_job_id} submitted.")
+    try:
+        ds_job_id = client.submit_job(config_path=static_config_path)
+        logger.info(f"[{job_id}] DataSphere Job submitted, DS Job ID: {ds_job_id}")
+        update_job_status(job_id, JobStatus.RUNNING.value, progress=25, 
+                        status_message=f"DS Job {ds_job_id} submitted.")
+        return ds_job_id
+    except Exception as e:
+        error_msg = f"Failed to submit DataSphere job: {str(e)}"
+        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        raise RuntimeError(error_msg) from e
+
+
+async def _check_datasphere_job_status(job_id: str, ds_job_id: str, client: DataSphereClient) -> str:
+    """
+    Checks the status of a DataSphere job and returns the current status.
+    
+    Args:
+        job_id: The job ID in our system
+        ds_job_id: The DataSphere job ID
+        client: Initialized DataSphere client
+        
+    Returns:
+        The current status string from DataSphere
+        
+    Raises:
+        RuntimeError: If getting status fails
+    """
+    try:
+        current_ds_status_str = client.get_job_status(ds_job_id)
+        logger.debug(f"[{job_id}] Got status: {current_ds_status_str} for DS Job ID: {ds_job_id}")
+        return current_ds_status_str
+    except Exception as status_exc:
+        logger.error(f"[{job_id}] Error getting status for DS Job {ds_job_id}: {status_exc}")
+        raise RuntimeError(f"Failed to get status for DS Job {ds_job_id}: {status_exc}")
+
+
+async def _download_datasphere_job_results(
+    job_id: str, 
+    ds_job_id: str, 
+    client: DataSphereClient, 
+    results_dir: str,
+    ds_job_run_suffix: str
+) -> Tuple[Dict[str, Any] | None, str | None, str | None]:
+    """
+    Downloads and processes the results of a completed DataSphere job.
+    
+    Args:
+        job_id: The job ID in our system
+        ds_job_id: The DataSphere job ID
+        client: Initialized DataSphere client
+        results_dir: Directory to download results to
+        ds_job_run_suffix: Suffix for the job run
+        
+    Returns:
+        Tuple of (metrics_data, predictions_path, model_path)
+        
+    Raises:
+        RuntimeError: If downloading or processing results fails
+    """
+    metrics_data = None
+    predictions_path = None
+    model_path = None
+    
+    os.makedirs(results_dir, exist_ok=True)
+    
+    try:
+        client.download_job_results(ds_job_id, results_dir)
+        logger.info(f"[{job_id}] Results for DS Job {ds_job_id} downloaded to {results_dir}")
+        
+        # Process downloaded files
+        metrics_path_local = os.path.join(results_dir, 'metrics.json')
+        predictions_path_local = os.path.join(results_dir, 'predictions.csv')
+        model_path_local = os.path.join(results_dir, 'model.onnx')
+        
+        # Process metrics file
+        if os.path.exists(metrics_path_local):
+            with open(metrics_path_local, 'r') as f:
+                metrics_data = json.load(f)
+            logger.info(f"[{job_id}] Loaded metrics from {metrics_path_local}")
+        else:
+            logger.error(f"[{job_id}] 'metrics.json' not found at {metrics_path_local}")
+        
+        # Check predictions file
+        if os.path.exists(predictions_path_local):
+            predictions_path = predictions_path_local
+            logger.info(f"[{job_id}] Predictions file found at {predictions_path}")
+        else:
+            logger.warning(f"[{job_id}] 'predictions.csv' not found at {predictions_path_local}")
+        
+        # Check model file
+        if os.path.exists(model_path_local):
+            model_path = model_path_local
+            logger.info(f"[{job_id}] Model file found at {model_path}")
+        else:
+            logger.warning(f"[{job_id}] 'model.onnx' not found at {model_path_local}")
+        
+        return metrics_data, predictions_path, model_path
+        
+    except Exception as download_exc:
+        logger.error(f"[{job_id}] Failed to download or process results: {download_exc}", exc_info=True)
+        raise RuntimeError(f"Failed to download/process results: {download_exc}") from download_exc
+
+
+async def _download_logs_diagnostics(
+    job_id: str, 
+    ds_job_id: str, 
+    client: DataSphereClient, 
+    logs_dir: str, 
+    is_success: bool = True
+) -> None:
+    """
+    Downloads logs and diagnostics for a DataSphere job.
+    
+    Args:
+        job_id: The job ID in our system
+        ds_job_id: The DataSphere job ID
+        client: Initialized DataSphere client
+        logs_dir: Directory to download logs to
+        is_success: Whether the job was successful
+        
+    Returns:
+        None
+    """
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    try:
+        client.download_job_results(
+            ds_job_id,
+            logs_dir,
+            with_logs=True,
+            with_diagnostics=True
+        )
+        status = "successful" if is_success else "failed"
+        logger.info(f"[{job_id}] Logs/diagnostics for {status} DS Job {ds_job_id} downloaded to {logs_dir}")
+    except Exception as dl_exc:
+        logger.warning(f"[{job_id}] Failed to download logs/diagnostics for DS Job {ds_job_id}: {dl_exc}")
+
+
+async def _process_datasphere_job(
+    job_id: str,
+    client: DataSphereClient,
+    ds_job_run_suffix: str,
+    ds_job_specific_output_base_dir: str,
+    config_json_path: str
+) -> Tuple[str, str, Dict[str, Any] | None, str | None, str | None, int]:
+    """
+    Coordinates the DataSphere job lifecycle including submission, monitoring, and result fetching.
+    
+    Args:
+        job_id: ID of the job
+        client: DataSphere client
+        ds_job_run_suffix: Unique identifier for this run
+        ds_job_specific_output_base_dir: Directory for this run's outputs/results
+        config_json_path: Path to the config.json file
+        
+    Returns:
+        Tuple of (ds_job_id, results_dir, metrics_data, model_path, predictions_path, polls)
+    """
+    logger.info(f"[{job_id}] Stage 5: Processing DataSphere job {ds_job_run_suffix}...")
+    static_config_path = settings.datasphere.train_job.job_config_path
+    
+    # Submit the job
+    ds_job_id = await _submit_datasphere_job(job_id, client, static_config_path)
 
     completed = False
     max_polls = settings.datasphere.max_polls
@@ -305,18 +442,17 @@ async def _submit_and_monitor_datasphere_job(
     model_path = None
 
     logger.info(f"[{job_id}] Polling DS Job {ds_job_id} status (max_polls={max_polls}, poll_interval={poll_interval}s).")
-    # Add diagnostic print for max_polls
     logger.debug(f"DEBUG MONITOR: DS Job ID: {ds_job_id}, Max polls from settings: {settings.datasphere.max_polls}")
 
+    # Monitor job status
     while not completed and polls < max_polls:
         logger.debug(f"DEBUG MONITOR: Entering poll loop, poll {polls + 1} for DS Job ID: {ds_job_id}")
         await asyncio.sleep(poll_interval)
         polls += 1
 
         try:
-            current_ds_status_str = client.get_job_status(ds_job_id)
+            current_ds_status_str = await _check_datasphere_job_status(job_id, ds_job_id, client)
             current_ds_status = current_ds_status_str.lower()
-            logger.debug(f"DEBUG MONITOR: Got status: {current_ds_status_str} for DS Job ID: {ds_job_id}")
             logger.info(f"[{job_id}] DS Job {ds_job_id} status (poll {polls}/{max_polls}): {current_ds_status_str}")
         except Exception as status_exc:
             logger.error(f"[{job_id}] Error getting status for DS Job {ds_job_id} (poll {polls}/{max_polls}): {status_exc}. Will retry.")
@@ -327,8 +463,8 @@ async def _submit_and_monitor_datasphere_job(
             )
             continue
 
-        # Estimate progress (adjust logic as needed)
-        current_progress = 25 + int((polls / max_polls) * 65) # Progress from 25% to 90% during polling
+        # Estimate progress
+        current_progress = 25 + int((polls / max_polls) * 65)  # Progress from 25% to 90% during polling
         update_job_status(
             job_id,
             JobStatus.RUNNING.value,
@@ -340,95 +476,42 @@ async def _submit_and_monitor_datasphere_job(
             completed = True
             logger.info(f"[{job_id}] DS Job {ds_job_id} completed. Downloading results...")
 
-            # Create a dedicated directory for downloading results for this specific job run
+            # Create a dedicated directory for results
             results_download_dir = os.path.join(
-                settings.datasphere.train_job.output_dir, # Use the base output dir from settings
-                ds_job_run_suffix, # Subfolder for this specific run
-                "results" # Specific 'results' subfolder
-            )
-            os.makedirs(results_download_dir, exist_ok=True)
-
-            try:
-                client.download_job_results(ds_job_id, results_download_dir)
-                logger.info(f"[{job_id}] Results for DS Job {ds_job_id} downloaded to {results_download_dir}")
-
-                metrics_path_local = os.path.join(results_download_dir, 'metrics.json')
-                predictions_path_local = os.path.join(results_download_dir, 'predictions.csv')
-                model_path_local = os.path.join(results_download_dir, 'model.onnx') # Assuming ONNX format
-
-                if os.path.exists(metrics_path_local):
-                    with open(metrics_path_local, 'r') as f:
-                        metrics_data = json.load(f)
-                    logger.info(f"[{job_id}] Loaded metrics from {metrics_path_local}")
-                else:
-                    logger.error(f"[{job_id}] 'metrics.json' not found at {metrics_path_local} for DS Job {ds_job_id}.")
-                    # Decide if this is fatal or just a warning - currently treated as warning in processing step
-
-                if os.path.exists(predictions_path_local):
-                    predictions_path = predictions_path_local
-                    logger.info(f"[{job_id}] Predictions file found at {predictions_path}")
-                else:
-                    logger.warning(f"[{job_id}] 'predictions.csv' not found at {predictions_path_local} for DS Job {ds_job_id}.")
-
-                if os.path.exists(model_path_local):
-                    model_path = model_path_local
-                    logger.info(f"[{job_id}] Model file found at {model_path}")
-                else:
-                    logger.warning(f"[{job_id}] 'model.onnx' not found at {model_path_local} for DS Job {ds_job_id}.")
-
-                # Conditionally download logs/diagnostics on success based on settings
-                download_diag_on_success = getattr(settings.datasphere, 'download_diagnostics_on_success', False)
-                if download_diag_on_success:
-                    logs_dir = os.path.join(results_download_dir, "logs_diagnostics_success")
-                    os.makedirs(logs_dir, exist_ok=True)
-                    try:
-                        client.download_job_results(
-                            ds_job_id,
-                            logs_dir,
-                            with_logs=True,
-                            with_diagnostics=True
-                        )
-                        logger.info(f"[{job_id}] Optional: Logs/diagnostics for SUCCESSFUL DS Job {ds_job_id} downloaded to {logs_dir}")
-                    except Exception as dl_exc:
-                        logger.warning(f"[{job_id}] Optional: Failed to download logs/diagnostics for successful DS Job {ds_job_id}: {dl_exc}")
-                else:
-                    logger.info(f"[{job_id}] Skipping optional download of logs/diagnostics for successful job based on settings.")
-
-            except Exception as download_exc:
-                logger.error(f"[{job_id}] Failed to download or process results for DS Job {ds_job_id}: {download_exc}", exc_info=True)
-                update_job_status(job_id, JobStatus.FAILED.value, error_message=f"Result download/processing failed: {download_exc}")
-                raise RuntimeError(f"Result download/processing failed for DS Job {ds_job_id}") from download_exc
-
-
-        elif current_ds_status in ["failed", "error", "cancelled"]:
-            # This block correctly handles FAILED jobs
-            results_download_dir = os.path.join( # Define results_download_dir here too for consistency
-                settings.datasphere.train_job.output_dir,
-                ds_job_run_suffix,
+                ds_job_specific_output_base_dir,
                 "results"
             )
+            
+            # Download and process results
+            metrics_data, predictions_path, model_path = await _download_datasphere_job_results(
+                job_id, ds_job_id, client, results_download_dir, ds_job_run_suffix
+            )
+
+            # Download logs and diagnostics if configured
+            download_diag_on_success = getattr(settings.datasphere, 'download_diagnostics_on_success', False)
+            if download_diag_on_success:
+                logs_dir = os.path.join(results_download_dir, "logs_diagnostics_success")
+                await _download_logs_diagnostics(job_id, ds_job_id, client, logs_dir, is_success=True)
+            else: 
+                logger.info(f"[{job_id}] Skipping optional download of logs/diagnostics for successful job based on settings.")
+
+        elif current_ds_status in ["failed", "error", "cancelled"]:
+            # Define results directory for consistency
+            results_download_dir = os.path.join(
+                ds_job_specific_output_base_dir,
+                "results"
+            )
+            
             error_detail = f"DS Job {ds_job_id} ended with status: {current_ds_status_str}."
             logger.error(f"[{job_id}] {error_detail}")
 
-            # Download logs/diagnostics into the results directory as well
+            # Download logs for failed job
             logs_dir = os.path.join(results_download_dir, "logs_diagnostics")
-            os.makedirs(logs_dir, exist_ok=True)
-            try:
-                # Attempt to download logs even on failure
-                client.download_job_results(
-                    ds_job_id,
-                    logs_dir,
-                    with_logs=True,
-                    with_diagnostics=True
-                )
-                logger.info(f"[{job_id}] Logs/diagnostics for {current_ds_status} DS Job {ds_job_id} downloaded to {logs_dir}")
-                error_detail += f" Logs/diagnostics may be available in {logs_dir}."
-            except Exception as dl_exc:
-                logger.error(f"[{job_id}] Failed to download logs/diagnostics for failed DS Job {ds_job_id}: {dl_exc}")
-                error_detail += " (Failed to download logs/diagnostics)."
+            await _download_logs_diagnostics(job_id, ds_job_id, client, logs_dir, is_success=False)
+            error_detail += f" Logs/diagnostics may be available in {logs_dir}."
 
             update_job_status(job_id, JobStatus.FAILED.value, error_message=error_detail)
-            raise RuntimeError(error_detail) # Raise exception to stop the outer job
+            raise RuntimeError(error_detail)
 
     if not completed:
         timeout_message = f"DS Job {ds_job_id} execution timed out after {polls} polls ({max_polls * poll_interval}s)."
@@ -436,8 +519,7 @@ async def _submit_and_monitor_datasphere_job(
         update_job_status(job_id, status=JobStatus.FAILED.value, error_message=timeout_message)
         raise TimeoutError(timeout_message)
 
-    # Return results_download_dir path as well
-    return ds_job_id, results_download_dir, metrics_data, predictions_path, model_path, polls
+    return ds_job_id, results_download_dir, metrics_data, model_path, predictions_path, polls
 
 
 async def _perform_model_cleanup(job_id: str, current_model_id: str) -> None:
@@ -487,13 +569,13 @@ async def _process_job_results(
     job_id: str,
     ds_job_id: str,
     results_dir: str, # Directory where results were downloaded
-    params: TrainingParams,
+    config: TrainingConfig,
     metrics_data: Dict[str, Any] | None,
     model_path: str | None, # Absolute path to downloaded model.onnx (now inside results_dir)
     predictions_path: str | None, # Absolute path to downloaded predictions.csv (now inside results_dir)
     polls: int,
     poll_interval: int,
-    parameter_set_id: int # ID of the parameter set used
+    config_id: int # ID of the config used
 ) -> None:
     """
     Process the results of a completed DataSphere job.
@@ -502,15 +584,15 @@ async def _process_job_results(
         job_id: ID of the job
         ds_job_id: DataSphere job ID
         results_dir: Directory where results were downloaded
-        params: Training parameters used for the job
+        config: Training configuration used for the job
         metrics_data: Metrics data from metrics.json
         model_path: Path to the downloaded model.onnx file
         predictions_path: Path to the downloaded predictions.csv file
         polls: Number of polling operations performed
         poll_interval: Polling interval in seconds
-        parameter_set_id: ID of the parameter set used
+        config_id: ID of the config used
     """
-    training_hyperparams = params.model_dump() # For storing with results
+    training_config_dict = config.model_dump() # For storing with results
     current_model_id = None # Will be set if model was saved successfully
     final_status_message = f"Job completed. DS Job ID: {ds_job_id}."
     processing_warnings = []
@@ -537,11 +619,11 @@ async def _process_job_results(
         try:
             training_result_id_for_status = create_training_result(
                 job_id=job_id,
-                parameter_set_id=parameter_set_id,
+                config_id=config_id,
                 metrics=metrics_data,  # Pass the dict directly
                 model_id=current_model_id, # Can be None if model saving failed or no model
                 duration=int(polls * poll_interval),
-                parameters=training_hyperparams # Pass the dict directly
+                config=training_config_dict # Pass the dict directly
             )
             logger.info(f"[{job_id}] Training result record created: {training_result_id_for_status}")
             final_status_message += f" Training Result ID: {training_result_id_for_status}."
@@ -774,7 +856,7 @@ def save_predictions_to_db(
 
 
 # Main Orchestrator Function
-async def run_job(job_id: str) -> None:
+async def run_job(job_id: str, training_config: dict, config_id: str, dataset_start_date: str = None, dataset_end_date: str = None) -> None:
     """
     Runs a DataSphere training job pipeline: setup, execution, monitoring, result processing, cleanup.
     """
@@ -785,22 +867,24 @@ async def run_job(job_id: str) -> None:
     client: Optional[DataSphereClient] = None
     cleanup_errors = None
     job_completed_successfully = False
-
+    debugpy.wait_for_client()
+    breakpoint()
     try:
         # Initialize job status
         update_job_status(job_id, JobStatus.PENDING.value, progress=0, status_message="Initializing job.")
 
-        # Stage 1: Get Parameters
-        params, parameter_set_id = await _get_job_parameters(job_id)
+        # Stage 1: Get Parameters (уже переданы явно)
+        # Create TrainingConfig object from provided dict
+        config = TrainingConfig(**training_config)
 
         # Stage 2: Prepare Datasets
-        await _prepare_job_datasets(job_id, params)
+        await _prepare_job_datasets(job_id, config, dataset_start_date, dataset_end_date)
 
         # Stage 3: Initialize Client
         client = await _initialize_datasphere_client(job_id)
 
         # Stage 4a: Prepare DS Job Submission Inputs (params.json in input_dir)
-        ds_job_run_suffix, params_json_path_local = await _prepare_datasphere_job_submission(job_id, params)
+        ds_job_run_suffix, config_json_path_local = await _prepare_datasphere_job_submission(job_id, config)
 
         # Stage 4b: Archive Input Directory
         _ = await _archive_input_directory(job_id, settings.datasphere.train_job.input_dir)
@@ -809,19 +893,19 @@ async def run_job(job_id: str) -> None:
         ds_job_specific_output_base_dir_local = os.path.join(settings.datasphere.train_job.output_dir, ds_job_run_suffix)
 
         # Stage 5: Submit and Monitor DS Job
-        ds_job_id, results_dir, metrics_data, predictions_path, model_path, polls = await _submit_and_monitor_datasphere_job(
+        ds_job_id, results_dir, metrics_data, model_path, predictions_path, polls = await _process_datasphere_job(
             job_id,
             client,
             ds_job_run_suffix,
             ds_job_specific_output_base_dir_local, # Pass the constructed output base dir
-            params_json_path_local                   # Pass the params.json path
+            config_json_path_local                   # Pass the config.json path
         )
         # Status is updated internally during polling and upon completion/failure within the function
 
         # Stage 6: Process Results (if job completed successfully)
         # Pass the results_dir where artifacts were downloaded
         await _process_job_results(
-            job_id, ds_job_id, results_dir, params, metrics_data, model_path, predictions_path, polls, settings.datasphere.poll_interval, parameter_set_id
+            job_id, ds_job_id, results_dir, config, metrics_data, model_path, predictions_path, polls, settings.datasphere.poll_interval, config_id
         )
         # Final success status (COMPLETED) is set within this function
         job_completed_successfully = True

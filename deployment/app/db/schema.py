@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS processing_runs (
 -- Job Tables
 CREATE TABLE IF NOT EXISTS jobs (
     job_id TEXT PRIMARY KEY,
-    job_type TEXT NOT NULL,  -- 'data_upload', 'training', 'prediction', 'report', 'cloud_training', 'cloud_prediction'
+    job_type TEXT NOT NULL,  -- 'data_upload', 'training', 'prediction', 'report'
     status TEXT NOT NULL,    -- 'pending', 'running', 'completed', 'failed'
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
@@ -146,10 +146,10 @@ CREATE TABLE IF NOT EXISTS models (
     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
 );
 
--- New table for unique parameter sets
-CREATE TABLE IF NOT EXISTS parameter_sets (
-    parameter_set_id TEXT PRIMARY KEY, -- Could be a hash of the parameters
-    parameters TEXT NOT NULL,        -- JSON string of the parameters
+-- New table for unique configs
+CREATE TABLE IF NOT EXISTS configs (
+    config_id TEXT PRIMARY KEY, -- Could be a hash of the parameters
+    config TEXT NOT NULL,        -- JSON string of the parameters
     created_at TIMESTAMP NOT NULL,
     is_active BOOLEAN DEFAULT 0
 );
@@ -158,13 +158,12 @@ CREATE TABLE IF NOT EXISTS training_results (
     result_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     model_id TEXT,
-    parameter_set_id TEXT,  -- New column added
+    config_id TEXT,  -- New column added
     metrics TEXT,           -- JSON of training metrics
-    parameters TEXT,        -- JSON of training parameters (consider removing later if parameter_set_id is sufficient)
     duration INTEGER,       -- in seconds
     FOREIGN KEY (job_id) REFERENCES jobs(job_id),
     FOREIGN KEY (model_id) REFERENCES models(model_id), -- Added FK to new models table
-    FOREIGN KEY (parameter_set_id) REFERENCES parameter_sets(parameter_set_id) -- Added FK
+    FOREIGN KEY (config_id) REFERENCES configs(config_id) -- Added FK
 );
 
 CREATE TABLE IF NOT EXISTS prediction_results (
@@ -215,11 +214,11 @@ CREATE INDEX IF NOT EXISTS idx_job_history_job_updated ON job_status_history(job
 CREATE INDEX IF NOT EXISTS idx_models_active ON models(is_active);
 CREATE INDEX IF NOT EXISTS idx_models_created ON models(created_at);
 CREATE INDEX IF NOT EXISTS idx_models_active_created ON models(is_active, created_at);
-CREATE INDEX IF NOT EXISTS idx_training_results_parameter_set ON training_results(parameter_set_id);
+CREATE INDEX IF NOT EXISTS idx_training_results_config ON training_results(config_id);
 CREATE INDEX IF NOT EXISTS idx_training_results_model ON training_results(model_id);
 """
 
-def init_db(db_path: str = "deployment/data/plastinka.db"):
+def init_db(db_path: str):
     """
     Initialize the database with schema.
     
@@ -262,7 +261,7 @@ def init_db(db_path: str = "deployment/data/plastinka.db"):
         logger.debug(f"Tables after schema execution: {tables_after}")
         
         # Check specifically for our required tables
-        required_tables = ['jobs', 'parameter_sets', 'training_results', 'prediction_results']
+        required_tables = ['jobs', 'configs', 'training_results', 'prediction_results']
         missing_tables = [table for table in required_tables if table not in tables_after]
         
         if missing_tables:
