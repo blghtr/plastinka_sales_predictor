@@ -6,6 +6,7 @@ import os
 import json
 import yaml
 import logging # Added
+import tempfile # Added for test environment fallback
 from pathlib import Path # Added
 from typing import List, Dict, Any, Optional, Callable, Type, Tuple # Modified
 from pydantic import Field, field_validator, ValidationError
@@ -20,6 +21,34 @@ from functools import lru_cache
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
+
+
+def _get_default_data_root_dir() -> str:
+    """
+    Get the default data root directory with fallback logic for test environments.
+    
+    Returns:
+        str: Path to the default data root directory
+        
+    Raises:
+        RuntimeError: If home directory cannot be determined and fallback fails
+    """
+    try:
+        # Primary approach: use user home directory
+        return str(Path("~/.plastinka_sales_predictor").expanduser())
+    except (RuntimeError, OSError) as e:
+        logger.warning(f"Could not determine home directory ({e}), using temporary directory fallback")
+        try:
+            # Fallback for test environments: use system temp directory
+            temp_root = tempfile.gettempdir()
+            fallback_path = os.path.join(temp_root, "plastinka_sales_predictor_test")
+            logger.info(f"Using fallback data root directory: {fallback_path}")
+            return fallback_path
+        except Exception as fallback_error:
+            # Final fallback: current working directory
+            fallback_path = os.path.join(os.getcwd(), ".plastinka_data")
+            logger.warning(f"Temp directory fallback failed ({fallback_error}), using current directory: {fallback_path}")
+            return fallback_path
 
 def load_config_file(file_path: str) -> Dict[str, Any]:
     """
@@ -83,6 +112,34 @@ def get_app_config() -> Dict[str, Any]:
     """Get application-level configuration."""
     config = get_config_values()
     return {k: v for k, v in config.items() if k not in ("api", "db", "datasphere", "data_retention")}
+
+
+# Общий валидатор для создания директорий
+def ensure_directory_exists(path_value: str) -> str:
+    """
+    Проверяет существование директории и создает её при необходимости.
+    
+    Args:
+        path_value: Путь к директории
+        
+    Returns:
+        Тот же путь, после создания директории
+    """
+    if not path_value:
+        return path_value
+        
+    # Если это путь к файлу, создаем родительскую директорию
+    path = Path(path_value)
+    if '.' in path.name and not path.name.endswith(('/', '\\')):
+        # Вероятно это файл - создаем родительскую директорию
+        path.parent.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Created parent directory for file: {path.parent}")
+    else:
+        # Это директория - создаем её
+        path.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Created directory: {path}")
+        
+    return path_value
 
 
 class APISettings(BaseSettings):
@@ -170,14 +227,14 @@ class APISettings(BaseSettings):
 
 class DatabaseSettings(BaseSettings):
     """Database specific settings."""
-    path: str = Field(
-        default="deployment/data/plastinka.db", # Static default
-        description="Path to SQLite database file"
+    # These paths will be computed automatically from data_root_dir in AppSettings
+    # Removing static defaults that reference deployment/data
+    filename: str = Field(
+        default="plastinka.db",
+        description="SQLite database filename (path will be computed from data_root_dir)"
     )
-    url: str = Field(
-        default="sqlite:///deployment/data/plastinka.db", # Static default
-        description="SQLite database URL for SQLAlchemy"
-    )
+    
+    # Database directory creation is handled in AppSettings computed properties
 
     _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_db_config
 
@@ -219,71 +276,20 @@ class DatabaseSettings(BaseSettings):
         env_nested_delimiter="__",
         customize_sources=settings_customise_sources,
     )
-    
-    def reload(self):
-        """
-        Reload settings from environment variables and validate them.
-        If validation fails, the original settings are retained and an error is logged.
-        """
-        current_path = self.path
-        current_url = self.url
 
-        try:
-            # Get latest DATABASE_PATH and DATABASE_URL from environment
-            # Use the current values as defaults if environment variables are not set
-            # This differs slightly from the original, which had hardcoded defaults.
-            # This change makes reloading more about *overriding* with env vars if present.
-            env_path = os.environ.get("DATABASE_PATH")
-            env_url = os.environ.get("DATABASE_URL")
-
-            new_values = {}
-            if env_path is not None:
-                new_values["path"] = env_path
-            if env_url is not None:
-                new_values["url"] = env_url
-            
-            # If no new values from env, no need to reload or validate
-            if not new_values:
-                logger.info("DatabaseSettings.reload() called, but no relevant environment variables (DATABASE_PATH, DATABASE_URL) found to update.")
-                return self
-
-            # Create a dictionary with all current values, then update with new ones
-            # This ensures all fields are present for validation if only one is being updated via env
-            merged_values_for_validation = self.model_dump()
-            merged_values_for_validation.update(new_values)
-
-            # Validate the potentially new values by attempting to create a new model instance
-            validated_settings = DatabaseSettings.model_validate(merged_values_for_validation)
-            
-            # Update the instance values from the validated settings
-            # Use object.__setattr__ to bypass Pydantic's own protections if they exist here
-            object.__setattr__(self, "path", validated_settings.path)
-            object.__setattr__(self, "url", validated_settings.url)
-            logger.info(f"DatabaseSettings reloaded and validated. Path: '{self.path}', URL: '{self.url}'")
-
-        except ValidationError as e:
-            logger.error(f"Failed to reload and validate DatabaseSettings: {e}. "
-                         f"Original settings remain (Path: '{current_path}', URL: '{current_url}').")
-            # Optionally, re-raise the error or handle it as per application requirements
-            # For now, we log and keep original settings.
-        
-        return self
+    # Removed reload method - paths are now computed automatically in AppSettings
 
 
 class TrainJobSettings(BaseSettings):
     """Settings specific to the DataSphere training job submission."""
-    input_dir: str = Field(
-        default="deployment/data/datasphere_input", # Static default
-        description="Base directory for DataSphere training job inputs (params.json etc.)"
+    # Removed input_dir, output_dir, job_config_path - these are now computed properties in AppSettings
+    # Keeping only job-specific timeouts
+    wheel_build_timeout_seconds: int = Field(
+        default=300, # Default 5 minutes  
+        description="Timeout for building the project wheel in seconds"
     )
-    output_dir: str = Field(
-        default="deployment/data/datasphere_output", # Static default
-        description="Base directory for DataSphere training job outputs"
-    )
-    job_config_path: Optional[str] = Field(
-        default=None, # Static default
-        description="Optional path to a base DataSphere job configuration file (might not be used by submit_job)"
-    )
+
+    # Removed validators for input_dir, output_dir, job_config_path - these are handled in AppSettings
 
     @classmethod
     def settings_customise_sources(
@@ -350,6 +356,27 @@ class DataSphereSettings(BaseSettings):
     download_diagnostics_on_success: bool = Field(
         default=os.environ.get("DATASPHERE_DOWNLOAD_DIAGNOSTICS_ON_SUCCESS", "false").lower() == "true",
         description="Whether to download logs/diagnostics for successful DataSphere jobs"
+    )
+
+    client_init_timeout_seconds: int = Field(
+        default=60, # Default 1 minute
+        description="Timeout for DataSphere client initialization in seconds"
+    )
+    client_submit_timeout_seconds: int = Field(
+        default=120, # Default 2 minutes
+        description="Timeout for DataSphere client job submission in seconds"
+    )
+    client_status_timeout_seconds: int = Field(
+        default=30, # Default 30 seconds
+        description="Timeout for DataSphere client job status checks in seconds"
+    )
+    client_download_timeout_seconds: int = Field(
+        default=300, # Default 5 minutes
+        description="Timeout for DataSphere client results download in seconds"
+    )
+    client_cancel_timeout_seconds: int = Field(
+        default=60, # Default 1 minute
+        description="Timeout for DataSphere client job cancellation in seconds"
     )
 
     @property
@@ -542,7 +569,7 @@ class AppSettings(BaseSettings):
         default=os.environ.get("DEFAULT_METRIC_HIGHER_IS_BETTER", "true").lower() == "true",
         description="Whether higher values of the default metric are better"
     )
-    auto_select_best_params: bool = Field(
+    auto_select_best_configs: bool = Field(
         default=os.environ.get("AUTO_SELECT_BEST_PARAMS", "true").lower() == "true",
         description="Whether to automatically select the best parameter set as active"
     )
@@ -554,6 +581,99 @@ class AppSettings(BaseSettings):
         default=os.environ.get("PROJECT_ROOT_DIR", str(Path(__file__).resolve().parents[2])),
         description="Absolute path to the project root directory."
     )
+    
+    # New smart data directory configuration
+    data_root_dir: str = Field(
+        default=os.environ.get("DATA_ROOT_DIR", _get_default_data_root_dir()),
+        description="Root directory for all application data, models, logs, etc."
+    )
+    
+    # Smart computed properties for all data paths
+    @property
+    def database_path(self) -> str:
+        """Compute database file path from data_root_dir."""
+        path = os.path.join(self.data_root_dir, "database", self.db.filename)
+        ensure_directory_exists(path)  # Create parent directory
+        return path
+    
+    @property
+    def database_url(self) -> str:
+        """Compute database URL from database_path."""
+        return f"sqlite:///{self.database_path}"
+    
+    @property
+    def models_dir(self) -> str:
+        """Directory for storing model files."""
+        path = os.path.join(self.data_root_dir, "models")
+        ensure_directory_exists(path)
+        return path
+    
+    @property
+    def datasphere_input_dir(self) -> str:
+        """Directory for DataSphere job inputs."""
+        path = os.path.join(self.data_root_dir, "datasphere_input")
+        ensure_directory_exists(path)
+        return path
+    
+    @property
+    def datasphere_output_dir(self) -> str:
+        """Directory for DataSphere job outputs."""
+        path = os.path.join(self.data_root_dir, "datasphere_output")
+        ensure_directory_exists(path)
+        return path
+    
+    @property
+    def predictions_dir(self) -> str:
+        """Directory for prediction outputs."""
+        path = os.path.join(self.data_root_dir, "predictions")
+        ensure_directory_exists(path)
+        return path
+    
+    @property
+    def reports_dir(self) -> str:
+        """Directory for generated reports."""
+        path = os.path.join(self.data_root_dir, "reports")
+        ensure_directory_exists(path)
+        return path
+    
+    @property
+    def logs_dir(self) -> str:
+        """Directory for application logs."""
+        path = os.path.join(self.data_root_dir, "logs")
+        ensure_directory_exists(path)
+        return path
+        
+    @property
+    def datasphere_job_dir(self) -> str:
+        """Directory containing DataSphere job scripts."""
+        return os.path.join(self.project_root_dir, "plastinka_sales_predictor", "datasphere_job")
+    
+    @property
+    def datasphere_job_config_path(self) -> str:
+        """Path to DataSphere job configuration file."""
+        return os.path.join(self.datasphere_job_dir, "config.yaml")
+    
+    # Legacy compatibility properties (updated paths)
+    @property
+    def temp_upload_dir_computed(self) -> str:
+        """Computed temp upload directory."""
+        path = os.path.join(self.data_root_dir, "temp_uploads")
+        ensure_directory_exists(path)
+        return path
+        
+    @property 
+    def file_storage_dir_computed(self) -> str:
+        """Computed file storage directory."""
+        path = os.path.join(self.data_root_dir, "uploads")
+        ensure_directory_exists(path)
+        return path
+
+    # Валидатор для создания базовой директории данных
+    @field_validator('data_root_dir', mode='after')
+    @classmethod
+    def ensure_data_root_exists(cls, v: str) -> str:
+        """Проверяет существование корневой директории данных и создает её при необходимости."""
+        return ensure_directory_exists(v)
     
     # Use SettingsConfigDict for Pydantic v2 settings configuration
     model_config = SettingsConfigDict(
@@ -635,11 +755,8 @@ class AppSettings(BaseSettings):
 
     @property
     def model_storage_dir(self) -> str:
-        """Directory for storing model files inside file_storage_dir."""
-        import os
-        path = os.path.join(self.file_storage_dir, "models")
-        os.makedirs(path, exist_ok=True)
-        return path
+        """Directory for storing model files (alias for models_dir)."""
+        return self.models_dir
 
 
 # Create a global instance of the settings

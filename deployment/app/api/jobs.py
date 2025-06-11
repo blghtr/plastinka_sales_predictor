@@ -1,8 +1,8 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Depends, Query, Body, Request
+from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Depends, Query, Body, Request, status
 from fastapi.responses import JSONResponse
 from typing import List, Optional
 import os
-from datetime import datetime
+from datetime import datetime, date
 import uuid
 import json
 import logging
@@ -10,7 +10,7 @@ from pathlib import Path
 import aiofiles
 import shutil
 import debugpy
-debugpy.listen(5678)
+import traceback
 from deployment.app.models.api_models import (
     JobResponse, JobDetails, JobsList, JobStatus, JobType,
     DataUploadResponse, TrainingConfig, TrainingResponse,
@@ -25,7 +25,7 @@ from deployment.app.db.database import (
 from deployment.app.services.data_processor import process_data_files
 from deployment.app.services.datasphere_service import run_job
 from deployment.app.services.report_service import generate_report
-from deployment.app.utils.validation import validate_stock_file, validate_sales_file, validate_date_format, ValidationError
+from deployment.app.utils.validation import validate_stock_file, validate_sales_file, validate_date_format, ValidationError, validate_historical_date_range
 from deployment.app.utils.file_validation import validate_excel_file_upload
 from deployment.app.utils.error_handling import ErrorDetail
 from deployment.app.config import settings
@@ -244,8 +244,8 @@ async def create_data_upload_job(
 async def create_training_job(
     request: Request,
     background_tasks: BackgroundTasks,
-    dataset_start_date: Optional[str] = Query(None, description="Start date for dataset preparation (YYYY-MM-DD format)"),
-    dataset_end_date: Optional[str] = Query(None, description="End date for dataset preparation (YYYY-MM-DD format)"),
+    dataset_start_date: Optional[str] = None,
+    dataset_end_date: Optional[str] = None,
     api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
@@ -258,67 +258,106 @@ async def create_training_job(
     
     Returns a job ID that can be used to check the job status.
     
-    Raises:
+    Returns:
         HTTPException: If there's no active parameter set and no best parameter set by metric.
     """
+    logger.info("Received request to create training job")
     try:
-        # Получаем параметры из базы
-        config_data = get_effective_config(settings, logger=logger)
-        config_id = config_data["config_id"]
-        config = config_data["config"]
+        # 1. Валидация и парсинг дат
+        parsed_start_date = None
+        parsed_end_date = None
 
-        # В job.parameters сохраняем только id и даты
-        job_params = {
-            "config_id": config_id
-        }
         if dataset_start_date:
-            job_params["dataset_start_date"] = dataset_start_date
+            is_valid, parsed_start_date = validate_date_format(dataset_start_date, format_str="%d.%m.%Y")
+            if not is_valid:
+                logger.warning(f"Invalid start date format: {dataset_start_date}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid start date format. Expected DD.MM.YYYY."
+                )
         if dataset_end_date:
-            job_params["dataset_end_date"] = dataset_end_date
+            is_valid, parsed_end_date = validate_date_format(dataset_end_date, format_str="%d.%m.%Y")
+            if not is_valid:
+                logger.warning(f"Invalid end date format: {dataset_end_date}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid end date format. Expected DD.MM.YYYY."
+                )
+
+        # 2. Логическая валидация диапазона дат (если обе даты заданы)
+        if parsed_start_date and parsed_end_date:
+            is_valid, error_msg, _, _ = validate_historical_date_range(
+                parsed_start_date, parsed_end_date, format_str="%d.%m.%Y"
+            )
+            if not is_valid:
+                logger.warning(f"Invalid date range: {error_msg}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=error_msg
+                )
+
+        # 3. Получение конфига
+        config = get_effective_config(settings, logger=logger)
+        if config is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active config and no best config by metric available"
+            )
+        logger.info(f"Using configuration: {config['config_id']}")
+
+        # 4. Создание задания в БД
+        job_params = {
+            "config_id": config['config_id']
+        }
+        if parsed_start_date:
+            job_params["dataset_start_date"] = parsed_start_date
+        if parsed_end_date:
+            job_params["dataset_end_date"] = parsed_end_date
 
         job_id = create_job(
             JobType.TRAINING,
             parameters=job_params
         )
+        logger.info(f"Job record created with ID: {job_id}")
 
-        # Передаём параметры явно в run_job
+        # 5. Запуск фоновой задачи
         background_tasks.add_task(
             run_job,
             job_id=job_id,
-            training_config=config,
-            config_id=config_id,
-            dataset_start_date=dataset_start_date,
-            dataset_end_date=dataset_end_date
+            training_config=config['config'],
+            config_id=config['config_id'],
+            dataset_start_date=parsed_start_date,
+            dataset_end_date=parsed_end_date
         )
+        logger.info(f"Background task added for job ID: {job_id}")
 
-        logger.info(f"Created training job {job_id} using parameter set {config_id} with date range: {dataset_start_date} to {dataset_end_date}")
         return TrainingResponse(
             job_id=job_id,
             status=JobStatus.PENDING,
-            parameter_set_id=config_id,
+            parameter_set_id=config['config_id'],
             using_active_parameters=True
         )
-    except DatabaseError as e:
-        logger.error(f"Database error in training job creation: {str(e)}", exc_info=True)
-        error = ErrorDetail(
-            message="Failed to create training job due to database error",
-            code="database_error",
-            status_code=500,
-            details={"error": str(e)}
+
+    except HTTPException as e:
+        # Re-raise HTTPExceptions that were intentionally raised (e.g., from get_effective_config)
+        logger.warning(f"HTTPException caught in create_training_job: {e.status_code} - {e.detail}")
+        raise e
+    except ValueError as e:
+        # Catch ValueErrors, potentially from date parsing issues before the function signature,
+        # or custom validation added inside.
+        logger.error(f"ValueError in create_training_job: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid input data: {e}"
         )
-        error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
-    except Exception as e:
-        logger.error(f"Unexpected error in training job creation: {str(e)}", exc_info=True)
-        error = ErrorDetail(
-            message="Failed to create training job",
-            code="internal_error",
-            status_code=500,
-            details={"error": str(e)},
-            exception=e
+    # Assuming DatabaseError is a specific exception type raised by your database layer functions
+    except Exception as e: # Catching general Exception for database or other unexpected errors during sync part
+        # Log any other unexpected errors with traceback
+        logger.error(f"An unexpected error occurred in create_training_job: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected internal server error occurred while initiating the job."
         )
-        error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
 
 
 @router.post("/prediction", response_model=PredictionResponse)
@@ -497,10 +536,11 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
     except DatabaseError as e:
         logger.error(f"Database error in get_job_status for job {job_id}: {str(e)}", exc_info=True)
         error = ErrorDetail(
-            message=f"Failed to retrieve job {job_id} due to database error",
-            code="database_error",
+            message=f"Failed to retrieve job {job_id}",
+            code="internal_error",
             status_code=500,
-            details={"error": str(e)}
+            details={"error": str(e)},
+            exception=e
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
@@ -552,12 +592,13 @@ async def list_all_jobs(
         return JobsList(jobs=jobs, total=len(jobs))
         
     except DatabaseError as e:
-        logger.error(f"Database error in list_all_jobs: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error in list_all_jobs: {str(e)}", exc_info=True)
         error = ErrorDetail(
-            message="Failed to list jobs due to database error",
-            code="database_error",
+            message="Failed to list jobs",
+            code="internal_error",
             status_code=500,
-            details={"error": str(e)}
+            details={"error": str(e)},
+            exception=e
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())

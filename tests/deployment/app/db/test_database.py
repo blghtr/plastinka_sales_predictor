@@ -35,9 +35,9 @@ from deployment.app.db.database import (
     get_job,
     list_jobs,
     create_data_upload_result,
-    create_or_get_parameter_set,
-    get_active_parameter_set,
-    set_parameter_set_active,
+    create_or_get_config,
+    get_active_config,
+    set_config_active,
     create_model_record,
     get_active_model,
     set_model_active,
@@ -45,9 +45,12 @@ from deployment.app.db.database import (
     create_prediction_result,
     create_processing_run,
     update_processing_run,
-    DatabaseError
+    DatabaseError,
+    get_effective_config
 )
 from deployment.app.db.schema import SCHEMA_SQL
+
+import types
 
 # =============================================
 # Используем фикстуры из conftest.py
@@ -128,7 +131,7 @@ from deployment.app.db.schema import SCHEMA_SQL
 #     }
 
 # @pytest.fixture
-# def sample_parameter_set():
+# def sample_config():
 #     """Sample parameter set for testing"""
 #     return {
 #         "input_chunk_length": 12,
@@ -570,94 +573,109 @@ def test_set_model_active(in_memory_db):
     is_active_2 = is_active_2_row['is_active'] if hasattr(is_active_2_row, 'keys') else is_active_2_row[0]
     assert is_active_2 == 1
 
-def test_create_or_get_parameter_set(in_memory_db, sample_parameter_set):
-    """Test creating and retrieving parameter sets"""
-    conn = in_memory_db["conn"]
+def test_create_or_get_config(in_memory_db, sample_config):
+    """Test creating a config record"""
+    # Test creating a new config
+    config_id = create_or_get_config(sample_config, is_active=True, connection=in_memory_db["conn"])
+    assert config_id is not None
     
-    # Use connection directly instead of patching
-    # Create a parameter set
-    param_set_id = create_or_get_parameter_set(
-        sample_parameter_set, 
-        is_active=True,
-        connection=conn  # Pass the connection explicitly
+    retrieved_config = execute_query(
+        "SELECT * FROM configs WHERE config_id = ?", 
+        (config_id,), 
+        connection=in_memory_db["conn"]
     )
+    assert retrieved_config is not None
+    assert json.loads(retrieved_config['config']) == sample_config
+    assert retrieved_config['is_active'] == 1
     
-    # Verify ID is returned
-    assert param_set_id is not None
+    # Test idempotency: calling with same config should return same ID
+    same_config_id = create_or_get_config(sample_config, connection=in_memory_db["conn"])
+    assert same_config_id == config_id
     
-    # Create the same parameter set again - should return existing ID
-    same_param_set_id = create_or_get_parameter_set(
-        sample_parameter_set,
-        connection=conn  # Pass the connection explicitly
+    # Test creating a new config with is_active=True deactivates others
+    new_config_data = {
+        "input_chunk_length": 24,
+        "output_chunk_length": 12,
+        "hidden_size": 128,
+        "lstm_layers": 3,
+        "dropout": 0.3,
+        "batch_size": 64,
+        "max_epochs": 20,
+        "learning_rate": 0.0005
+    }
+    new_config_id = create_or_get_config(new_config_data, is_active=True, connection=in_memory_db["conn"])
+    
+    old_config = execute_query(
+        "SELECT is_active FROM configs WHERE config_id = ?", 
+        (config_id,), 
+        connection=in_memory_db["conn"]
     )
-    assert same_param_set_id == param_set_id
+    assert old_config['is_active'] == 0 # Old config should be inactive
     
-    # Create a different parameter set
-    different_params = sample_parameter_set.copy()
-    different_params["batch_size"] = 64
-    different_param_set_id = create_or_get_parameter_set(
-        different_params,
-        connection=conn  # Pass the connection explicitly
+    new_config = execute_query(
+        "SELECT is_active FROM configs WHERE config_id = ?", 
+        (new_config_id,), 
+        connection=in_memory_db["conn"]
     )
-    assert different_param_set_id != param_set_id
+    assert new_config['is_active'] == 1 # New config should be active
+    
+def test_get_active_config(in_memory_db, sample_config):
+    """Test retrieving the active config"""
+    # Create a config and set it active
+    config_id = create_or_get_config(sample_config, is_active=True, connection=in_memory_db["conn"])
+    
+    active_config = get_active_config(connection=in_memory_db["conn"])
+    assert active_config is not None
+    assert active_config['config_id'] == config_id
+    assert active_config['config'] == sample_config
+    
+    # Test no active config
+    execute_query("UPDATE configs SET is_active = 0", connection=in_memory_db["conn"])
+    assert get_active_config(connection=in_memory_db["conn"]) is None
 
-def test_get_active_parameter_set(in_memory_db, sample_parameter_set):
-    """Test retrieving the active parameter set"""
-    conn = in_memory_db["conn"]
+def test_set_config_active(in_memory_db, sample_config):
+    """Test setting a config as active"""
+    # Create two configs
+    config_id1 = create_or_get_config(sample_config, is_active=False, connection=in_memory_db["conn"])
+    config_id2 = create_or_get_config({"key": "value"}, is_active=False, connection=in_memory_db["conn"])
     
-    # Insert a parameter set
-    param_set_id = "test_param_set_id"
-    now = datetime.now().isoformat()
+    # Set config1 active
+    success = set_config_active(config_id1, connection=in_memory_db["conn"])
+    assert success is True
     
-    cursor = conn.cursor()
-    cursor.execute(
-        """INSERT INTO parameter_sets 
-           (parameter_set_id, parameters, is_active, created_at) 
-           VALUES (?, ?, ?, ?)""",
-        (param_set_id, json.dumps(sample_parameter_set), 1, now)
+    cfg1 = execute_query(
+        "SELECT is_active FROM configs WHERE config_id = ?", 
+        (config_id1,), 
+        connection=in_memory_db["conn"]
     )
-    conn.commit()
-    
-    # Get active parameter set
-    active_params = get_active_parameter_set(connection=conn)
-    
-    # Verify
-    assert active_params is not None
-    assert active_params["parameter_set_id"] == param_set_id
-    assert active_params["parameters"] == sample_parameter_set
-
-def test_set_parameter_set_active(in_memory_db):
-    """Test setting a parameter set as active"""
-    conn = in_memory_db["conn"]
-    
-    # Create two parameter sets
-    cursor = conn.cursor()
-    param_set_id_1 = "param_set_1"
-    param_set_id_2 = "param_set_2"
-    params = json.dumps({"param": "value"})
-    now = datetime.now().isoformat()
-    
-    cursor.execute(
-        """INSERT INTO parameter_sets 
-           (parameter_set_id, parameters, is_active, created_at) 
-           VALUES (?, ?, ?, ?)""",
-        (param_set_id_1, params, 0, now)
+    cfg2 = execute_query(
+        "SELECT is_active FROM configs WHERE config_id = ?", 
+        (config_id2,), 
+        connection=in_memory_db["conn"]
     )
-    cursor.execute(
-        """INSERT INTO parameter_sets 
-           (parameter_set_id, parameters, is_active, created_at) 
-           VALUES (?, ?, ?, ?)""",
-        (param_set_id_2, params, 0, now)
+    assert cfg1['is_active'] == 1
+    assert cfg2['is_active'] == 0
+    
+    # Set config2 active, deactivating config1
+    success = set_config_active(config_id2, connection=in_memory_db["conn"])
+    assert success is True
+    
+    cfg1 = execute_query(
+        "SELECT is_active FROM configs WHERE config_id = ?", 
+        (config_id1,), 
+        connection=in_memory_db["conn"]
     )
-    conn.commit()
+    cfg2 = execute_query(
+        "SELECT is_active FROM configs WHERE config_id = ?", 
+        (config_id2,), 
+        connection=in_memory_db["conn"]
+    )
+    assert cfg1['is_active'] == 0
+    assert cfg2['is_active'] == 1
     
-    # Set the first parameter set as active
-    result = set_parameter_set_active(param_set_id_1, connection=conn)
-    assert result is True
-    
-    # Verify activation
-    active_params = get_active_parameter_set(connection=conn)
-    assert active_params["parameter_set_id"] == param_set_id_1
+    # Test setting non-existent config active
+    success = set_config_active("nonexistent-id", connection=in_memory_db["conn"])
+    assert success is False
 
 # =============================================
 # Tests for result-related functions
@@ -795,4 +813,101 @@ def test_create_and_update_processing_run(in_memory_db):
     updated_run = cursor.fetchone()
     
     assert updated_run["status"] == new_status
-    assert updated_run["end_time"] == end_time.isoformat() 
+    assert updated_run["end_time"] == end_time.isoformat()
+
+def test_get_effective_config_active_and_best(in_memory_db, sample_config):
+    """Test get_effective_config when an active config exists (should be prioritized)"""
+    # Create a dummy settings object for the test
+    class MockSettings:
+        def __init__(self):
+            self.default_metric = "mae"
+            self.default_metric_higher_is_better = False
+            
+    mock_settings = MockSettings()
+
+    # Create a job and model first to satisfy FK constraints
+    job_id = create_job("training", {}, connection=in_memory_db["conn"])
+    model_id = create_model_record(model_id="model1", job_id=job_id, model_path="/path/to/model", created_at=datetime.now(), connection=in_memory_db["conn"])
+
+    # Create a training result with metrics (so get_best_config_by_metric can find something)
+    # First, create a config that will be "the best" by metric
+    best_metric_config_data = {"key": "best_metric_config"}
+    best_metric_config_id = create_or_get_config(best_metric_config_data, connection=in_memory_db["conn"])
+    
+    create_training_result(
+        job_id=job_id,
+        model_id=model_id,
+        config_id=best_metric_config_id,
+        metrics={
+            "mae": 0.5,
+            "rmse": 0.6
+        },
+        config=best_metric_config_data,
+        duration=100,
+        connection=in_memory_db["conn"]
+    )
+    
+    # Create an active config (this should be returned by get_effective_config)
+    active_config_data = sample_config # Use the sample_config for the active one
+    active_config_id = create_or_get_config(active_config_data, is_active=True, connection=in_memory_db["conn"])    
+    
+    effective_config = get_effective_config(mock_settings, logger=MagicMock(), connection=in_memory_db["conn"])
+    
+    assert effective_config is not None
+    assert effective_config['config_id'] == active_config_id
+    assert effective_config['config'] == active_config_data
+
+def test_get_effective_config_only_best(in_memory_db, sample_config):
+    """Test get_effective_config when no active config, but a best by metric exists"""
+    class MockSettings:
+        def __init__(self):
+            self.default_metric = "mae"
+            self.default_metric_higher_is_better = False
+            
+    mock_settings = MockSettings()
+
+    # Create a job and model first to satisfy FK constraints
+    job_id = create_job("training", {}, connection=in_memory_db["conn"])
+    model_id = create_model_record(model_id="model2", job_id=job_id, model_path="/path/to/model", created_at=datetime.now(), connection=in_memory_db["conn"])
+
+    # No active config
+    execute_query("UPDATE configs SET is_active = 0", connection=in_memory_db["conn"])
+
+    # Create a training result with metrics (so get_best_config_by_metric can find something)
+    best_metric_config_data = sample_config # Use sample_config as the best metric config
+    best_metric_config_id = create_or_get_config(best_metric_config_data, connection=in_memory_db["conn"])
+    
+    create_training_result(
+        job_id=job_id,
+        model_id=model_id,
+        config_id=best_metric_config_id,
+        metrics={
+            "mae": 0.1,
+            "rmse": 0.2
+        },
+        config=best_metric_config_data,
+        duration=120,
+        connection=in_memory_db["conn"]
+    )
+    
+    effective_config = get_effective_config(mock_settings, logger=MagicMock(), connection=in_memory_db["conn"])
+    
+    assert effective_config is not None
+    assert effective_config['config_id'] == best_metric_config_id
+    assert effective_config['config'] == best_metric_config_data
+
+def test_get_effective_config_no_config(in_memory_db):
+    """Test get_effective_config when no active or best config exists"""
+    class MockSettings:
+        def __init__(self):
+            self.default_metric = "mae"
+            self.default_metric_higher_is_better = False
+            
+    mock_settings = MockSettings()
+
+    # Ensure no configs exist or are active
+    execute_query("DELETE FROM configs", connection=in_memory_db["conn"])
+    execute_query("DELETE FROM training_results", connection=in_memory_db["conn"])
+
+    with pytest.raises(ValueError, match="No active config and no best config by metric available"):
+        get_effective_config(mock_settings, logger=MagicMock(), connection=in_memory_db["conn"]) 

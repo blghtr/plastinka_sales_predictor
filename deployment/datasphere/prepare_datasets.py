@@ -1,4 +1,5 @@
 import sys
+import debugpy
 import pandas as pd
 from datetime import timedelta
 from plastinka_sales_predictor import configure_logger
@@ -15,32 +16,45 @@ import os
 
 DEFAULT_OUTPUT_DIR = './datasets/' # Default location if not specified
 DEFAULT_STATIC_FEATURES = [
-    'Конверт',
-    'Тип',
-    'Ценовая категория',
-    'Стиль',
-    'Год записи',
-    'Год выпуска'
+    'cover_type',
+    'release_type',
+    'price_category',
+    'style',
+    'record_year',
+    'release_decade'
 ]
 DEFAULT_PAST_COVARIATES_FNAMES = [
-    'Тип',
-    'Конверт',
-    'Стиль',
-    'Ценовая категория'
+    'release_type',
+    'cover_type',
+    'style',
+    'price_category'
 ]
 
 logger = configure_logger(child_logger_name='train_predict_job_preparation')
 
 
-def load_data(start_date=None, end_date=None):
-    """Loads features using feature_storage.load_features (factory pattern)."""
+def load_data(start_date=None, end_date=None, feature_types=None):
+    """
+    Loads features using feature_storage.load_features (factory pattern).
+    
+    Args:
+        start_date: Optional start date for filtering data
+        end_date: Optional end date for filtering data
+        feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
+                      If None, all available features will be loaded
+    
+    Returns:
+        Dictionary of loaded features
+    """
     features = None
+
     try:
-        logger.info("Loading features from database...")
+        logger.info(f"Loading features from database{' (selected types)' if feature_types else ''}...")
         features = feature_storage.load_features(
             store_type='sql',
             start_date=start_date,
             end_date=end_date,
+            feature_types=feature_types
         )
         logger.info("Features loaded successfully via factory.")
     except Exception as e:
@@ -108,7 +122,7 @@ def prepare_datasets(raw_features: dict, config: dict, output_dir: str | None = 
             minimum_sales_months=2
         )
 
-        lags = config['lags']
+        lags = config.lags
         length = lags + 1
         train_end = max(length, dataset.L - length)
         logger.info('Creating train dataset...')
@@ -142,7 +156,7 @@ def prepare_datasets(raw_features: dict, config: dict, output_dir: str | None = 
     return train_dataset, val_dataset
 
 
-def get_datasets(start_date=None, end_date=None, config=None, output_dir: str | None = None):
+def get_datasets(start_date=None, end_date=None, config=None, output_dir: str | None = None, feature_types=None):
     """
     Loads data from DB, prepares features, creates and saves datasets to output_dir.
     
@@ -151,11 +165,12 @@ def get_datasets(start_date=None, end_date=None, config=None, output_dir: str | 
         end_date: End date for data loading.
         config: Dictionary containing training configuration.
         output_dir: Directory to save the prepared datasets.
+        feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
     
     Returns:
         Tuple of (train_dataset, val_dataset)
     """
-    raw_features = load_data(start_date, end_date)
+    raw_features = load_data(start_date, end_date, feature_types)
     # Pass the output_dir down to the preparation function
     return prepare_datasets(raw_features, config, output_dir)
 

@@ -2,17 +2,29 @@ import sqlite3
 import json
 import uuid
 import os
-from datetime import datetime
+from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple, Union
 from pathlib import Path
 import logging
 from contextlib import contextmanager
 import hashlib
 
+import debugpy
+
 # from app.config import settings
 from deployment.app.config import settings # Corrected absolute import
 
 logger = logging.getLogger("plastinka.database")
+
+def json_default_serializer(obj):
+    """
+    JSON serializer for objects not serializable by default json code
+    """
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Path):
+        return str(obj)
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 # Define allowed metric names for dynamic queries
 ALLOWED_METRICS = [
@@ -32,7 +44,7 @@ ALLOWED_METRICS = [
 ]
 
 # Use database path from settings
-DB_PATH = settings.db.path
+DB_PATH = settings.database_path
 
 class DatabaseError(Exception):
     """Exception raised for database errors."""
@@ -43,26 +55,29 @@ class DatabaseError(Exception):
         self.original_error = original_error
         super().__init__(self.message)
 
-def get_db_connection(db_path_override: Optional[Union[str, Path]] = None):
+def get_db_connection(db_path_override: Optional[Union[str, Path]] = None, existing_connection: Optional[sqlite3.Connection] = None):
     """
     Get a connection to the SQLite database.
-    If db_path_override is provided, it uses that path; otherwise, uses settings.db.path.
+    If existing_connection is provided, it uses that connection.
+    Otherwise, if db_path_override is provided, it uses that path; otherwise, uses settings.database_path.
     """
     try:
+        if existing_connection:
+            logger.debug(f"get_db_connection using existing connection: {id(existing_connection)}")
+            return existing_connection
+
         if db_path_override:
             current_db_path = Path(db_path_override)
             logger.debug(f"get_db_connection using override DB_PATH: {current_db_path}")
         else:
             # Always get the most up-to-date path from settings
             from deployment.app.config import settings
-            # Reload settings to ensure we have the latest DATABASE_PATH
-            settings.db.reload() # type: ignore # Assuming main settings object has reload
-            current_db_path = Path(settings.db.path)
+            current_db_path = Path(settings.database_path)
             logger.debug(f"get_db_connection using settings DB_PATH: {current_db_path}")
 
         current_db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(current_db_path))
-        logger.debug(f"DEBUG: get_db_connection - opened connection with id: {id(conn)}, path: {current_db_path}")
+        logger.debug(f"DEBUG: get_db_connection - opened new connection with id: {id(conn)}, path: {current_db_path}")
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.row_factory = dict_factory
         return conn
@@ -349,7 +364,7 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
         status,
         now,
         now,
-        json.dumps(parameters) if parameters else None,
+        json.dumps(parameters, default=json_default_serializer) if parameters else None,
         0
     )
 
@@ -392,40 +407,17 @@ def update_job_status(job_id: str, status: str, progress: float = None,
         connection: Optional existing database connection to use
     """
     now = datetime.now().isoformat()
-    
+
     # Debug connection information
     conn_id = id(connection) if connection else None
     logger.debug(f"update_job_status: Using connection object id: {conn_id}, externally provided: {connection is not None}")
 
-    # Build query and parameters list
-    query_parts = ["UPDATE jobs SET updated_at = ?"]
-    params = [now]
-    
-    if status:
-        query_parts.append("status = ?")
-        params.append(status)
-        
-    if progress is not None:
-        query_parts.append("progress = ?")
-        params.append(progress)
-        
-    if result_id:
-        query_parts.append("result_id = ?")
-        params.append(result_id)
-        
-    if error_message:
-        query_parts.append("error_message = ?")
-        params.append(error_message)
-        
-    query = ", ".join(query_parts) + " WHERE job_id = ?"
-    params.append(job_id)
-    
     # Create a database connection if one wasn't provided
     conn_created = False
     if not connection:
         connection = get_db_connection()
         conn_created = True
-        logger.debug(f"DEBUG: update_job_status - Created new connection with id: {id(connection)}")
+        logger.debug(f"DEBUG: update_job_status - Created new connection with id: {id(connection)}") 
     else:
         logger.debug(f"DEBUG: update_job_status - Using existing connection with id: {id(connection)}")
         # Проверка состояния соединения
@@ -433,53 +425,49 @@ def update_job_status(job_id: str, status: str, progress: float = None,
             logger.debug(f"DEBUG: update_job_status - Connection isolation level: {connection.isolation_level}")
         except Exception as e:
             logger.debug(f"DEBUG: update_job_status - Error checking connection state: {str(e)}")
-    
+
+
     try:
-        # Update the job status
-        execute_query(query, tuple(params), connection=connection)
+        # First check if the job exists
+        check_query = "SELECT 1 FROM jobs WHERE job_id = ?"
+        result = execute_query(check_query, (job_id,), connection=connection)
+        if not result:
+            logger.warning(f"Job with ID {job_id} not found while trying to update status to {status}")
+            return  # Exit early without raising an error
+
+        # Update job status
+        query = """
+            UPDATE jobs 
+            SET 
+                status = ?, 
+                updated_at = ?,
+                progress = COALESCE(?, progress),
+                result_id = COALESCE(?, result_id),
+                error_message = COALESCE(?, error_message)
+            WHERE job_id = ?
+        """
+        params = (status, now, progress, result_id, error_message, job_id)
+        execute_query(query, params, connection=connection)
         
-        # Record in job_status_history if available
-        try:
-            # Check if job_status_history table exists
-            table_exists = execute_query(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='job_status_history'",
-                fetchall=False,
-                connection=connection
-            )
-            
-            if table_exists:
-                history_query = """
-                    INSERT INTO job_status_history
-                    (job_id, status, progress, status_message, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                """
-                history_params = (job_id, status, progress or 0, status_message, now)
-                execute_query(history_query, history_params, connection=connection)
-        except Exception as history_error:
-            # Log but don't fail the main operation if history insert fails
-            logger.warning(f"Could not update job_status_history: {history_error}")
+        # Always log status change to job_status_history table
+        # If no status_message is provided, use the status itself
+        history_message = status_message if status_message else f"Status changed to: {status}"
+        history_query = """
+            INSERT INTO job_status_history 
+            (job_id, status, status_message, progress, updated_at) 
+            VALUES (?, ?, ?, ?, ?)
+        """
+        history_params = (job_id, status, history_message, progress, now)
+        execute_query(history_query, history_params, connection=connection)
         
+        # Explicitly commit if we created our own connection
         if conn_created:
             connection.commit()
-            logger.debug(f"DEBUG: update_job_status - Committed changes for connection id: {id(connection)}")
-        
+            
         logger.info(f"Updated job {job_id}: status={status}, progress={progress}, message={status_message}")
-    except DatabaseError as e:
-        logger.debug(f"DEBUG: update_job_status - Database error: {str(e)}")
-        if conn_created:
-            try:
-                connection.rollback()
-                logger.debug(f"DEBUG: update_job_status - Rolled back changes for connection id: {id(connection)}")
-            except Exception as rollback_error:
-                logger.debug(f"DEBUG: update_job_status - Error during rollback: {str(rollback_error)}")
-        raise
     finally:
-        if conn_created:
-            try:
-                connection.close()
-                logger.debug(f"DEBUG: update_job_status - Closed connection with id: {id(connection)}")
-            except Exception as close_error:
-                logger.debug(f"DEBUG: update_job_status - Error closing connection: {str(close_error)}")
+        if conn_created and connection:
+            connection.close()
 
 def get_job(job_id: str, connection: sqlite3.Connection = None) -> Dict:
     """
@@ -565,7 +553,7 @@ def create_data_upload_result(job_id: str, records_processed: int,
         result_id, 
         job_id,
         records_processed,
-        json.dumps(features_generated),
+        json.dumps(features_generated, default=json_default_serializer),
         processing_run_id
     )
     
@@ -605,7 +593,7 @@ def create_or_get_config(
         cursor = conn.cursor()
         
         # Hash the JSON representation of the config for a stable ID
-        config_json = json.dumps(config_dict, sort_keys=True)
+        config_json = json.dumps(config_dict, sort_keys=True, default=json_default_serializer)
         config_id = hashlib.md5(config_json.encode()).hexdigest()
         
         # Check if this config already exists
@@ -922,7 +910,7 @@ def create_model_record(
                 job_id, 
                 model_path, 
                 created_at.isoformat() if isinstance(created_at, datetime) else created_at,
-                json.dumps(metadata) if metadata else None,
+                json.dumps(metadata, default=json_default_serializer) if metadata else None,
                 1 if is_active else 0
             )
         )
@@ -1165,35 +1153,17 @@ def get_best_model_by_metric(metric_name: str, higher_is_better: bool = True, co
         if conn_created and conn:
             conn.close() # Correct indentation
 
-def get_recent_models(limit: int = 5) -> List[Tuple[str, str, str, str, Optional[str]]]:
+def get_recent_models(limit: int = 5, connection: sqlite3.Connection = None) -> List[Dict[str, Any]]:
     """
-    Retrieves the most recent model records, ordered by creation date.
-    Returns a list of tuples: (model_id, job_id, model_path, created_at, metadata_json).
+    Get the most recent models from the database.
     """
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row # Use Row factory for easier access if needed later, but returning tuples for now
-    cursor = conn.cursor()
-    models = []
-    try:
-        cursor.execute(
-            """
-            SELECT model_id, job_id, model_path, created_at, metadata
-            FROM models
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,)
-        )
-        # Fetchall returns a list of Row objects if row_factory is set, or tuples otherwise.
-        # We convert Rows to tuples explicitly for type hinting consistency.
-        rows = cursor.fetchall()
-        models = [(row[0], row[1], row[2], row[3], row[4]) for row in rows]
-
-    except sqlite3.Error as e:
-        logger.error(f"Database error in get_recent_models: {e}", exc_info=True)
-    finally:
-        conn.close()
-    return models
+    query = """
+        SELECT model_id, job_id, model_path, created_at, metadata, is_active 
+        FROM models 
+        ORDER BY created_at DESC 
+        LIMIT ?
+    """
+    return execute_query(query, (limit,), fetchall=True, connection=connection)
 
 def delete_model_record_and_file(model_id: str, connection: sqlite3.Connection = None) -> bool:
     """
@@ -1209,52 +1179,41 @@ def delete_model_record_and_file(model_id: str, connection: sqlite3.Connection =
             actual_conn = get_db_connection()
             conn_created = True
 
-        cursor = actual_conn.cursor()
-        model_path = None
-        success = False # Initialize success to False
+        with actual_conn as conn: # Use connection as a context manager for transaction
+            cursor = conn.cursor()
+            
+            # Get the model path before deleting the record
+            cursor.execute("SELECT model_path FROM models WHERE model_id = ?", (model_id,))
+            result = cursor.fetchone()
+            if not result:
+                logger.warning(f"Model with ID {model_id} not found for deletion.")
+                return False
 
-        # Get the model path before deleting the record
-        cursor.execute("SELECT model_path FROM models WHERE model_id = ?", (model_id,))
-        result = cursor.fetchone()
-        if result:
             model_path = result['model_path']
-        else:
-            logger.warning(f"Model record not found for deletion: {model_id}")
-            # No need to close connection if it wasn't found and we might have created it
-            # but it will be handled by finally.
-            return False # Record doesn't exist
+            
+            # 1. Delete dependent records from training_results
+            cursor.execute("DELETE FROM training_results WHERE model_id = ?", (model_id,))
+            
+            # 2. Delete the model record
+            cursor.execute("DELETE FROM models WHERE model_id = ?", (model_id,))
+            
+            # 3. Delete the model file
+            if model_path and os.path.exists(model_path):
+                try:
+                    os.remove(model_path)
+                except OSError as e:
+                    logger.error(f"Error removing model file {model_path}: {e}", exc_info=True)
+                    # Depending on policy, we might still consider the DB part a success
+                    # For now, we'll let it be a success if the DB records are gone.
 
-        # Delete the database record
-        cursor.execute("DELETE FROM models WHERE model_id = ?", (model_id,))
-        actual_conn.commit()
-        logger.info(f"Deleted model record: {model_id}")
-
-        # Delete the associated file if path exists
-        if model_path and os.path.exists(model_path):
-            try:
-                os.remove(model_path)
-                logger.info(f"Deleted model file: {model_path}")
-                success = True
-            except OSError as e:
-                logger.error(f"Error deleting model file {model_path}: {e}", exc_info=True)
-                success = False
-        elif model_path:
-            logger.warning(f"Model file not found for deletion (already deleted?): {model_path}")
-            success = True
-        else:
-             logger.warning(f"Model path was not stored for model_id {model_id}, cannot delete file.")
-             success = True
+        return True
 
     except sqlite3.Error as e:
         logger.error(f"Database error in delete_model_record_and_file for model_id {model_id}: {e}", exc_info=True)
-        if conn_created and actual_conn: # Rollback only if we created the connection
-            actual_conn.rollback()
-        success = False
+        return False
     finally:
         if conn_created and actual_conn:
             actual_conn.close()
-        
-    return success
 
 def create_training_result(
     job_id: str, 
@@ -1267,8 +1226,8 @@ def create_training_result(
 ) -> str:
     """Creates a record for a completed training job and handles auto-activation."""
     result_id = str(uuid.uuid4())
-    metrics_json = json.dumps(metrics)
-    config_json = json.dumps(config) # Parameters used for this specific training run
+    metrics_json = json.dumps(metrics, default=json_default_serializer)
+    # config_json = json.dumps(config) # This line is removed as config_json is no longer used for direct DB insertion
     
     conn_created = False
     try:
@@ -1283,11 +1242,11 @@ def create_training_result(
         # Insert the training result
         query = """
         INSERT INTO training_results 
-        (result_id, job_id, model_id, config_id, metrics, config, duration)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (result_id, job_id, model_id, config_id, metrics, duration)
+        VALUES (?, ?, ?, ?, ?, ?)
         """
         params = (
-            result_id, job_id, model_id, config_id, metrics_json, config_json, duration
+            result_id, job_id, model_id, config_id, metrics_json, duration
         )
         cursor.execute(query, params)
         logger.info(f"Created training result: {result_id} for job: {job_id}")
@@ -1370,7 +1329,7 @@ def create_prediction_result(
         job_id,
         model_id,
         output_path,
-        json.dumps(summary_metrics) if summary_metrics else None
+        json.dumps(summary_metrics, default=json_default_serializer) if summary_metrics else None
     )
     
     try:
@@ -1405,7 +1364,7 @@ def create_report_result(job_id: str, report_type: str, parameters: Dict[str, An
         result_id,
         job_id,
         report_type,
-        json.dumps(parameters),
+        json.dumps(parameters, default=json_default_serializer),
         output_path
     )
     
@@ -1618,73 +1577,95 @@ def get_configs(limit: int = 5, connection: sqlite3.Connection = None) -> List[D
 
 def delete_configs_by_ids(config_ids: List[str], connection: sqlite3.Connection = None) -> Dict[str, Any]:
     """
-    Deletes multiple configs by their IDs.
-    
+    Deletes multiple config records by their IDs, skipping active configs.
+
     Args:
-        config_ids: List of config IDs to delete
-        connection: Optional existing database connection to use
-        
+        config_ids: List of config IDs to delete.
+        connection: Optional existing database connection.
+
     Returns:
-        Dict with results: {"successful": count, "failed": count, "errors": [list of errors]}
+        A dictionary with a deletion summary.
     """
     if not config_ids:
-        return {"successful": 0, "failed": 0, "errors": []}
-        
+        return {"deleted_count": 0, "skipped_count": 0, "skipped_configs": []}
+
+    summary = {
+        "deleted_count": 0,
+        "skipped_count": 0,
+        "skipped_configs": []
+    }
     conn_created = False
-    result = {"successful": 0, "failed": 0, "errors": []}
-    
     try:
-        if connection:
-            conn = connection
-        else:
+        if not connection:
             conn = get_db_connection()
             conn_created = True
+        else:
+            conn = connection
+
+        with conn:  # Use connection as a context manager for transaction
+            cursor = conn.cursor()
             
-        cursor = conn.cursor()
-        
-        # Check for active configs that would be deleted
-        placeholders = ','.join(['?'] * len(config_ids))
-        cursor.execute(
-            f"""
-            SELECT config_id FROM configs 
-            WHERE is_active = 1 AND config_id IN ({placeholders})
-            """, 
-            config_ids
-        )
-        
-        active_configs = cursor.fetchall()
-        if active_configs:
-            active_ids = [row['config_id'] for row in active_configs]
-            result["errors"].append(f"Cannot delete active configs: {', '.join(active_ids)}")
-            result["failed"] += len(active_ids)
+            placeholders = ','.join('?' for _ in config_ids)
             
-            # Remove active configs from deletion list
-            config_ids = [cfg_id for cfg_id in config_ids if cfg_id not in active_ids]
-            
-        if config_ids:
-            # Delete non-active configs
-            placeholders = ','.join(['?'] * len(config_ids))
+            # Find which configs are active
             cursor.execute(
-                f"DELETE FROM configs WHERE config_id IN ({placeholders})",
+                f"SELECT config_id FROM configs WHERE config_id IN ({placeholders}) AND is_active = 1",
                 config_ids
             )
+            active_configs = {row['config_id'] for row in cursor.fetchall()}
             
-            result["successful"] = cursor.rowcount
-            conn.commit()
+            summary["skipped_configs"] = list(active_configs)
+            summary["skipped_count"] = len(active_configs)
             
-        return result
-        
-    except sqlite3.Error as e:
-        if conn_created and conn:
-            conn.rollback()
-        error_msg = f"Error deleting configs: {str(e)}"
-        logger.error(error_msg)
-        result["errors"].append(error_msg)
-        result["failed"] += len(config_ids)
-        return result
+            configs_to_delete = [cid for cid in config_ids if cid not in active_configs]
+            
+            if not configs_to_delete:
+                return summary
+
+            delete_placeholders = ','.join('?' for _ in configs_to_delete)
+            
+            # Find jobs using these configs
+            cursor.execute(
+                f"SELECT config_id FROM jobs WHERE config_id IN ({delete_placeholders})"
+            )
+            used_configs_in_jobs = {row['config_id'] for row in cursor.fetchall()}
+            
+            # Also check training_results
+            cursor.execute(
+                f"SELECT config_id FROM training_results WHERE config_id IN ({delete_placeholders})"
+            )
+            used_configs_in_results = {row['config_id'] for row in cursor.fetchall()}
+
+            used_configs = used_configs_in_jobs.union(used_configs_in_results)
+
+            # Add used configs to the skipped list
+            newly_skipped = used_configs.difference(set(summary["skipped_configs"]))
+            if newly_skipped:
+                summary["skipped_configs"].extend(list(newly_skipped))
+                summary["skipped_count"] += len(newly_skipped)
+
+            # Recalculate configs to delete
+            final_configs_to_delete = [cid for cid in configs_to_delete if cid not in used_configs]
+
+            if not final_configs_to_delete:
+                return summary
+            
+            final_placeholders = ','.join('?' for _ in final_configs_to_delete)
+            
+            # Now delete the unused, non-active configs
+            cursor.execute(
+                f"DELETE FROM configs WHERE config_id IN ({final_placeholders})",
+                final_configs_to_delete
+            )
+            
+            summary["deleted_count"] = cursor.rowcount
+            
+    except Exception as e:
+        logger.error(f"Error deleting configs by IDs: {e}", exc_info=True)
     finally:
-        if conn_created and conn:
+        if conn_created and 'conn' in locals() and conn:
             conn.close()
+        return summary
 
 def get_all_models(limit: int = 100, include_active_status: bool = True, connection: sqlite3.Connection = None) -> List[Dict[str, Any]]:
     """
@@ -1735,95 +1716,74 @@ def get_all_models(limit: int = 100, include_active_status: bool = True, connect
 
 def delete_models_by_ids(model_ids: List[str], connection: sqlite3.Connection = None) -> Dict[str, Any]:
     """
-    Deletes multiple models by their IDs and their associated files.
-    
+    Deletes multiple model records by their IDs, skipping active models.
+
     Args:
-        model_ids: List of model IDs to delete
-        connection: Optional existing database connection to use
-        
+        model_ids: List of model IDs to delete.
+        connection: Optional existing database connection.
+
     Returns:
-        Dict with results: {"successful": count, "failed": count, "errors": [list of errors]}
+        A dictionary with deletion summary.
     """
     if not model_ids:
-        return {"successful": 0, "failed": 0, "errors": []}
-        
+        return {"deleted_count": 0, "skipped_count": 0, "skipped_models": []}
+
+    summary = {
+        "deleted_count": 0,
+        "skipped_count": 0,
+        "skipped_models": []
+    }
     conn_created = False
-    result = {"successful": 0, "failed": 0, "errors": []}
-    
     try:
-        if connection:
-            conn = connection
-        else:
+        if not connection:
             conn = get_db_connection()
             conn_created = True
+        else:
+            conn = connection
+
+        with conn:  # Use connection as a context manager for transaction
+            cursor = conn.cursor()
             
-        cursor = conn.cursor()
-        
-        # Check for active models that would be deleted
-        placeholders = ','.join(['?'] * len(model_ids))
-        cursor.execute(
-            f"""
-            SELECT model_id FROM models 
-            WHERE is_active = 1 AND model_id IN ({placeholders})
-            """, 
-            model_ids
-        )
-        
-        active_models = cursor.fetchall()
-        if active_models:
-            active_ids = [row['model_id'] for row in active_models]
-            result["errors"].append(f"Cannot delete active models: {', '.join(active_ids)}")
-            result["failed"] += len(active_ids)
+            placeholders = ','.join('?' for _ in model_ids)
             
-            # Remove active models from deletion list
-            model_ids = [m_id for m_id in model_ids if m_id not in active_ids]
-            
-        # Get model paths for non-active models to be deleted
-        if model_ids:
-            placeholders = ','.join(['?'] * len(model_ids))
+            # Find which models are active
             cursor.execute(
-                f"""
-                SELECT model_id, model_path FROM models 
-                WHERE model_id IN ({placeholders})
-                """, 
+                f"SELECT model_id FROM models WHERE model_id IN ({placeholders}) AND is_active = 1",
                 model_ids
             )
+            active_models = {row['model_id'] for row in cursor.fetchall()}
             
-            models_to_delete = cursor.fetchall()
-            for model in models_to_delete:
-                model_id = model['model_id']
-                model_path = model['model_path']
-                
-                try:
-                    # Delete file if it exists
-                    if model_path and os.path.exists(model_path):
-                        os.remove(model_path)
-                        
-                    # Delete database record
-                    cursor.execute("DELETE FROM models WHERE model_id = ?", (model_id,))
-                    
-                    result["successful"] += 1
-                except Exception as e:
-                    error_msg = f"Error deleting model {model_id}: {str(e)}"
-                    logger.error(error_msg)
-                    result["errors"].append(error_msg)
-                    result["failed"] += 1
+            summary["skipped_models"] = list(active_models)
+            summary["skipped_count"] = len(active_models)
             
-            conn.commit()
+            models_to_delete = [mid for mid in model_ids if mid not in active_models]
             
-        return result
-        
-    except sqlite3.Error as e:
-        if conn_created and conn:
-            conn.rollback()
-        error_msg = f"Error deleting models: {str(e)}"
-        logger.error(error_msg)
-        result["errors"].append(error_msg)
-        result["failed"] += len(model_ids)
-        return result
+            if not models_to_delete:
+                return summary
+
+            delete_placeholders = ','.join('?' for _ in models_to_delete)
+            
+            # Delete associated training results first
+            cursor.execute(
+                f"DELETE FROM training_results WHERE model_id IN ({delete_placeholders})",
+                models_to_delete
+            )
+            
+            # Now delete the models
+            cursor.execute(
+                f"DELETE FROM models WHERE model_id IN ({delete_placeholders})",
+                models_to_delete
+            )
+            
+            summary["deleted_count"] = cursor.rowcount
+
+    except Exception as e:
+        logger.error(f"Error deleting models by IDs: {e}", exc_info=True)
+        # Do not re-raise to avoid hiding the summary
     finally:
-        if conn_created and conn:
-            conn.close() 
+        if conn_created and 'conn' in locals() and conn:
+            conn.close()
+        return summary
 
 def get_effective_config(settings, logger=None, connection=None):
     """
@@ -1839,6 +1799,9 @@ def get_effective_config(settings, logger=None, connection=None):
         ValueError: если ни один сет не найден
     """
     logger.debug("[DEBUG] get_effective_config: called")
+    #debugpy.listen(5678)
+    #debugpy.wait_for_client()
+    #breakpoint()
     active_config_data = get_active_config(connection=connection)
     logger.debug(f"[DEBUG] get_effective_config: active_config_data={active_config_data}")
     if active_config_data:

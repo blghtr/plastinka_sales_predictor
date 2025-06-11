@@ -8,6 +8,7 @@ import json
 import os
 from typing import Dict, Any, Optional, List, Union, Type, Callable
 import uuid
+from datetime import datetime, date
 
 from deployment.app.utils.validation import ValidationError as AppValidationError
 
@@ -17,6 +18,14 @@ logger = logging.getLogger("plastinka.errors")
 # Enable detailed error responses in development environment
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 INCLUDE_EXCEPTION_DETAILS = ENVIRONMENT.lower() in ["development", "testing"]
+
+def json_default_serializer(obj):
+    """
+    JSON serializer for objects not serializable by default json code
+    """
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 class RetryableError(Exception):
     """Exception class for errors that should be automatically retried."""
@@ -110,13 +119,13 @@ class ErrorDetail:
         if self.retry_info:
             log_data["retry_info"] = self.retry_info
             
-        # Log the error
+        # Use the custom JSON serializer for logging
         if self.status_code >= 500:
-            logger.error(json.dumps(log_data), exc_info=self.exception)
+            logger.error(json.dumps(log_data, default=json_default_serializer), exc_info=self.exception)
         elif self.status_code >= 400:
-            logger.warning(json.dumps(log_data))
+            logger.warning(json.dumps(log_data, default=json_default_serializer))
         else:
-            logger.info(json.dumps(log_data))
+            logger.info(json.dumps(log_data, default=json_default_serializer))
 
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:

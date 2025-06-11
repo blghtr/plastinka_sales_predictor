@@ -96,7 +96,8 @@ def test_row_factory(db_setup):
     # Get a connection
     conn = get_db_connection()
     
-    # Create a test table
+    # Create a test table - drop it first if it exists
+    conn.execute("DROP TABLE IF EXISTS test_access")
     conn.execute("CREATE TABLE test_access (id INTEGER, name TEXT)")
     conn.execute("INSERT INTO test_access VALUES (1, 'test')")
     conn.commit()

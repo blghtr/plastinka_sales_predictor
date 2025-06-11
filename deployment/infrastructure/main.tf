@@ -83,6 +83,4 @@ resource "random_id" "bucket_suffix" {
   byte_length = 4
 }
 
-// TODO: Add resources for IAM roles, Service Accounts, etc.
-// TODO: Configure backend state storage (e.g., S3)
-// TODO: Add resources for S3 bucket, IAM roles, etc. 
+// Add resources for IAM roles, Service Accounts, etc.

@@ -31,62 +31,48 @@ def test_db_path(tmp_path):
 
 @pytest.fixture
 def create_test_db(test_db_path):
-    """Initialize the test database with schema."""
+    """
+    Initialize the test database with schema and yield the connection.
+    This ensures the same connection is used throughout the test.
+    """
     conn = sqlite3.connect(test_db_path)
+    conn.row_factory = dict_factory  # Set row_factory to get dicts
+    conn.execute("PRAGMA foreign_keys = ON")
     cursor = conn.cursor()
     
-    # Create minimal schema needed for testing model registration
-    cursor.executescript("""
-        CREATE TABLE IF NOT EXISTS jobs (
-            job_id TEXT PRIMARY KEY,
-            job_type TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL,
-            updated_at TIMESTAMP NOT NULL,
-            parameters TEXT,
-            result_id TEXT,
-            error_message TEXT,
-            progress REAL
-        );
-        
-        CREATE TABLE IF NOT EXISTS models (
-            model_id TEXT PRIMARY KEY,
-            job_id TEXT NOT NULL,
-            model_path TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL,
-            metadata TEXT,
-            is_active BOOLEAN DEFAULT 0,
-            FOREIGN KEY (job_id) REFERENCES jobs(job_id)
-        );
-        
-        CREATE TABLE IF NOT EXISTS training_results (
-            result_id TEXT PRIMARY KEY,
-            job_id TEXT NOT NULL,
-            model_id TEXT,
-            parameter_set_id TEXT,
-            metrics TEXT,
-            parameters TEXT,
-            duration INTEGER,
-            FOREIGN KEY (job_id) REFERENCES jobs(job_id),
-            FOREIGN KEY (model_id) REFERENCES models(model_id)
-        );
-    """)
+    # Use the official schema to ensure consistency
+    from deployment.app.db.schema import SCHEMA_SQL
+    cursor.executescript(SCHEMA_SQL)
     
-    # Insert a test job
+    # Insert a test config first
+    test_config_id = "test_config_id"
     cursor.execute(
         """
-        INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, progress)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO configs (config_id, config, created_at, is_active)
+        VALUES (?, ?, ?, ?)
         """,
-        ("test_job_id", "training", "completed", datetime.now(), datetime.now(), 100)
+        (test_config_id, json.dumps({"test": "config"}), datetime.now().isoformat(), 0)
+    )
+    
+    # Insert a test job that subsequent tests can rely on
+    test_job_id = "test_job_id"
+    cursor.execute(
+        """
+        INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, progress, config_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (test_job_id, "training", "completed", datetime.now().isoformat(), datetime.now().isoformat(), 100, test_config_id)
     )
     
     conn.commit()
+    
+    # Yield the connection so tests can use it
+    yield conn
+    
+    # Teardown: close the connection
     conn.close()
     
-    yield test_db_path
-    
-    # Make sure all connections are closed before attempting to remove
+    # Cleanup the file
     for _ in range(5):
         try:
             os.remove(test_db_path)
@@ -115,10 +101,10 @@ def get_new_connection(db_path):
 
 def test_create_model_record(create_test_db, test_model_path, monkeypatch):
     """Test that a model record can be created in the database."""
-    db_path = create_test_db
+    conn = create_test_db  # Use the connection from the fixture
     
-    # Mock get_db_connection to return a new connection each time
-    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: get_new_connection(db_path))
+    # Mock get_db_connection to return the yielded connection
+    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
     
     # Create test data
     model_id = "test_model_123"
@@ -126,18 +112,18 @@ def test_create_model_record(create_test_db, test_model_path, monkeypatch):
     created_at = datetime.now()
     metadata = {"test_key": "test_value", "file_size_bytes": 100}
     
-    # Create the model record
+    # Create the model record using the same connection context
     create_model_record(
         model_id=model_id,
         job_id=job_id,
         model_path=test_model_path,
         created_at=created_at,
         metadata=metadata,
-        is_active=False
+        is_active=False,
+        connection=conn
     )
     
-    # Create a new connection for verification
-    conn = get_new_connection(db_path)
+    # Verification uses the same connection
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM models WHERE model_id = ?", (model_id,))
     record = cursor.fetchone()
@@ -148,15 +134,13 @@ def test_create_model_record(create_test_db, test_model_path, monkeypatch):
     assert record["model_path"] == test_model_path
     assert record["is_active"] == 0
     assert json.loads(record["metadata"]) == metadata
-    
-    conn.close()
 
 def test_activate_model(create_test_db, test_model_path, monkeypatch):
     """Test that a model can be activated and other models deactivated."""
-    db_path = create_test_db
+    conn = create_test_db  # Use the connection from the fixture
     
-    # Mock get_db_connection to return a new connection each time
-    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: get_new_connection(db_path))
+    # Mock get_db_connection to return the yielded connection
+    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
     
     # Create multiple model records
     models = [
@@ -176,16 +160,16 @@ def test_activate_model(create_test_db, test_model_path, monkeypatch):
             model_path=test_model_path,
             created_at=created_at,
             metadata={"test": "test"},
-            is_active=model["is_active"]
+            is_active=model["is_active"],
+            connection=conn
         )
     
-    # Activate model_2 with a new connection
-    result = set_model_active("model_2", deactivate_others=True)
+    # Activate model_2 with the same connection
+    result = set_model_active("model_2", deactivate_others=True, connection=conn)
     assert result is True
     
-    # Get active model with a new connection
-    conn = get_new_connection(db_path)
-    active_model = get_active_model(conn)
+    # Get active model with the same connection
+    active_model = get_active_model(connection=conn)
     assert active_model is not None
     assert active_model["model_id"] == "model_2"
     
@@ -196,15 +180,13 @@ def test_activate_model(create_test_db, test_model_path, monkeypatch):
     
     for model in other_models:
         assert model["is_active"] == 0
-    
-    conn.close()
 
 def test_get_best_model_by_metric(create_test_db, test_model_path, monkeypatch):
     """Test retrieving the best model based on a metric."""
-    db_path = create_test_db
+    conn = create_test_db # Use the connection from the fixture
     
-    # Mock get_db_connection to return a new connection each time
-    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: get_new_connection(db_path))
+    # Mock get_db_connection to return the yielded connection
+    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
     
     # Use the proper dict_factory implementation
     monkeypatch.setattr("deployment.app.db.database.dict_factory", dict_factory)
@@ -228,11 +210,11 @@ def test_get_best_model_by_metric(create_test_db, test_model_path, monkeypatch):
             model_path=test_model_path,
             created_at=created_at,
             metadata={"test": "test"},
-            is_active=False
+            is_active=False,
+            connection=conn
         )
         
-        # Create training result with a new connection
-        conn = get_new_connection(db_path)
+        # Create training result with the same connection
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -247,26 +229,20 @@ def test_get_best_model_by_metric(create_test_db, test_model_path, monkeypatch):
             )
         )
         conn.commit()
-        conn.close()
     
-    # Get the best model by accuracy with a new connection
-    conn = get_new_connection(db_path)
-    conn.row_factory = dict_factory  # Set the row_factory on the connection as well
+    # Get the best model by accuracy with the same connection
     best_model = get_best_model_by_metric("accuracy", higher_is_better=True, connection=conn)
     
     assert best_model is not None
     assert best_model["model_id"] == "model_2"
-    # The get_best_model_by_metric function already parsed the JSON for us
     assert best_model["metrics"]["accuracy"] == 0.9
-    
-    conn.close()
 
 def test_get_recent_models(create_test_db, test_model_path, monkeypatch):
     """Test retrieving recent models."""
-    db_path = create_test_db
+    conn = create_test_db # Use the connection from the fixture
     
-    # Mock get_db_connection to return a new connection each time
-    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: get_new_connection(db_path))
+    # Mock get_db_connection to return the yielded connection
+    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
     
     # Create models with different timestamps - adding a small delay
     now = datetime.now()
@@ -289,29 +265,24 @@ def test_get_recent_models(create_test_db, test_model_path, monkeypatch):
             model_path=test_model_path,
             created_at=datetime.now(),  # Use current time, not the initial time
             metadata={"test": "test"},
-            is_active=model["is_active"]
+            is_active=model["is_active"],
+            connection=conn
         )
     
-    # Refresh the database and wait for a moment
-    time.sleep(0.1)
-    
-    # Get recent models (limit 2) with a new connection
-    with patch("deployment.app.db.database.get_db_connection", lambda: get_new_connection(db_path)):
-        recent_models = get_recent_models(limit=2)
+    # Get recent models (limit 2) with the same connection
+    recent_models = get_recent_models(limit=2, connection=conn)
     
     assert len(recent_models) == 2
-    # We created the models in reverse order (model_3, model_2, model_1)
-    # So the most recent should be model_1 and model_2
-    model_ids = [model[0] for model in recent_models]
+    model_ids = [model['model_id'] for model in recent_models]
     assert "model_1" in model_ids, f"Expected model_1 in {model_ids}"
     assert "model_2" in model_ids, f"Expected model_2 in {model_ids}"
 
 def test_delete_model_record_and_file(create_test_db, test_model_path, monkeypatch):
     """Test deleting a model record and its file."""
-    db_path = create_test_db
+    conn = create_test_db # Use the connection from the fixture
     
-    # Mock get_db_connection to return a new connection each time
-    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: get_new_connection(db_path))
+    # Mock get_db_connection to return the yielded connection
+    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
     
     # Create a model record
     model_id = "model_to_delete"
@@ -324,37 +295,34 @@ def test_delete_model_record_and_file(create_test_db, test_model_path, monkeypat
         model_path=test_model_path,
         created_at=created_at,
         metadata={"test": "test"},
-        is_active=False
+        is_active=False,
+        connection=conn
     )
     
-    # Verify model exists with a new connection
-    conn = get_new_connection(db_path)
+    # Verify model exists with the same connection
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM models WHERE model_id = ?", (model_id,))
     assert cursor.fetchone() is not None
-    conn.close()
     
     # Delete the model
     with patch("os.path.exists", return_value=True):
         with patch("os.remove") as mock_remove:
-            result = delete_model_record_and_file(model_id)
+            result = delete_model_record_and_file(model_id, connection=conn)
             
             assert result is True
             mock_remove.assert_called_once_with(test_model_path)
     
-    # Verify model no longer exists in database with a new connection
-    conn = get_new_connection(db_path)
+    # Verify model no longer exists in database with the same connection
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM models WHERE model_id = ?", (model_id,))
     assert cursor.fetchone() is None
-    conn.close()
 
 def test_model_registration_workflow(create_test_db, test_model_path, monkeypatch):
     """Test the entire model registration workflow."""
-    db_path = create_test_db
+    conn = create_test_db # Use the connection from the fixture
     
-    # Mock get_db_connection to return a new connection each time
-    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: get_new_connection(db_path))
+    # Mock get_db_connection to return the yielded connection
+    monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
     
     # Use the proper dict_factory implementation
     monkeypatch.setattr("deployment.app.db.database.dict_factory", dict_factory)
@@ -375,11 +343,11 @@ def test_model_registration_workflow(create_test_db, test_model_path, monkeypatc
             model_path=test_model_path,
             created_at=model["created_at"],
             metadata={"size_bytes": 1000},
-            is_active=False
+            is_active=False,
+            connection=conn
         )
         
-        # Create training result with a new connection
-        conn = get_new_connection(db_path)
+        # Create training result with the same connection
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -394,47 +362,36 @@ def test_model_registration_workflow(create_test_db, test_model_path, monkeypatc
             )
         )
         conn.commit()
-        conn.close()
     
-    # 2. Verify both models exist with a new connection
-    conn = get_new_connection(db_path)
+    # 2. Verify both models exist with the same connection
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM models")
-    assert cursor.fetchone()[0] == 2
-    conn.close()
+    assert cursor.fetchone()['COUNT(*)'] == 2
     
-    # 3. Get the best model by metric with a new connection
-    conn = get_new_connection(db_path)
-    conn.row_factory = dict_factory  # Set the row_factory for this connection
+    # 3. Get the best model by metric with the same connection
     best_model = get_best_model_by_metric("accuracy", higher_is_better=True, connection=conn)
     assert best_model["model_id"] == "workflow_model_2"
-    conn.close()
     
-    # 4. Activate the best model with a new connection
-    set_model_active(best_model["model_id"])
+    # 4. Activate the best model with the same connection
+    set_model_active(best_model["model_id"], connection=conn)
     
-    # 5. Verify it's now the active model with a new connection
-    conn = get_new_connection(db_path)
+    # 5. Verify it's now the active model with the same connection
     active_model = get_active_model(connection=conn)
     assert active_model["model_id"] == "workflow_model_2"
-    conn.close()
     
-    # 6. Get recent models with a new connection
-    with patch("deployment.app.db.database.get_db_connection", lambda: get_new_connection(db_path)):
-        recent_models = get_recent_models(limit=5)
+    # 6. Get recent models with the same connection
+    recent_models = get_recent_models(limit=5, connection=conn)
     assert len(recent_models) == 2
     
     # 7. Delete one model
     with patch("os.path.exists", return_value=True):
         with patch("os.remove"):
-            result = delete_model_record_and_file("workflow_model_1")
+            result = delete_model_record_and_file("workflow_model_1", connection=conn)
             assert result is True
     
-    # 8. Verify only one model remains with a new connection
-    conn = get_new_connection(db_path)
+    # 8. Verify only one model remains with the same connection
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM models")
-    assert cursor.fetchone()[0] == 1
+    assert cursor.fetchone()['COUNT(*)'] == 1
     cursor.execute("SELECT model_id FROM models")
-    assert cursor.fetchone()[0] == "workflow_model_2"
-    conn.close() 
+    assert cursor.fetchone()['model_id'] == "workflow_model_2" 

@@ -10,6 +10,7 @@ import time
 import psutil
 import sqlite3
 from datetime import datetime, timedelta
+from fastapi.responses import JSONResponse
 
 from deployment.app.utils.retry_monitor import get_retry_statistics, reset_retry_statistics
 from deployment.app.config import settings
@@ -97,36 +98,55 @@ def check_environment() -> ComponentHealth:
 
 def check_database() -> ComponentHealth:
     """Check database connection."""
+    conn = None # Initialize conn to None
     try:
-        conn = sqlite3.connect(settings.db.path)
+        logger.debug("Attempting to connect to database in check_database...")
+        conn = sqlite3.connect(settings.database_path)
+        logger.debug(f"Successfully connected to database. Connection ID: {id(conn)}")
         cursor = conn.cursor()
         cursor.execute("SELECT 1")
         cursor.fetchone()
+        logger.debug("Database connection successful.")
         
         # Check if required tables exist
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND ("
-            "name='cloud_functions' OR "
-            "name='cloud_function_executions' OR "
-            "name='cloud_storage_objects'"
-            ")"
-        )
-        tables = [row[0] for row in cursor.fetchall()]
+        # These should be the actual critical tables for the application
         required_tables = [
-            'cloud_functions', 
-            'cloud_function_executions', 
-            'cloud_storage_objects'
+            'jobs',
+            'models',
+            'configs',
+            'training_results',
+            'prediction_results',
+            'job_status_history',
+            'dim_multiindex_mapping',
+            'fact_sales',
+            'dim_price_categories',
+            'dim_styles',
+            'fact_stock',
+            'fact_prices',
+            'fact_stock_changes',
+            'fact_predictions',
+            'sqlite_sequence',
+            'processing_runs',
+            'data_upload_results',
+            'report_results'
         ]
-        missing_tables = [table for table in required_tables if table not in tables]
         
-        conn.close()
+        # Construct the query to check for these tables efficiently
+        placeholders = ", ".join(["?" for _ in required_tables])
+        query_check_tables = f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
+        
+        cursor.execute(query_check_tables, tuple(required_tables))
+        tables_found = [row[0] for row in cursor.fetchall()]
+        missing_tables = [table for table in required_tables if table not in tables_found]
         
         if missing_tables:
+            logger.warning(f"Database degraded: missing tables {missing_tables}")
             return ComponentHealth(
                 status="degraded", 
                 details={"missing_tables": missing_tables}
             )
         
+        logger.debug("Database is healthy.")
         return ComponentHealth(status="healthy")
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}", exc_info=True)
@@ -134,6 +154,11 @@ def check_database() -> ComponentHealth:
             status="unhealthy", 
             details={"error": str(e)}
         )
+    finally:
+        if conn:
+            logger.debug(f"Closing database connection. Connection ID: {id(conn)}")
+            conn.close()
+            logger.debug("Database connection closed.")
 
 @router.get("/", response_model=HealthResponse)
 async def health_check():
@@ -151,22 +176,29 @@ async def health_check():
         "config": check_environment()
     }
     
-    # Determine overall status
+    # Determine overall status and HTTP status code
     overall_status = "healthy"
+    http_status_code = 200 # Default to 200 OK
+
     if any(comp.status == "unhealthy" for comp in components.values()):
         overall_status = "unhealthy"
+        http_status_code = 503 # Service Unavailable
     elif any(comp.status == "degraded" for comp in components.values()):
         overall_status = "degraded"
+        # Degraded status still returns 200 OK
     
     logger.debug("Health check requested")
     
-    return {
-        "status": overall_status,
-        "version": version,
-        "timestamp": datetime.now().isoformat(),
-        "uptime_seconds": uptime,
-        "components": components
-    }
+    return JSONResponse(
+        status_code=http_status_code,
+        content={
+            "status": overall_status,
+            "version": version,
+            "timestamp": datetime.now().isoformat(),
+            "uptime_seconds": uptime,
+            "components": {k: v.model_dump() for k, v in components.items()}
+        }
+    )
 
 @router.get("/system", response_model=SystemStatsResponse)
 async def system_stats(api_key: bool = Depends(get_current_api_key_validated)):

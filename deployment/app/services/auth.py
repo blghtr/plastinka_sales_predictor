@@ -3,9 +3,14 @@ Authentication service for API security.
 """
 from fastapi import Depends, HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
-from typing import Dict, Any
+from typing import Dict, Any, Annotated
 
 from ..config import settings
+
+import logging
+import os
+
+logger = logging.getLogger(__name__)
 
 # Define security scheme for bearer token
 bearer_scheme = HTTPBearer()
@@ -14,7 +19,7 @@ bearer_scheme = HTTPBearer()
 api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False) # auto_error=False to handle empty config case
 
 async def get_admin_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)]
 ) -> Dict[str, Any]:
     """
     Validate admin token and return user information.
@@ -28,9 +33,10 @@ async def get_admin_user(
     Raises:
         HTTPException: If the token is missing or invalid
     """
-    admin_token = settings.api.api_key
+    logger.debug(f"[get_admin_user] OAuth2 credentials scheme: {credentials.scheme}, credentials: {credentials.credentials}")
+    logger.debug(f"[get_admin_user] settings.api.api_key: {settings.api.api_key}")
     
-    if not admin_token:
+    if not settings.api.api_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Admin API key not configured on server"
@@ -43,7 +49,8 @@ async def get_admin_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    if credentials.credentials != admin_token:
+    if credentials.credentials != settings.api.api_key:
+        logger.warning(f"[get_admin_user] Invalid Bearer token provided. Expected: {settings.api.api_key}, Got: {credentials.credentials}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
@@ -57,7 +64,7 @@ async def get_admin_user(
         "permissions": ["manage_data_retention", "manage_models", "manage_jobs"]
     }
 
-async def get_current_api_key_validated(): #api_key: str = Security(api_key_header_scheme)) -> bool:
+async def get_current_api_key_validated(api_key: str = Security(api_key_header_scheme)) -> bool:
     """
     Validate X-API-Key header.
     
@@ -70,10 +77,10 @@ async def get_current_api_key_validated(): #api_key: str = Security(api_key_head
     Raises:
         HTTPException: If the API key is missing, not configured, or invalid.
     """
-    return True  # TODO: Remove this once we have a real API key
-    configured_x_api_key = settings.api.x_api_key
+    logger.debug(f"[Auth Service] get_current_api_key_validated called with api_key: {api_key}")
+    logger.debug(f"[Auth Service] settings.api.x_api_key: {settings.api.x_api_key}")
 
-    if not configured_x_api_key:
+    if not settings.api.x_api_key:
         # Log this situation as it's a server misconfiguration if endpoints are protected
         # but no key is set. For now, we'll raise an error.
         # Consider logging a warning here in a real scenario.
@@ -88,7 +95,7 @@ async def get_current_api_key_validated(): #api_key: str = Security(api_key_head
             detail="Not authenticated: X-API-Key header is missing."
         )
         
-    if api_key != configured_x_api_key:
+    if api_key != settings.api.x_api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid X-API-Key."

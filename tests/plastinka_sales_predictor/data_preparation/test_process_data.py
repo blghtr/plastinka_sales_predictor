@@ -275,12 +275,12 @@ def test_isolated_PlastinkaTrainingTSDataset():
     
     # Important: Match these parameters exactly with generate_pipeline_examples.py
     dataset_params = {
-        "static_features": ['Тип', 'Конверт', 'Стиль', 'Ценовая категория'],
+        "static_features": ['release_type', 'cover_type', 'style', 'price_category'],
         "input_chunk_length": 6,
         "output_chunk_length": 3,
         # Keep other parameters that might be needed
         "past_covariates_span": 3, # Align with default used by generator
-        "past_covariates_fnames": ['Тип','Конверт','Стиль','Ценовая категория'],
+        "past_covariates_fnames": ['release_type', 'cover_type', 'style', 'price_category'],
         "minimum_sales_months": 1 # Align with default used by generator
     }
     

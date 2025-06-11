@@ -21,10 +21,10 @@ def test_sqlite3_schema_directly():
         
         # Сначала попробуем выполнить схему по частям, чтобы найти проблемное место
         
-        # Шаг 1: Создаем таблицу parameter_sets
+        # Шаг 1: Создаем таблицу configs
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS parameter_sets (
-            parameter_set_id TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS configs (
+            config_id TEXT PRIMARY KEY,
             parameters TEXT NOT NULL,
             created_at TIMESTAMP NOT NULL,
             is_active BOOLEAN DEFAULT 0
@@ -33,8 +33,8 @@ def test_sqlite3_schema_directly():
         conn.commit()
         
         # Проверяем, что таблица создана
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='parameter_sets'")
-        assert cursor.fetchone() is not None, "parameter_sets не была создана"
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='configs'")
+        assert cursor.fetchone() is not None, "configs не была создана"
         
         # Шаг 2: Создаем таблицу training_results с внешним ключом
         cursor.execute("""
@@ -42,11 +42,11 @@ def test_sqlite3_schema_directly():
             result_id TEXT PRIMARY KEY,
             job_id TEXT NOT NULL,
             model_id TEXT,
-            parameter_set_id TEXT,
+            config_id TEXT,
             metrics TEXT,
             parameters TEXT,
             duration INTEGER,
-            FOREIGN KEY (parameter_set_id) REFERENCES parameter_sets(parameter_set_id)
+            FOREIGN KEY (config_id) REFERENCES configs(config_id)
         )
         """)
         conn.commit()
@@ -55,14 +55,14 @@ def test_sqlite3_schema_directly():
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='training_results'")
         assert cursor.fetchone() is not None, "training_results не была создана"
         
-        # Шаг 3: Создаем индекс на parameter_set_id
+        # Шаг 3: Создаем индекс на config_id
         cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_training_results_parameter_set ON training_results(parameter_set_id)
+        CREATE INDEX IF NOT EXISTS idx_training_results_config ON training_results(config_id)
         """)
         conn.commit()
         
         # Проверяем, что индекс создан
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_training_results_parameter_set'")
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_training_results_config'")
         assert cursor.fetchone() is not None, "Индекс не был создан"
         
         # Теперь импортируем и запускаем SCHEMA_SQL напрямую

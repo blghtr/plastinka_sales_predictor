@@ -108,10 +108,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     status TEXT NOT NULL,    -- 'pending', 'running', 'completed', 'failed'
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
+    config_id TEXT,          -- Reference to configs table
+    model_id TEXT,           -- Reference to models table (no FK constraint due to circular dependency)
     parameters TEXT,         -- JSON of job parameters
     result_id TEXT,          -- ID of the result resource (if applicable)
     error_message TEXT,
-    progress REAL           -- 0-100 percentage
+    progress REAL,           -- 0-100 percentage
+    FOREIGN KEY (config_id) REFERENCES configs(config_id)
 );
 
 -- Job status history table for tracking status changes over time
@@ -218,7 +221,7 @@ CREATE INDEX IF NOT EXISTS idx_training_results_config ON training_results(confi
 CREATE INDEX IF NOT EXISTS idx_training_results_model ON training_results(model_id);
 """
 
-def init_db(db_path: str):
+def init_db(db_path: str = None, connection: sqlite3.Connection = None):
     """
     Initialize the database with schema.
     
@@ -226,55 +229,111 @@ def init_db(db_path: str):
     Tables and indexes are created only if they don't already exist.
     
     Args:
-        db_path: Path to SQLite database file
+        db_path: Path to SQLite database file (optional, if connection is provided)
+        connection: Optional existing database connection. If provided, db_path is ignored.
         
     Returns:
         bool: True if successful, False otherwise
     """
+    logger.debug(f"DEBUG: init_db: Entering init_db. db_path={db_path}, connection provided={connection is not None}")
+    conn = None
+    conn_created = False
+    original_row_factory = None
     try:
-        logger.debug(f"Initializing database at path: {db_path}")
-        
-        # Create directory if it doesn't exist
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        
-        # Check if database already exists
-        db_exists = Path(db_path).exists()
-        logger.debug(f"Database already exists: {db_exists}")
-        
-        # Connect to database
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # Log tables before schema execution
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables_before = [row[0] for row in cursor.fetchall()]
-        logger.debug(f"Tables before schema execution: {tables_before}")
-        
-        # Execute schema SQL
-        logger.debug("Executing schema SQL...")
-        cursor.executescript(SCHEMA_SQL)
-        conn.commit()
-        
-        # Verify tables were created
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables_after = [row[0] for row in cursor.fetchall()]
-        logger.debug(f"Tables after schema execution: {tables_after}")
-        
-        # Check specifically for our required tables
-        required_tables = ['jobs', 'configs', 'training_results', 'prediction_results']
-        missing_tables = [table for table in required_tables if table not in tables_after]
-        
-        if missing_tables:
-            logger.warning(f"Missing required tables after schema execution: {missing_tables}")
+        if connection:
+            conn = connection
+            logger.debug(f"DEBUG: init_db: Initializing database using provided connection: {id(conn)}")
+        elif db_path:
+            # Attempt to strip sqlite URI scheme if present
+            parsed_db_path = db_path
+            if parsed_db_path.startswith("sqlite:///"):
+                parsed_db_path = parsed_db_path[len("sqlite:///"):]
+            elif parsed_db_path.startswith("sqlite://"):
+                parsed_db_path = parsed_db_path[len("sqlite://"):]
+            elif parsed_db_path.startswith("sqlite:"): # More generic
+                parsed_db_path = parsed_db_path[len("sqlite:"):]
+            
+            # If, after stripping, the path is now empty or clearly not a valid path, log error
+            if not parsed_db_path or parsed_db_path.startswith(("/", "\\\\")): # Check for absolute paths after stripping
+                 # This case might indicate a malformed original db_path like "sqlite:////path" -> "/path"
+                 # or "sqlite:///C:/path" -> "C:/path" which is fine.
+                 # If it becomes empty like "sqlite:", then it's an issue.
+                 pass # Assuming if it's an absolute path, it's fine.
+
+            logger.debug(f"DEBUG: init_db: Initializing database at path (original: {db_path}, parsed for Path(): {parsed_db_path})")
+            
+            # Create directory if it doesn't exist, using the parsed path
+            # Ensure parsed_db_path is not empty before Path operations
+            if not parsed_db_path:
+                raise ValueError(f"Database path became empty after parsing scheme from: {db_path}")
+
+            actual_file_path = Path(parsed_db_path)
+            actual_file_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"DEBUG: init_db: Directory ensured: {actual_file_path.parent}")
+            
+            # Check if database already exists
+            db_exists = actual_file_path.exists()
+            logger.debug(f"DEBUG: init_db: Database already exists: {db_exists}")
+            
+            # Connect to database using the original db_path (which sqlite3.connect understands)
+            # or parsed_db_path if it's confirmed to be a clean file path for connect.
+            # sqlite3.connect can handle "file:path?mode=uri" or just "path".
+            # If the original db_path had a scheme, sqlite3.connect should handle it.
+            # If we stripped it, we must ensure it's connectable.
+            # For simplicity and safety, connect using the original db_path which sqlite3 expects.
+            # The file system operations (mkdir, exists) MUST use the scheme-less path.
+            conn = sqlite3.connect(db_path) # Use original db_path for connect
+            conn_created = True
+            logger.debug(f"DEBUG: init_db: Connected to database. Connection ID: {id(conn)}")
+
+        if conn:
+            original_row_factory = conn.row_factory # Store original row_factory
+            conn.row_factory = None # Set to None for internal queries to ensure tuple results
+            logger.debug(f"DEBUG: init_db: Setting PRAGMA foreign_keys = ON; for connection ID: {id(conn)}")
+            conn.execute("PRAGMA foreign_keys = ON;")
+
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables_before = [row[0] for row in cursor.fetchall()]
+            logger.debug(f"DEBUG: init_db: Tables before schema application: {tables_before}")
+            logger.debug(f"DEBUG: init_db: Executing SCHEMA_SQL for connection ID: {id(conn)}")
+            cursor.executescript(SCHEMA_SQL)
+            
+            if conn_created:
+                conn.commit()
+                logger.debug("DEBUG: init_db: Committed changes. Connection ID: {id(conn)}")
+            else:
+                logger.debug("DEBUG: init_db: Not committing for external connection. Connection ID: {id(conn)}")
+
+            # Verify tables after schema application
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables_after = [row[0] for row in cursor.fetchall()]
+            logger.debug(f"DEBUG: init_db: Tables after schema application: {tables_after}")
+            logger.debug("DEBUG: init_db: Database initialization successful.")
+            return True
+
+        else:
+            logger.error("DEBUG: init_db: No database connection established in init_db.")
             return False
-        
-        logger.info("Database schema initialized successfully")
-        conn.close()
-        return True
-        
+
     except Exception as e:
-        logger.error(f"Error initializing database: {str(e)}", exc_info=True)
+        logger.error(f"DEBUG: init_db: Database initialization failed: {e}", exc_info=True)
+        if conn_created and conn:
+            logger.debug(f"DEBUG: init_db: Rolling back changes due to error. Connection ID: {id(conn)}")
+            conn.rollback()
         return False
+    finally:
+        if conn_created and conn:
+            try:
+                logger.debug(f"DEBUG: init_db: Closing internally created connection. Connection ID: {id(conn)}")
+                conn.close()
+                logger.debug("DEBUG: init_db: Internally created connection closed.")
+            except Exception as close_e:
+                logger.error(f"DEBUG: init_db: Error closing connection in finally block: {close_e}")
+        # Restore original row_factory if it was changed
+        if connection and original_row_factory:
+            connection.row_factory = original_row_factory
+            logger.debug(f"DEBUG: init_db: Restored original row_factory for external connection ID: {id(connection)}")
 
 if __name__ == "__main__":
     init_db() 

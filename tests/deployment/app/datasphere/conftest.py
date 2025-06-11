@@ -3,34 +3,249 @@ import os
 import sqlite3
 import pandas as pd
 import numpy as np
-from unittest.mock import patch, MagicMock, AsyncMock, mock_open
+from unittest.mock import patch, MagicMock, AsyncMock
 import uuid
 import json
 from pathlib import Path
 import tempfile
 import asyncio
-from datetime import datetime, timedelta
-from contextlib import ExitStack
+from datetime import datetime, date
 import logging
 
-from deployment.app.db.database import (
-    get_db_connection, 
-    create_job, 
-    get_job, 
-    get_recent_models, 
-    get_active_model,
-    get_prediction_result,
-    update_job_status,
-    execute_query
-)
-from deployment.app.db.schema import init_db, SCHEMA_SQL
+from deployment.app.db.schema import init_db
 from deployment.app.models.api_models import (
-    JobStatus, JobType, TrainingParams,
-    ModelConfig, OptimizerConfig, LRSchedulerConfig,
+    TrainingConfig, ModelConfig, OptimizerConfig, LRSchedulerConfig,
     TrainingDatasetConfig
 )
-from deployment.app.services.datasphere_service import run_job, save_predictions_to_db
-from deployment.datasphere.client import DataSphereClient, DataSphereClientError
+from deployment.app.services.datasphere_service import settings
+from tests.deployment.app.datasphere.test_datasphere_pipeline_integration import create_sample_training_config
+
+@pytest.fixture(scope="function")
+def mocked_db(temp_db):
+    """
+    Provides a mocked DB interface with helper functions for integration tests.
+    - Uses a real in-memory DB connection from the `temp_db` fixture.
+    - Provides helper methods to create jobs and execute queries.
+    """
+    # temp_db might be a connection or a dict with 'conn' key depending on fixture
+    conn = temp_db['conn'] if isinstance(temp_db, dict) else temp_db
+    
+    # Initialize all necessary tables if they don't exist
+    # These tables are required for the integration tests to work
+    cursor = conn.cursor()
+    
+    # Check if tables exist, and create them if not
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='configs'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        CREATE TABLE configs (
+            config_id TEXT PRIMARY KEY,
+            config TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL,
+            is_active BOOLEAN DEFAULT 0
+        )
+        """)
+    
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='models'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        CREATE TABLE models (
+            model_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            model_path TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL,
+            metadata TEXT,
+            is_active BOOLEAN DEFAULT 0,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+        )
+        """)
+    
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='training_results'")
+    if not cursor.fetchone():
+        cursor.execute("""
+        CREATE TABLE training_results (
+            result_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            model_id TEXT,
+            config_id TEXT,
+            metrics TEXT,
+            duration INTEGER,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id),
+            FOREIGN KEY (model_id) REFERENCES models(model_id),
+            FOREIGN KEY (config_id) REFERENCES configs(config_id)
+        )
+        """)
+    
+    conn.commit()
+    
+    def create_job(job_id, job_type="training", status="pending", config_id=None, model_id=None):
+        """Helper to insert a job record into the database."""
+        if config_id is None:
+            # Create a dummy config if none provided
+            config_id = "config_" + str(uuid.uuid4())
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
+                (config_id, json.dumps({"sample": "config"}), datetime.now().isoformat())
+            )
+            conn.commit()
+
+        cursor = conn.cursor()
+        # Check if jobs table has config_id and model_id columns
+        cursor.execute("PRAGMA table_info(jobs)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        now = datetime.now().isoformat()
+        
+        if 'config_id' in columns and 'model_id' in columns:
+            # Full schema with config_id and model_id
+            cursor.execute(
+                """
+                INSERT INTO jobs (job_id, job_type, status, config_id, model_id, created_at, updated_at, progress)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, job_type, status, config_id, model_id, now, now, 0)
+            )
+        elif 'config_id' in columns:
+            # Schema with config_id but no model_id
+            cursor.execute(
+                """
+                INSERT INTO jobs (job_id, job_type, status, config_id, created_at, updated_at, progress)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, job_type, status, config_id, now, now, 0)
+            )
+        else:
+            # Minimal schema (from test_database_setup.py)
+            cursor.execute(
+                """
+                INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, progress)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, job_type, status, now, now, 0)
+            )
+        
+        conn.commit()
+        return job_id
+
+    def get_job_status_history(job_id):
+        """Get job status history for a specific job."""
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT status FROM job_status_history WHERE job_id = ? ORDER BY id", (job_id,))
+            rows = cursor.fetchall()
+            # Convert rows to a list of status values based on row structure
+            if rows and isinstance(rows[0], dict):
+                return [row['status'] for row in rows]
+            elif rows and isinstance(rows[0], sqlite3.Row):
+                return [row['status'] for row in rows]
+            elif rows:
+                # If rows are tuples, assume status is the first column
+                return [row[0] for row in rows]
+            return []
+        except Exception as e:
+            print(f"Error getting job status history: {e}")
+            return []
+
+    def create_job_status_history(job_id, status, status_message=None):
+        """Create a job status history entry."""
+        cursor = conn.cursor()
+        try:
+            # Check if the job_status_history table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='job_status_history'")
+            if not cursor.fetchone():
+                # Create the job_status_history table with the correct schema
+                cursor.execute("""
+                CREATE TABLE job_status_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    status_message TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL
+                )
+                """)
+            
+            # Get current time for updated_at
+            now = datetime.now().isoformat()
+            
+            # Insert the history record with updated_at
+            cursor.execute("""
+            INSERT INTO job_status_history (job_id, status, status_message, updated_at)
+            VALUES (?, ?, ?, ?)
+            """, (job_id, status, status_message, now))
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            print(f"Error creating job status history: {e}")
+            return False
+
+    def create_model(job_id, model_path="/fake/path/model.onnx"):
+        """Create a model record that can be referenced by training_results."""
+        model_id = "model_" + str(uuid.uuid4())
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO models (model_id, job_id, model_path, created_at) VALUES (?, ?, ?, ?)",
+            (model_id, job_id, model_path, datetime.now().isoformat())
+        )
+        conn.commit()
+        return model_id
+
+    def create_training_result(job_id, model_id, config_id, metrics=None):
+        """Create a training result record."""
+        if metrics is None:
+            metrics = {"mape": 10.5}
+        
+        result_id = str(uuid.uuid4())
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics, duration)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (result_id, job_id, model_id, config_id, json.dumps(metrics), 20)
+        )
+        conn.commit()
+        return result_id
+
+    def query_handler(query, params=(), fetchall=False):
+        """Handles both regular SQL and special-cased queries from tests."""
+        if query == 'job_status_history':
+             # This is a special case from the test, not a real query
+             # The job_id should be passed in params
+             job_id_param = params[0] if params else None
+             if not job_id_param:
+                 raise ValueError("job_id must be provided to fetch status history.")
+             statuses = get_job_status_history(job_id_param)
+             return statuses
+        return execute_query(query, params, fetchall)
+
+    def execute_query(query, params=(), fetchall=False):
+        """Helper to execute a query against the test database."""
+        cursor = conn.cursor()
+        # As temp_db returns a connection with Row factory, we can treat rows as dicts
+        cursor.execute(query, params)
+        if fetchall:
+            return cursor.fetchall()
+        return cursor.fetchone()
+
+    yield {
+        "conn": conn,
+        "create_job": create_job,
+        "execute_query": query_handler,
+        "create_job_status_history": create_job_status_history,
+        "create_model": create_model,
+        "create_training_result": create_training_result
+    }
+
+def json_default_serializer(obj):
+    """
+    JSON serializer for objects not serializable by default json code
+    """
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 # Constants for tests
 TEST_MODEL_ID = "model_" + str(uuid.uuid4())
@@ -102,8 +317,8 @@ def create_training_params(base_params=None):
     )
     
     # Create complete TrainingParams
-    return TrainingParams(
-        model_config=model_config,
+    return TrainingConfig(
+        nn_model_config=model_config,
         optimizer_config=optimizer_config,
         lr_shed_config=lr_shed_config,
         train_ds_config=train_ds_config,
@@ -112,541 +327,96 @@ def create_training_params(base_params=None):
     )
 
 # ==============================================
-# Mocks for various services
-# ==============================================
-
-def mock_get_active_parameter_set(connection=None):
-    """Mock implementation of get_active_parameter_set to return test parameters"""
-    return {
-        "parameter_set_id": 1,
-        "parameters": {
-            "input_chunk_length": 12,
-            "output_chunk_length": 6,
-            "hidden_size": 64,
-            "lstm_layers": 2,
-            "dropout": 0.2,
-            "batch_size": 32,
-            "max_epochs": 10,
-            "learning_rate": 0.001
-        },
-        "default_metric_name": "mape",
-        "default_metric_value": 15.3
-    }
-
-def mock_get_datasets(start_date=None, end_date=None, config=None, output_dir=None):
-    """Mock implementation of get_datasets to return test datasets"""
-    # Create some dummy files in the output_dir to simulate dataset generation
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        # Create a dummy dataset file
-        with open(os.path.join(output_dir, 'dummy_dataset.json'), 'w') as f:
-            f.write('{"dummy": "dataset"}')
-    
-    return {
-        "train_dataset": MagicMock(),
-        "test_dataset": MagicMock()
-    }
-
-def mock_create_model_record(*args, **kwargs):
-    """Mock for create_model_record (заглушка для тестов)"""
-    return None
-
-# ==============================================
-# Setup functions for different testing strategies
-# ==============================================
-
-def setup_db_mocks():
-    """
-    Настраивает моки для функций базы данных.
-    
-    Returns:
-        ExitStack context manager для использования через `with setup_db_mocks():`
-    """
-    # Базовый мок соединения
-    mock_conn = MagicMock()
-    
-    # Мок для get_db_connection
-    get_db_connection_patch = patch('deployment.app.db.database.get_db_connection', return_value=mock_conn)
-    
-    # Мок для update_job_status
-    update_job_status_patch = patch('deployment.app.db.database.update_job_status')
-    
-    # Мок для get_job
-    mock_job = {'job_id': 'test-job-id', 'status': 'completed', 'progress': 100}
-    get_job_patch = patch('deployment.app.db.database.get_job', return_value=mock_job)
-    
-    # Мок для create_job
-    create_job_patch = patch('deployment.app.db.database.create_job', return_value='test-job-id')
-    
-    # Мок для get_active_model
-    mock_model = {
-        'model_id': 'test-model-id', 
-        'job_id': 'test-job-id', 
-        'is_active': True,
-        'metadata': json.dumps({
-            'file_size_bytes': 1024,
-            'downloaded_from_ds_job': 'test-ds-job',
-            'original_path': '/tmp/model.onnx'
-        })
-    }
-    get_active_model_patch = patch('deployment.app.db.database.get_active_model', return_value=mock_model)
-    
-    # Мок для get_prediction_result
-    mock_result = {'result_id': 'test-result-id', 'job_id': 'test-job-id'}
-    get_prediction_result_patch = patch('deployment.app.db.database.get_prediction_result', return_value=mock_result)
-    
-    # Мок для execute_query
-    def mock_execute_query(query, params=(), fetchall=False, connection=None):
-        if 'job_status_history' in query and fetchall:
-            return [
-                {'job_id': 'test-job-id', 'status': 'pending', 'progress': 0, 'status_message': 'Initializing'},
-                {'job_id': 'test-job-id', 'status': 'running', 'progress': 50, 'status_message': 'Running'},
-                {'job_id': 'test-job-id', 'status': 'completed', 'progress': 100, 'status_message': 'Completed'}
-            ]
-        elif 'fact_predictions' in query and fetchall:
-            # Возвращаем имитацию записей предсказаний на основе SAMPLE_PREDICTIONS
-            predictions = []
-            for i in range(len(SAMPLE_PREDICTIONS["barcode"])):
-                model_id = params[0] if params else "test_model_id"
-                pred = {
-                    'object_id': f"obj_{i+1}",
-                    'q05': SAMPLE_PREDICTIONS["0.05"][i],
-                    'q25': SAMPLE_PREDICTIONS["0.25"][i],
-                    'q50': SAMPLE_PREDICTIONS["0.5"][i],
-                    'q75': SAMPLE_PREDICTIONS["0.75"][i],
-                    'q95': SAMPLE_PREDICTIONS["0.95"][i],
-                    'model_id': model_id
-                }
-                predictions.append(pred)
-            return predictions
-        elif fetchall:
-            return [{'id': 1}, {'id': 2}]
-        else:
-            return {'id': 1}
-    
-    execute_query_patch = patch('deployment.app.db.database.execute_query', side_effect=mock_execute_query)
-    
-    # Для тестирования ошибок
-    def get_job_with_status(job_id, status='completed', connection=None):
-        return {'job_id': job_id, 'status': status, 'progress': 100 if status == 'completed' else 0}
-    
-    # Создаем контекстный менеджер для всех патчей
-    exit_stack = ExitStack()
-    
-    # Применяем все патчи
-    mock_patches = {
-        'get_db_connection': exit_stack.enter_context(get_db_connection_patch),
-        'update_job_status': exit_stack.enter_context(update_job_status_patch),
-        'get_job': exit_stack.enter_context(get_job_patch),
-        'create_job': exit_stack.enter_context(create_job_patch),
-        'get_active_model': exit_stack.enter_context(get_active_model_patch),
-        'get_prediction_result': exit_stack.enter_context(get_prediction_result_patch),
-        'execute_query': exit_stack.enter_context(execute_query_patch),
-    }
-    
-    # Дополнительные утилиты для тестов
-    mock_patches['get_job_with_status'] = get_job_with_status
-    mock_patches['mock_conn'] = mock_conn
-    mock_patches['exit_stack'] = exit_stack
-    
-    # Возвращаем словарь с патчами вместо использования yield
-    return mock_patches
-
-def setup_temp_db():
-    """
-    Настраивает временную тестовую БД на диске для интеграционных тестов.
-    Создает временный файл БД с необходимыми таблицами и тестовыми данными.
-    
-    Yields:
-        dict: Словарь с параметрами настроенной БД
-    """
-    # Создаём временную директорию для тестовых файлов
-    temp_dir = tempfile.TemporaryDirectory()
-    db_path = os.path.join(temp_dir.name, 'test.db')
-    
-    # Инициализируем схему БД
-    init_db(db_path)
-    
-    # Проверяем, что все необходимые таблицы созданы
-    debug_conn = sqlite3.connect(db_path)
-    debug_cursor = debug_conn.cursor()
-    debug_cursor.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN "
-        "('dim_multiindex_mapping', 'fact_predictions', 'prediction_results', 'models', 'jobs', 'job_status_history', 'parameter_sets')"
-    )
-    table_count = debug_cursor.fetchone()[0]
-    debug_conn.close()
-    
-    # Убеждаемся, что таблицы созданы
-    assert table_count >= 6, f"Database should have at least 6 required tables, but found {table_count}"
-    
-    # Создаем соединение для тестов
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # Вставляем тестовые данные
-    parameter_set_id = 1
-    params = create_training_params()
-    params_dict = params.model_dump()
-    
-    # Вставляем тестовый parameter_set
-    cursor.execute(
-        """INSERT INTO parameter_sets 
-           (parameter_set_id, parameters, is_active, created_at) 
-           VALUES (?, ?, ?, ?)""",
-        (parameter_set_id, json.dumps(params_dict), 1, datetime.now().isoformat())
-    )
-    
-    # Вставляем тестовые multiindex_mapping
-    sample_multiindices = [
-        ('123456789012', 'Artist A', 'Album X', 'Standard', 'A', 'Studio', '2010s', '2020s', 'Rock', 2015),
-        ('987654321098', 'Artist B', 'Album Y', 'Deluxe', 'B', 'Live', '2000s', '2010s', 'Pop', 2007),
-        ('555555555555', 'Artist C', 'Album Z', 'Limited', 'C', 'Compilation', '1990s', '2000s', 'Jazz', 1995)
-    ]
-    
-    for idx, (barcode, artist, album, cover_type, price_category, release_type, recording_decade, release_decade, style, record_year) in enumerate(sample_multiindices, start=1):
-        cursor.execute(
-            """INSERT INTO dim_multiindex_mapping
-               (multiindex_id, barcode, artist, album, cover_type, price_category, release_type,
-                recording_decade, release_decade, style, record_year)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (idx, barcode, artist, album, cover_type, price_category, release_type, recording_decade, release_decade, style, record_year)
-        )
-    
-    # Создаем тестовый job
-    job_id = "test_job_" + str(uuid.uuid4())
-    cursor.execute(
-        """INSERT INTO jobs 
-           (job_id, job_type, status, created_at, updated_at) 
-           VALUES (?, ?, ?, ?, ?)""",
-        (job_id, JobType.TRAINING.value, JobStatus.PENDING.value, datetime.now().isoformat(), datetime.now().isoformat())
-    )
-    
-    # Создаем тестовую модель
-    model_id = TEST_MODEL_ID
-    cursor.execute(
-        """INSERT INTO models 
-           (model_id, job_id, model_path, created_at, is_active) 
-           VALUES (?, ?, ?, ?, ?)""",
-        (model_id, job_id, "/test/path/model.onnx", datetime.now().isoformat(), 1)
-    )
-    
-    # Применяем изменения и закрываем соединение
-    conn.commit()
-    conn.close()
-    
-    # Сохраняем оригинальный путь к БД (если он установлен)
-    original_db_path = os.environ.get('DATABASE_PATH', None)
-    
-    # Устанавливаем путь к тестовой БД
-    os.environ['DATABASE_PATH'] = db_path
-    
-    # Создаем временный файл с предсказаниями для тестов
-    predictions_path = os.path.join(temp_dir.name, 'predictions.csv')
-    pd.DataFrame(SAMPLE_PREDICTIONS).to_csv(predictions_path, index=False)
-    
-    # Создаем файл конфигурации для DataSphere
-    config_path = os.path.join(temp_dir.name, 'config.yaml')
-    with open(config_path, 'w') as f:
-        f.write("job_name: test_job\nparams:\n  param1: value1\n")
-    
-    # Формируем словарь с параметрами настройки
-    setup_data = {
-        "temp_dir": temp_dir,
-        "db_path": db_path,
-        "predictions_path": predictions_path,
-        "config_path": config_path,
-        "job_id": job_id,
-        "model_id": model_id,
-        "parameter_set_id": parameter_set_id,
-        "params_dict": params_dict,
-        "original_db_path": original_db_path,
-        "conn": sqlite3.connect(db_path)  # Add a connection to be used by tests
-    }
-    
-    # Set the row_factory for the connection
-    setup_data["conn"].row_factory = sqlite3.Row
-    
-    # Возвращаем настройки
-    try:
-        yield setup_data
-    finally:
-        # Close the connection we created
-        if setup_data["conn"]:
-            setup_data["conn"].close()
-        
-        # Восстанавливаем оригинальный путь к БД
-        if original_db_path is not None:
-            os.environ['DATABASE_PATH'] = original_db_path
-        else:
-            os.environ.pop('DATABASE_PATH', None)
-        
-        # Закрываем все соединения
-        try:
-            conn_close = sqlite3.connect(db_path)
-            conn_close.close()
-        except Exception:
-            pass
-        
-        # Удаляем временную директорию
-        try:
-            temp_dir.cleanup()
-        except PermissionError:
-            # На Windows иногда не удается удалить директорию сразу
-            pass
-
-# ==============================================
 # Pytest fixtures
 # ==============================================
-
-@pytest.fixture
-def mocked_db():
-    """
-    Fixture для полностью моковой БД.
-    Возвращает словарь моков для использования в тестах.
-    """
-    # Создаем контекстный менеджер и применяем патчи
-    mocks = setup_db_mocks()
-    
-    # Возвращаем моки и заботимся о закрытии контекстного менеджера
-    try:
-        yield mocks
-    finally:
-        # Закрываем все патчи после использования фикстуры
-        if 'exit_stack' in mocks:
-            mocks['exit_stack'].close()
-
-@pytest.fixture
-def temp_db():
-    """
-    Fixture для реальной временной БД на диске.
-    Возвращает словарь с параметрами настроенной БД.
-    """
-    yield from setup_temp_db()
 
 logger = logging.getLogger(__name__)
 
 @pytest.fixture
-def mock_datasphere():
+def mock_datasphere(fs, monkeypatch):
     """
-    Fixture для мокирования DataSphere клиента и связанных сервисов.
+    Мокирует DataSphere окружение для интеграционных тестов.
+    Создает фейковую файловую систему и настройки.
     """
-    # Настройка мока DataSphere клиента
-    mock_client = MagicMock(spec=DataSphereClient)
-    mock_client.submit_job.return_value = "ds_job_" + str(uuid.uuid4())
-    mock_client.get_job_status.return_value = "SUCCESS"
+    # Create fake directories in pyfakefs
+    input_dir = "/fake/datasphere_input"
+    output_dir = "/fake/datasphere_output"
+    fake_config_path = "/fake/datasphere_job/config.yaml"
     
-    def download_results_side_effect(job_id, output_dir, with_logs=False, with_diagnostics=False):
-        metrics_path = os.path.join(output_dir, 'metrics.json')
-        predictions_path = os.path.join(output_dir, 'predictions.csv')
-        model_path = os.path.join(output_dir, 'model.onnx')
-        log_paths = [os.path.join(output_dir, 'logs.txt')] if with_logs else []
-        diag_paths = [os.path.join(output_dir, 'diagnostics.json')] if with_diagnostics else []
-        
-        original_exists = os.path.exists
-        
-        def patched_exists(path):
-            if path in [metrics_path, predictions_path, model_path, output_dir] + log_paths + diag_paths:
-                return True
-            # Для всех путей, содержащих 'model.onnx' или 'predictions.csv' или 'metrics.json', возвращаем True
-            if 'model.onnx' in str(path) or 'predictions.csv' in str(path) or 'metrics.json' in str(path):
-                return True
-            return original_exists(path)
-        
-        # Обновляем мок
-        patches.get('os_path_exists').side_effect = patched_exists
-        
-        # Добавляем мок для os.path.getsize
-        def mock_getsize(path):
-            # Возвращаем фиктивный размер для модели
-            if 'model.onnx' in str(path):
-                return 1024 * 1024  # 1MB
-            return 1024  # 1KB
-        
-        patches['os_path_getsize'] = patch('os.path.getsize', side_effect=mock_getsize)
-        
-        return None
+    fs.makedirs(input_dir, exist_ok=True)
+    fs.makedirs(output_dir, exist_ok=True)
+    fs.makedirs("/fake/datasphere_job", exist_ok=True)
+    fs.create_file(fake_config_path, contents="name: test_job\ntype: python")
+    
+    # Create a mock settings object with the computed properties overridden
+    from deployment.app.config import AppSettings
+    from unittest.mock import PropertyMock
+    
+    # Create a mock settings object
+    mock_settings = MagicMock(spec=AppSettings)
+    
+    # Set up the computed properties as PropertyMock objects
+    type(mock_settings).datasphere_input_dir = PropertyMock(return_value=input_dir)
+    type(mock_settings).datasphere_output_dir = PropertyMock(return_value=output_dir)
+    type(mock_settings).datasphere_job_config_path = PropertyMock(return_value=fake_config_path)
+    
+    # Set up other necessary attributes
+    mock_settings.project_root_dir = "/fake/project"
+    mock_settings.datasphere = MagicMock()
+    mock_settings.datasphere.max_polls = 5
+    mock_settings.datasphere.poll_interval = 1.0
+    mock_settings.datasphere.client = {
+        "project_id": "test-project",
+        "folder_id": "test-folder",
+        "oauth_token": "test-token"
+    }
+    
+    # Patch the settings in the modules that use them
+    monkeypatch.setattr('deployment.app.services.datasphere_service.settings', mock_settings)
+    monkeypatch.setattr('deployment.app.config.settings', mock_settings)
+    
+    # Mock DataSphere service functions that the integration tests expect
+    mock_save_model = AsyncMock(return_value="model_" + str(uuid.uuid4()))
+    mock_save_predictions = MagicMock(return_value={"result_id": "test-result", "predictions_count": 5})
+    mock_get_datasets = MagicMock()
+    mock_update_job_status = MagicMock()
+    
+    # Mock DataSphere client
+    mock_client = MagicMock()
+    mock_client.submit_job.return_value = "ds_job_" + str(uuid.uuid4())
+    mock_client.get_job_status.return_value = "COMPLETED"
+    
+    def download_results_side_effect(job_id, output_dir, **kwargs):
+        os.makedirs(output_dir, exist_ok=True)
+        fs.create_file(os.path.join(output_dir, "metrics.json"), contents='{"mape": 15.3}')
+        fs.create_file(os.path.join(output_dir, "model.onnx"), contents="dummy onnx model data")
+        fs.create_file(os.path.join(output_dir, "predictions.csv"), contents="header1,header2\nvalue1,value2\n")
     
     mock_client.download_job_results.side_effect = download_results_side_effect
     
-    # Создаем патчи для всех зависимостей
-    patches = {
-        'client': patch('deployment.app.services.datasphere_service.DataSphereClient', return_value=mock_client),
-        'get_active_parameter_set': patch('deployment.app.services.datasphere_service.get_active_parameter_set', mock_get_active_parameter_set),
-        'get_datasets': patch('deployment.app.services.datasphere_service.get_datasets', mock_get_datasets),
-        'create_model_record': patch('deployment.app.services.datasphere_service.create_model_record', mock_create_model_record),
-        'os_path_exists': patch('os.path.exists', return_value=True),
-        'update_job_status': patch('deployment.app.services.datasphere_service.update_job_status'),
+    # Apply the mocks
+    monkeypatch.setattr('deployment.app.services.datasphere_service.save_model_file_and_db', mock_save_model)
+    monkeypatch.setattr('deployment.app.services.datasphere_service.save_predictions_to_db', mock_save_predictions)
+    monkeypatch.setattr('deployment.app.services.datasphere_service.get_datasets', mock_get_datasets)
+    monkeypatch.setattr('deployment.app.services.datasphere_service.update_job_status', mock_update_job_status)
+    monkeypatch.setattr('deployment.app.services.datasphere_service._initialize_datasphere_client', AsyncMock(return_value=mock_client))
+    
+    # Mock dataset preparation and verification functions for integration tests
+    monkeypatch.setattr('deployment.app.services.datasphere_service._prepare_job_datasets', AsyncMock())
+    monkeypatch.setattr('deployment.app.services.datasphere_service._verify_datasphere_job_inputs', AsyncMock())
+    
+    yield {
+        'settings': mock_settings,
+        'input_dir': input_dir,
+        'output_dir': output_dir,
+        'config_path': fake_config_path,
+        'fs': fs,
+        'save_model_file_and_db': mock_save_model,
+        'save_predictions_to_db': mock_save_predictions,
+        'get_datasets': mock_get_datasets,
+        'update_job_status': mock_update_job_status,
+        'client': mock_client
     }
-    
-    # Настройка мока _get_job_parameters с автоматическим оборачиванием async
-    mock_get_job_parameters = AsyncMock()
-    mock_get_job_parameters.return_value = (create_training_params(), 1)
-    
-    # Создаем функцию-обертку для правильного ожидания AsyncMock
-    async def wrapped_get_job_parameters(*args, **kwargs):
-        return await mock_get_job_parameters(*args, **kwargs)
-    
-    patches['_get_job_parameters'] = patch(
-        'deployment.app.services.datasphere_service._get_job_parameters', 
-        side_effect=wrapped_get_job_parameters
-    )
-    
-    # Настройка мока settings
-    mock_settings = MagicMock()
-    mock_settings.datasphere.train_job.input_dir = 'input_dir'
-    mock_settings.datasphere.train_job.output_dir = 'output_dir'
-    mock_settings.datasphere.train_job.job_config_path = 'config.yaml'
-    mock_settings.datasphere.max_polls = 2
-    mock_settings.datasphere.poll_interval = 0.1
-    mock_settings.max_models_to_keep = 5 # Added to fix TypeError
-    
-    # Determine actual project root for wheel building
-    actual_project_root = Path(__file__).parent.parent.parent.parent.parent # .. -> datasphere -> app -> deployment -> tests -> project_root
-    mock_settings.project_root_dir = str(actual_project_root)
-    print(f"DEBUG [mock_datasphere fixture]: Mocking settings.project_root_dir to: {actual_project_root}")
-
-    patches['settings'] = patch('deployment.app.services.datasphere_service.settings', mock_settings)
-
-    # --- Mock the new _build_and_stage_wheel function ---
-    # This function is now responsible for all wheel building and staging.
-    # It should return the path to the (mocked) staged wheel.
-    dummy_staged_wheel_name = 'plastinka_sales_predictor-0.1.0-dummy.whl'
-    # Use the input_dir from mock_settings for consistency in the mock's return value
-    mock_staged_wheel_path = Path(mock_settings.datasphere.train_job.input_dir) / dummy_staged_wheel_name
-    
-    # _build_and_stage_wheel is synchronous, so use MagicMock, not AsyncMock
-    mock_build_and_stage_wheel = MagicMock(return_value=mock_staged_wheel_path)
-    
-    patches['_build_and_stage_wheel'] = patch(
-        'deployment.app.services.datasphere_service._build_and_stage_wheel',
-        mock_build_and_stage_wheel # Use the MagicMock directly as the new value for the patch
-    )
-    # --- End mock for _build_and_stage_wheel ---
-    
-    # Настройка мока _prepare_job_datasets с корректной оберткой async
-    mock_prepare_datasets = AsyncMock()
-    mock_prepare_datasets.return_value = None
-    
-    async def wrapped_prepare_datasets(*args, **kwargs):
-        return await mock_prepare_datasets(*args, **kwargs)
-    
-    patches['_prepare_job_datasets'] = patch(
-        'deployment.app.services.datasphere_service._prepare_job_datasets',
-        side_effect=wrapped_prepare_datasets
-    )
-    
-    # Настройка мока _archive_input_directory с корректной оберткой async
-    mock_archive_input = AsyncMock()
-    mock_archive_input.return_value = "input.zip"
-    
-    async def wrapped_archive_input(*args, **kwargs):
-        return await mock_archive_input(*args, **kwargs)
-    
-    patches['_archive_input_directory'] = patch(
-        'deployment.app.services.datasphere_service._archive_input_directory',
-        side_effect=wrapped_archive_input
-    )
-    
-    # Настройка мока save_model_file_and_db с корректной оберткой async
-    mock_save_model = AsyncMock()
-    mock_save_model.return_value = "test_model_" + str(uuid.uuid4())
-    
-    async def wrapped_save_model(*args, **kwargs):
-        return await mock_save_model(*args, **kwargs)
-    
-    patches['save_model_file_and_db'] = patch(
-        'deployment.app.services.datasphere_service.save_model_file_and_db',
-        side_effect=wrapped_save_model
-    )
-    
-    # Настройка мока для save_predictions_to_db
-    def mock_save_predictions(predictions_path, job_id, model_id, direct_db_connection=None):
-        """
-        Мок для save_predictions_to_db чтобы имитировать запись предсказаний в БД
-        Возвращает идентификатор результата и количество сохраненных предсказаний
-        """
-        # Генерируем уникальный result_id для каждого вызова
-        result_id = "test_result_" + str(uuid.uuid4())
-        
-        # Возвращаем информацию о результате сохранения
-        return {
-            "result_id": result_id,
-            "predictions_count": len(SAMPLE_PREDICTIONS["barcode"]),
-            "model_id": model_id
-        }
-    
-    patches['save_predictions_to_db'] = patch(
-        'deployment.app.services.datasphere_service.save_predictions_to_db',
-        side_effect=mock_save_predictions
-    )
-    
-    # Настройка mock_open для чтения конфига и результатов
-    mock_file_content = "job_name: test_job\nparams:\n  param1: value1\n"
-    mock_metrics_content = json.dumps({"mape": 15.3, "rmse": 5.7, "mae": 3.2, "r2": 0.85})
-    
-    # Создаем патч для open, который будет обрабатывать разные файлы по-разному
-    original_open = open # Store the original open
-
-    # mock_open_instance for default YAML config
-    mock_yaml_open_instance = mock_open(read_data=mock_file_content)
-    
-    def mock_open_side_effect(file_path, *args, **kwargs):
-        str_file_path = str(file_path)
-        # Для metrics.json возвращаем метрики
-        if str_file_path.endswith('metrics.json'):
-            # Return a mock file handle that will provide mock_metrics_content when read
-            return mock_open(read_data=mock_metrics_content)(file_path, *args, **kwargs)
-        elif str_file_path.endswith('params.json'):
-            # Return a mock file handle that will act as if it's being written to.
-            # This avoids FileNotFoundError if input_dir isn't ready for original_open.
-            logger.debug(f"mock_open_side_effect providing mock_open for writing: {str_file_path}")
-            return mock_open()(file_path, *args, **kwargs)
-        # Для YAML конфига (если это он)
-        elif str_file_path.endswith(('.yaml', '.yml')): # Adjusted to use tuple
-            # Return a mock file handle that will provide mock_file_content (original YAML content)
-            return mock_open(read_data=mock_file_content)(file_path, *args, **kwargs)
-        
-        # Fallback for any other file paths
-        logger.warning(f"mock_open_side_effect falling back to original_open for: {str_file_path}")
-        return original_open(file_path, *args, **kwargs)
-    
-    patches['open'] = patch('builtins.open', side_effect=mock_open_side_effect)
-    
-    # Добавляем патч для os.makedirs, чтобы не было ошибки с несуществующими директориями
-    def mock_makedirs(path, exist_ok=False):
-        # Имитируем создание директории без фактического создания
-        return None
-    
-    patches['makedirs'] = patch('os.makedirs', side_effect=mock_makedirs)
-    
-    # Применяем все патчи через ExitStack
-    exit_stack = ExitStack()
-    patched_objects = {}
-    
-    for name, p in patches.items():
-        patched_objects[name] = exit_stack.enter_context(p)
-    
-    # Создаем временные директории для тестов
-    os.makedirs('input_dir', exist_ok=True)
-    os.makedirs('output_dir', exist_ok=True)
-    
-    # Возвращаем моки и патчи
-    try:
-        yield patched_objects
-    finally:
-        exit_stack.close()
-        
-        # Удаляем временные директории
-        try:
-            import shutil
-            if os.path.exists('input_dir'):
-                shutil.rmtree('input_dir')
-            if os.path.exists('output_dir'):
-                shutil.rmtree('output_dir')
-        except Exception as e:
-            print(f"Cleanup error: {e}")
 
 # ==============================================
 # Utility functions for assertions
@@ -702,3 +472,57 @@ def verify_predictions_saved(connection, result, expected_data):
         db_value = float(record[f"quantile_{q_db}"])
         expected_value = expected_data[q_data][0]
         assert abs(db_value - expected_value) < 1e-6 
+
+@pytest.fixture
+def sample_predictions_data():
+    """Provides sample predictions data as a dictionary."""
+    return SAMPLE_PREDICTIONS.copy()
+
+@pytest.fixture
+def temp_db(sample_predictions_data):
+    """
+    Creates a temporary database and a predictions CSV file for testing.
+    This fixture provides a more specific setup for tests that need to
+    read a predictions file and write to a database.
+    """
+    temp_dir = tempfile.TemporaryDirectory()
+    db_path = os.path.join(temp_dir.name, 'test_predictions.db')
+    predictions_path = os.path.join(temp_dir.name, 'predictions.csv')
+    
+    # Create and save the predictions CSV
+    pd.DataFrame(sample_predictions_data).to_csv(predictions_path, index=False)
+    
+    # Initialize the database
+    conn = sqlite3.connect(db_path)
+    init_db(connection=conn)
+    conn.row_factory = sqlite3.Row
+    
+    job_id = "job-" + str(uuid.uuid4())
+    model_id = "model-" + str(uuid.uuid4())
+    
+    # Pre-populate jobs and models tables since they are foreign keys
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (job_id, "prediction", "running", datetime.now().isoformat(), datetime.now().isoformat())
+    )
+    cursor.execute(
+        "INSERT INTO models (model_id, job_id, model_path, is_active, created_at) VALUES (?, ?, ?, ?, ?)",
+        (model_id, job_id, "/fake/path/model.onnx", True, datetime.now().isoformat())
+    )
+    conn.commit()
+
+    db_info = {
+        "temp_dir": temp_dir,
+        "db_path": db_path,
+        "predictions_path": predictions_path,
+        "job_id": job_id,
+        "model_id": model_id,
+        "conn": conn
+    }
+    
+    yield db_info
+    
+    # Teardown
+    conn.close()
+    temp_dir.cleanup() 

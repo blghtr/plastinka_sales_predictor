@@ -5,7 +5,6 @@ import json
 import pickle
 from pathlib import Path
 from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset, MultiColumnLabelBinarizer, GlobalLogMinMaxScaler
-from tests.plastinka_sales_predictor.data_preparation.test_utils import compare_numeric_columns, compare_categorical_columns
 from darts import TimeSeries
 
 # Define path to example data
@@ -372,7 +371,7 @@ def test_dataset_values_full_comparison(save_expected=False):
     output_chunk_length = 3
     default_past_covariates_span = 3
     default_minimum_sales_months = 1
-    aligned_static_features = ['Тип', 'Конверт', 'Стиль', 'Ценовая категория']
+    aligned_static_features = ['release_type', 'cover_type', 'style', 'price_category']
 
     dataset = PlastinkaTrainingTSDataset(
         stock_features=stock_features,
@@ -383,7 +382,7 @@ def test_dataset_values_full_comparison(save_expected=False):
         input_chunk_length=input_chunk_length, # Aligned
         output_chunk_length=output_chunk_length, # Aligned
         past_covariates_span=default_past_covariates_span, # Aligned
-        past_covariates_fnames=['Тип','Конверт','Стиль','Ценовая категория'], # Matches default
+        past_covariates_fnames=aligned_static_features, # Matches default
         minimum_sales_months=default_minimum_sales_months # Aligned
     )
     

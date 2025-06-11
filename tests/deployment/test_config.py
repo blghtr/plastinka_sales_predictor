@@ -3,6 +3,32 @@ import unittest
 from unittest import mock
 import tempfile
 import json
+import sys
+from unittest.mock import patch, MagicMock
+
+# Create a mock module for retry_monitor
+mock_retry_monitor_module = MagicMock()
+mock_retry_monitor_module.get_retry_statistics = MagicMock(return_value={
+    "total_retries": 0, 
+    "successful_retries": 0, 
+    "exhausted_retries": 0, 
+    "successful_after_retry": 0,
+    "high_failure_operations": [], 
+    "operation_stats": {},
+    "exception_stats": {}, 
+    "timestamp": "2021-01-01T00:00:00"
+})
+mock_retry_monitor_module.reset_retry_statistics = MagicMock()
+mock_retry_monitor_module.record_retry = MagicMock()
+mock_retry_monitor_module.retry_monitor = MagicMock()
+mock_retry_monitor_module.RetryMonitor = MagicMock()
+
+# Store the original module if it exists
+original_retry_monitor = sys.modules.get('deployment.app.utils.retry_monitor')
+
+# Replace the module in sys.modules
+sys.modules['deployment.app.utils.retry_monitor'] = mock_retry_monitor_module
+
 from deployment.app.config import (
     load_config_file, 
     get_config_values, 
@@ -60,10 +86,6 @@ class TestConfigModule(unittest.TestCase):
         os.environ['DATASPHERE_PROJECT_ID'] = 'test-project-id'
         os.environ['DATASPHERE_FOLDER_ID'] = 'test-folder-id'
         os.environ['DATASPHERE_OAUTH_TOKEN'] = 'test-token'
-        # Corrected environment variable name for job_config_path
-        os.environ['DATASPHERE_TRAIN_JOB_JOB_CONFIG_PATH'] = 'test/job_config.yaml'
-        os.environ['DATASPHERE_TRAIN_JOB_OUTPUT_DIR'] = 'test/output'
-        os.environ['DATASPHERE_TRAIN_JOB_INPUT_DIR'] = 'test/input'
         
         # Initialize settings from environment variables
         settings = DataSphereSettings()
@@ -72,10 +94,8 @@ class TestConfigModule(unittest.TestCase):
         self.assertEqual(settings.project_id, 'test-project-id')
         self.assertEqual(settings.folder_id, 'test-folder-id')
         self.assertEqual(settings.oauth_token, 'test-token')
-        # Check nested settings from env vars
-        self.assertEqual(settings.train_job.job_config_path, 'test/job_config.yaml')
-        self.assertEqual(settings.train_job.input_dir, 'test/input')
-        self.assertEqual(settings.train_job.output_dir, 'test/output')
+        # Check nested settings from env vars (only timeout setting remains)
+        self.assertEqual(settings.train_job.wheel_build_timeout_seconds, 300)
         
         # Test client property
         client_config = settings.client
@@ -96,10 +116,10 @@ class TestConfigModule(unittest.TestCase):
         self.assertEqual(settings.datasphere.project_id, 'test-project-id')
         self.assertEqual(settings.datasphere.folder_id, 'test-folder-id')
         
-        # Test default nested values
-        self.assertIsNone(settings.datasphere.train_job.job_config_path) # Default is None
-        self.assertEqual(settings.datasphere.train_job.input_dir, 'deployment/data/datasphere_input')
-        self.assertEqual(settings.datasphere.train_job.output_dir, 'deployment/data/datasphere_output')
+        # Test computed properties for DataSphere paths
+        self.assertTrue(settings.datasphere_input_dir.endswith('datasphere_input'))
+        self.assertTrue(settings.datasphere_output_dir.endswith('datasphere_output'))
+        self.assertTrue(settings.datasphere_job_config_path.endswith('config.yaml'))
 
     def test_api_settings_precedence(self):
         """Test APISettings loading precedence: init > file > env > .env > default."""
@@ -179,49 +199,50 @@ class TestConfigModule(unittest.TestCase):
 
     def test_database_settings_precedence(self):
         """Test DatabaseSettings loading precedence: init > file > env > .env > default."""
-        default_path = "deployment/data/plastinka.db" # Default for db.path
+        # Database path is now computed from AppSettings, test filename only
+        default_filename = "plastinka.db" # Default for db.filename
 
         # 1. Test Default
         get_config_values.cache_clear()
         settings = DatabaseSettings()
-        self.assertEqual(settings.path, default_path)
+        self.assertEqual(settings.filename, default_filename)
 
         # 2. Test .env file only
         get_config_values.cache_clear()
-        self._create_temp_env_file("DB_PATH=dotenv_db_path")
+        self._create_temp_env_file("DB_FILENAME=dotenv_db_filename")
         settings = DatabaseSettings()
-        self.assertEqual(settings.path, "dotenv_db_path")
+        self.assertEqual(settings.filename, "dotenv_db_filename")
         os.remove(os.path.join(self.temp_dir.name, ".env"))
 
         # 3. Test Environment variable only
         get_config_values.cache_clear()
-        os.environ['DB_PATH'] = 'env_db_path'
+        os.environ['DB_FILENAME'] = 'env_db_filename'
         settings = DatabaseSettings()
-        self.assertEqual(settings.path, "env_db_path")
-        del os.environ['DB_PATH']
+        self.assertEqual(settings.filename, "env_db_filename")
+        del os.environ['DB_FILENAME']
 
         # 4. Test Config file only
         get_config_values.cache_clear()
-        with mock.patch.object(DatabaseSettings, '_config_loader_func', return_value={"path": "file_db_path"}):
+        with mock.patch.object(DatabaseSettings, '_config_loader_func', return_value={"filename": "file_db_filename"}):
             settings = DatabaseSettings()
-            self.assertEqual(settings.path, "file_db_path")
+            self.assertEqual(settings.filename, "file_db_filename")
 
         # 5. Test Env Var vs Config File (Config File should win)
         get_config_values.cache_clear()
-        os.environ['DB_PATH'] = 'env_db_path_conflict'
-        with mock.patch.object(DatabaseSettings, '_config_loader_func', return_value={"path": "file_db_path_wins"}):
+        os.environ['DB_FILENAME'] = 'env_db_filename_conflict'
+        with mock.patch.object(DatabaseSettings, '_config_loader_func', return_value={"filename": "file_db_filename_wins"}):
             settings = DatabaseSettings()
-            self.assertEqual(settings.path, "file_db_path_wins")
-        del os.environ['DB_PATH']
+            self.assertEqual(settings.filename, "file_db_filename_wins")
+        del os.environ['DB_FILENAME']
 
         # 6. Test Init Kwarg (Init Kwarg should win over all)
         get_config_values.cache_clear()
-        self._create_temp_env_file("DB_PATH=dotenv_db_init")
-        os.environ['DB_PATH'] = 'env_db_init'
-        with mock.patch.object(DatabaseSettings, '_config_loader_func', return_value={"path": "file_db_init"}):
-            settings = DatabaseSettings(path="init_db_path_wins")
-            self.assertEqual(settings.path, "init_db_path_wins")
-        del os.environ['DB_PATH']
+        self._create_temp_env_file("DB_FILENAME=dotenv_db_init")
+        os.environ['DB_FILENAME'] = 'env_db_init'
+        with mock.patch.object(DatabaseSettings, '_config_loader_func', return_value={"filename": "file_db_init"}):
+            settings = DatabaseSettings(filename="init_db_filename_wins")
+            self.assertEqual(settings.filename, "init_db_filename_wins")
+        del os.environ['DB_FILENAME']
         os.remove(os.path.join(self.temp_dir.name, ".env"))
 
 
@@ -249,13 +270,20 @@ class TestDataSphereSettings(unittest.TestCase):
         self.assertEqual(settings.folder_id, "")
         self.assertIsNone(settings.oauth_token)
         self.assertIsNone(settings.yc_profile)
-        # Check nested train_job settings
-        self.assertIsNone(settings.train_job.job_config_path) # Check renamed field
-        self.assertEqual(settings.train_job.input_dir, 'deployment/data/datasphere_input')
-        # Check new nested output dir default
-        self.assertEqual(settings.train_job.output_dir, 'deployment/data/datasphere_output')
+        # Check nested train_job settings (only timeout remains)
+        self.assertEqual(settings.train_job.wheel_build_timeout_seconds, 300)
         self.assertEqual(settings.max_polls, 120)
         self.assertEqual(settings.poll_interval, 5.0)
+
+# Stop patches at the end of the file
+def tearDownModule():
+    # Restore the original retry_monitor module if it existed
+    if original_retry_monitor:
+        sys.modules['deployment.app.utils.retry_monitor'] = original_retry_monitor
+    else:
+        # If there was no original module, remove our mock
+        if 'deployment.app.utils.retry_monitor' in sys.modules:
+            del sys.modules['deployment.app.utils.retry_monitor']
 
 if __name__ == '__main__':
     unittest.main() 

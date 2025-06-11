@@ -229,12 +229,36 @@ class SQLFeatureStore:
     def load_features(
             self, 
             start_date: Optional[str] = None, 
-            end_date: Optional[str] = None
+            end_date: Optional[str] = None,
+            feature_types: Optional[List[str]] = None
     ) -> Dict[str, pd.DataFrame]:
-        """Load all features from SQL database with optional date range filtering"""
+        """
+        Load features from SQL database with optional date range filtering and feature type selection
+        
+        Args:
+            start_date: Optional start date for filtering data
+            end_date: Optional end date for filtering data
+            feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
+                          If None, all available features will be loaded
+        
+        Returns:
+            Dictionary of loaded features
+        """
         features = {}
         
-        for feature_type in self._get_feature_config().keys():
+        # Determine which feature types to load
+        if feature_types:
+            # Filter to only the requested feature types that exist in config
+            available_types = self._get_feature_config().keys()
+            types_to_load = [ft for ft in feature_types if ft in available_types]
+            if len(types_to_load) < len(feature_types):
+                unknown_types = set(feature_types) - set(types_to_load)
+                logger.warning(f"Unknown feature type(s) requested: {unknown_types}")
+        else:
+            # Load all available feature types
+            types_to_load = self._get_feature_config().keys()
+        
+        for feature_type in types_to_load:
             df = self._load_feature(feature_type, start_date, end_date)
             if df is not None and not df.empty:
                 features[feature_type] = df
@@ -345,12 +369,12 @@ class SQLFeatureStore:
             # Stack to get MultiIndex format
             stacked_df = pivot_df.stack().reset_index()
             column_name = feature_type  # 'sales' or 'change'
-            stacked_df.rename(columns={0: column_name, 'level_0': 'full_index', 'level_1': 'data_date'}, inplace=True)
+            stacked_df.rename(columns={0: column_name, 'data_date': '_date'}, inplace=True)
             
             # Create the final MultiIndex (date, barcode, artist, ...)
             final_index = pd.MultiIndex.from_tuples(
-                [(row['data_date'], *row['full_index']) for _, row in stacked_df.iterrows()],
-                names=['date'] + list(full_index.names)
+                [(row['_date'], *row['full_index']) for _, row in stacked_df.iterrows()],
+                names=['_date'] + list(full_index.names)
             )
             
             result_df = pd.DataFrame({column_name: stacked_df[column_name].values}, index=final_index)
@@ -402,7 +426,21 @@ def save_features(features: Dict[str, pd.DataFrame],
 def load_features(store_type: str = 'sql',
                   start_date: Optional[str] = None,
                   end_date: Optional[str] = None,
+                  feature_types: Optional[List[str]] = None,
                   **kwargs) -> Dict[str, pd.DataFrame]:
-    """Helper function to load features using a specific store type"""
+    """
+    Helper function to load features using a specific store type
+    
+    Args:
+        store_type: Type of feature store to use (default: 'sql')
+        start_date: Optional start date for filtering data
+        end_date: Optional end date for filtering data
+        feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
+                      If None, all available features will be loaded
+        **kwargs: Additional arguments to pass to the feature store
+    
+    Returns:
+        Dictionary of loaded features
+    """
     store = FeatureStoreFactory.get_store(store_type=store_type, **kwargs)
-    return store.load_features(start_date=start_date, end_date=end_date)
+    return store.load_features(start_date=start_date, end_date=end_date, feature_types=feature_types)

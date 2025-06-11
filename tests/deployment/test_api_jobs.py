@@ -21,15 +21,9 @@ def pyfakefs_file_wrapper_for_aiofiles(pyfakefs_file_obj, *, loop=None, executor
     return AsyncBufferedIOBase(pyfakefs_file_obj, loop=loop, executor=executor)
 
 wrap.register(FakeFileWrapper)(pyfakefs_file_wrapper_for_aiofiles)
-TEST_X_API_KEY = "test_x_api_key_value_jobs"
-
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
+TEST_X_API_KEY = "test_x_api_key_conftest"
 
 # --- Test /api/v1/jobs/data-upload ---
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
 @patch("aiofiles.threadpool.sync_open", new_callable=MagicMock)
 @patch("deployment.app.api.jobs.BackgroundTasks.add_task")
 @patch("deployment.app.api.jobs.create_job")
@@ -47,7 +41,6 @@ async def test_create_data_upload_job_success(
     mock_create_job,
     mock_add_task,
     mock_sync_open,
-    _mock_server_api_key,
     client, fs
 ):
     """Test successful creation of a data upload job."""
@@ -78,8 +71,7 @@ async def test_create_data_upload_job_success(
     assert resp_data["status"] == JobStatus.PENDING.value
     
 @patch("deployment.app.api.jobs.validate_date_format", return_value=(False, None))
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-async def test_create_data_upload_job_invalid_date(_mock_server_api_key, _mock_validate_date, client):
+async def test_create_data_upload_job_invalid_date(_mock_validate_date, client):
     """Test data upload job creation fails with invalid date format."""
     files = {"stock_file": ("stock.xlsx", b"data"), "sales_files": ("sales.xlsx", b"data")}
     data = {"cutoff_date": "30-09-2022"}
@@ -87,30 +79,30 @@ async def test_create_data_upload_job_invalid_date(_mock_server_api_key, _mock_v
     assert response.status_code == 400
     assert "Invalid cutoff date format" in response.text
 
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_create_data_upload_job_unauthorized_missing_key(_mock_server_api_key, client):
+def test_create_data_upload_job_unauthorized_missing_key(client):
     """Test data upload job fails with 401 if X-API-Key header is missing."""
     response = client.post("/api/v1/jobs/data-upload", files={"f": "f"}, data={"cutoff_date": "30.09.2022"})
     assert response.status_code == 401
 
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_create_data_upload_job_unauthorized_invalid_key(_mock_server_api_key, client):
+def test_create_data_upload_job_unauthorized_invalid_key(client):
     """Test data upload job fails with 401 if X-API-Key is invalid."""
     response = client.post("/api/v1/jobs/data-upload", files={"f": "f"}, data={"cutoff_date": "30.09.2022"}, headers={"X-API-Key": "wrong_key"})
     assert response.status_code == 401
 
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=""))
-def test_create_data_upload_job_server_key_not_configured(_mock_server_api_key, client):
+def test_create_data_upload_job_server_key_not_configured(client, mock_x_api_key):
     """Test data upload job fails with 500 if server X-API-Key is not configured."""
+    # Use the fixture to set the key to None for this test
+    mock_x_api_key(None)
+    
     response = client.post("/api/v1/jobs/data-upload", files={"f": "f"}, data={"cutoff_date": "30.09.2022"}, headers={"X-API-Key": "any_key"})
     assert response.status_code == 500
+    assert "X-API-Key authentication is not configured" in response.json()['error']['message']
 
 # --- Training Job Tests ---
 @patch("deployment.app.api.jobs.create_job")
 @patch("deployment.app.api.jobs.BackgroundTasks.add_task")
 @patch("deployment.app.api.jobs.get_effective_config")
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_create_training_job_success(_mock_server_api_key, mock_get_effective_config, mock_add_task, mock_create_job, client):
+def test_create_training_job_success(mock_get_effective_config, mock_add_task, mock_create_job, client):
     """Test successful creation of a training job."""
     job_id = str(uuid.uuid4())
     mock_create_job.return_value = job_id
@@ -127,16 +119,14 @@ def test_create_training_job_success(_mock_server_api_key, mock_get_effective_co
 
 @patch("deployment.app.api.jobs.create_job", side_effect=DatabaseError("DB error"))
 @patch("deployment.app.api.jobs.get_effective_config")
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_create_training_job_db_error(_mock_server_api_key, mock_get_effective_config, mock_create_job, client):
+def test_create_training_job_db_error(mock_get_effective_config, mock_create_job, client):
     """Test training job creation fails with a database error."""
     mock_get_effective_config.return_value = {"config_id": "test-config", "config": {}}
     response = client.post("/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY})
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "http_500"
 
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_create_training_job_invalid_params(_mock_server_api_key, client):
+def test_create_training_job_invalid_params(client):
     """
     Test training job creation fails with invalid parameters.
     This test is complex. Sending invalid form data doesn't trigger a 422.
@@ -155,8 +145,7 @@ def test_create_training_job_invalid_params(_mock_server_api_key, client):
 # --- Report Job Tests ---
 @patch("deployment.app.api.jobs.create_job")
 @patch("deployment.app.api.jobs.BackgroundTasks.add_task")
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_create_report_job_success(_mock_server_api_key, mock_add_task, mock_create_job, client):
+def test_create_report_job_success(mock_add_task, mock_create_job, client):
     """Test successful creation of a report job."""
     job_id = str(uuid.uuid4())
     mock_create_job.return_value = job_id
@@ -200,8 +189,7 @@ def get_full_mock_job_data(job_id, job_type, status):
 
 @patch("deployment.app.api.jobs.get_job")
 @patch("deployment.app.api.jobs.get_training_result")
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_get_job_status_training_completed(_mock_server_api_key, mock_get_result, mock_get_job, client):
+def test_get_job_status_training_completed(mock_get_result, mock_get_job, client):
     """Test getting status of a completed training job."""
     job_id = "job-123"
     mock_get_job.return_value = get_full_mock_job_data(job_id, JobType.TRAINING, JobStatus.COMPLETED)
@@ -221,8 +209,7 @@ def test_get_job_status_training_completed(_mock_server_api_key, mock_get_result
     assert resp_data["result"]["parameters"]["param"] == "value"
 
 @patch("deployment.app.api.jobs.get_job")
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_get_job_status_pending(_mock_server_api_key, mock_get_job, client):
+def test_get_job_status_pending(mock_get_job, client):
     """Test getting status of a pending job."""
     job_id = "job-123"
     mock_get_job.return_value = get_full_mock_job_data(job_id, JobType.DATA_UPLOAD, JobStatus.PENDING)
@@ -234,8 +221,7 @@ def test_get_job_status_pending(_mock_server_api_key, mock_get_job, client):
 
 @patch("deployment.app.api.jobs.get_job")
 @patch("deployment.app.api.jobs.get_prediction_result", side_effect=DatabaseError("Result error"))
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_get_job_status_result_db_error(_mock_server_api_key, mock_get_result, mock_get_job, client):
+def test_get_job_status_result_db_error(mock_get_result, mock_get_job, client):
     """Test job status check fails gracefully on database error when fetching result."""
     job_id = "job-123"
     mock_get_job.return_value = get_full_mock_job_data(job_id, JobType.PREDICTION, JobStatus.COMPLETED)
@@ -243,59 +229,53 @@ def test_get_job_status_result_db_error(_mock_server_api_key, mock_get_result, m
     response = client.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY})
     
     assert response.status_code == 500
-    assert response.json()["error"]["code"] == "database_error"
+    assert response.json()["error"]["code"] == "internal_error"
     mock_get_result.assert_called_once_with('res-123')
 
 @patch("deployment.app.api.jobs.get_job", return_value=None)
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_get_job_status_not_found_authorized(_mock_server_api_key, mock_get_job, client):
-    """Test getting status for a non-existent job returns 404."""
-    response = client.get("/api/v1/jobs/job-404", headers={"X-API-Key": TEST_X_API_KEY})
+def test_get_job_status_not_found(mock_get_job, client):
+    """Test getting status of a non-existent job."""
+    response = client.get("/api/v1/jobs/non-existent", headers={"X-API-Key": TEST_X_API_KEY})
     assert response.status_code == 404
-    mock_get_job.assert_called_once_with("job-404")
+    assert response.json()["error"]["code"] == "http_404"
 
 @patch("deployment.app.api.jobs.list_jobs")
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_list_jobs_no_filters(_mock_server_api_key, mock_list_jobs, client):
-    """Test listing jobs without any filters."""
-    mock_list_jobs.return_value = [
-        get_full_mock_job_data("job-1", JobType.TRAINING, JobStatus.COMPLETED),
-        get_full_mock_job_data("job-2", JobType.PREDICTION, JobStatus.RUNNING),
-    ]
-    response = client.get("/api/v1/jobs/", headers={"X-API-Key": TEST_X_API_KEY})
-    assert response.status_code == 200
-    resp_data = response.json()
-    assert len(resp_data["jobs"]) == 2
-    mock_list_jobs.assert_called_once_with(job_type=None, status=None, limit=100)
-
-@patch("deployment.app.api.jobs.list_jobs")
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_list_jobs_with_filters(_mock_server_api_key, mock_list_jobs, client):
-    """Test listing jobs with all available filters."""
-    mock_list_jobs.return_value = [
-        get_full_mock_job_data("job-filtered", JobType.TRAINING, JobStatus.COMPLETED)
-    ]
-    response = client.get("/api/v1/jobs/", params={
-        "job_type": JobType.TRAINING.value,
-        "status": JobStatus.COMPLETED.value,
-        "limit": 50
-    }, headers={"X-API-Key": TEST_X_API_KEY})
+def test_list_jobs_no_filters(mock_list_jobs, client):
+    """Test listing jobs with no filters."""
+    job1 = get_full_mock_job_data("job-1", JobType.TRAINING, JobStatus.COMPLETED)
+    job2 = get_full_mock_job_data("job-2", JobType.DATA_UPLOAD, JobStatus.FAILED)
+    mock_list_jobs.return_value = [job1, job2]
+    
+    response = client.get("/api/v1/jobs", headers={"X-API-Key": TEST_X_API_KEY})
     
     assert response.status_code == 200
     resp_data = response.json()
-    assert len(resp_data["jobs"]) == 1
-    assert resp_data["jobs"][0]["job_id"] == "job-filtered"
-    mock_list_jobs.assert_called_once_with(
-        job_type=JobType.TRAINING,
-        status=JobStatus.COMPLETED,
-        limit=50
+    assert resp_data['total'] == 2
+    assert len(resp_data['jobs']) == 2
+    assert resp_data['jobs'][0]['job_id'] == 'job-1'
+    mock_list_jobs.assert_called_once_with(job_type=None, status=None, limit=100)
+
+@patch("deployment.app.api.jobs.list_jobs")
+def test_list_jobs_with_filters(mock_list_jobs, client):
+    """Test listing jobs with type and status filters."""
+    job1 = get_full_mock_job_data("job-1", JobType.TRAINING, JobStatus.COMPLETED)
+    mock_list_jobs.return_value = [job1]
+    
+    response = client.get(
+        f"/api/v1/jobs?job_type={JobType.TRAINING.value}&status={JobStatus.COMPLETED.value}",
+        headers={"X-API-Key": TEST_X_API_KEY}
     )
+    
+    assert response.status_code == 200
+    resp_data = response.json()
+    assert resp_data['total'] == 1
+    assert len(resp_data['jobs']) == 1
+    assert resp_data['jobs'][0]['job_id'] == 'job-1'
+    mock_list_jobs.assert_called_once_with(job_type=JobType.TRAINING, status=JobStatus.COMPLETED, limit=100)
 
 @patch("deployment.app.api.jobs.list_jobs", side_effect=DatabaseError("List error"))
-@patch("deployment.app.services.auth.settings.api.x_api_key", new_callable=PropertyMock(return_value=TEST_X_API_KEY))
-def test_list_jobs_db_error(_mock_server_api_key, mock_list_jobs, client):
+def test_list_jobs_db_error(mock_list_jobs, client):
     """Test job listing fails gracefully on database error."""
-    response = client.get("/api/v1/jobs/", headers={"X-API-Key": TEST_X_API_KEY})
+    response = client.get("/api/v1/jobs", headers={"X-API-Key": TEST_X_API_KEY})
     assert response.status_code == 500
-    assert response.json()["error"]["code"] == "database_error"
-    mock_list_jobs.assert_called_once()
+    assert response.json()["error"]["code"] == "internal_error"

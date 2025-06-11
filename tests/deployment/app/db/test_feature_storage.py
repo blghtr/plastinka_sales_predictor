@@ -509,7 +509,7 @@ def test_load_sales_feature(feature_store_env):
         # Reconstruct expected index for comparison
         expected_index = pd.MultiIndex.from_tuples([
              (date1, *idx_tuple), (date2, *idx_tuple)
-        ], names=['date'] + list(temp_multi_idx.names))
+        ], names=['_date'] + list(temp_multi_idx.names))
         
         pd.testing.assert_index_equal(loaded_df.index, expected_index)
         assert loaded_df.loc[(date1, *idx_tuple), 'sales'] == 10.0
@@ -546,7 +546,7 @@ def test_load_change_feature(feature_store_env):
         
         expected_index = pd.MultiIndex.from_tuples([
              (date1, *idx_tuple), (date2, *idx_tuple)
-        ], names=['date'] + list(temp_multi_idx.names))
+        ], names=['_date'] + list(temp_multi_idx.names))
         
         pd.testing.assert_index_equal(loaded_df.index, expected_index)
         assert loaded_df.loc[(date1, *idx_tuple), 'change'] == -5.0
@@ -692,5 +692,5 @@ def test_load_features_helper_creates_store_and_calls_load(mock_sql_store_class,
 
     # SQLFeatureStore is instantiated with run_id=None by factory
     mock_sql_store_class.assert_called_once_with(run_id=None, connection=conn_param)
-    mock_store_instance.load_features.assert_called_once_with(start_date=start, end_date=end)
+    mock_store_instance.load_features.assert_called_once_with(start_date=start, end_date=end, feature_types=None)
     assert result == expected_df_dict
