@@ -59,7 +59,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             start: int = 0,
             end: Optional[int] = None,
             past_covariates_fnames: Sequence[str] = (
-                'Тип', 'Конверт', 'Стиль', 'Ценовая категория'
+                'release_type', 'cover_type', 'style', 'price_category'
             ),
             past_covariates_span: int = 3,
             save_dir: Optional[str] = None, dataset_name: Optional[str] = None,
@@ -165,9 +165,12 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
 
     def save(
             self,
-            save_dir: Union[str, Path], 
+            save_dir: Optional[Union[str, Path]] = None, 
             dataset_name: Optional[str] = None
     ):
+        if save_dir is None:
+            save_dir = self.save_dir
+
         if dataset_name is None:
             if not self.dataset_name:
                 dataset_name = self.__class__.__name__
@@ -179,6 +182,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
 
         with open(save_dir / f'{dataset_name}.dill', 'wb') as f:
             dill.dump(self, f)
+        
 
     def prepare_past_covariates(self, span=None):
         if span is not None:
@@ -251,7 +255,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
     def get_past_covariates(self, item_multiidx):
         past_covariates = []
         release_year = item_multiidx[
-            self._index_names_mapping['Год записи']
+            self._index_names_mapping['recording_decade']
         ]
         for feat_name in self._past_covariates_cached:
             feat_vals = item_multiidx[
@@ -613,6 +617,7 @@ class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
         self.encoders = {}
 
     def fit(self, X, y=None):
+        X = self.validate_data(X)
         for column in X.columns:
             mlb = MultiLabelBinarizer(sparse_output=True)
             mlb.fit(X[column].str.split(self.separator).map(lambda x: list(map(lambda y: y.strip(), x))))
@@ -621,10 +626,14 @@ class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, index=None):
+        X = self.validate_data(X)
         idx = list(X.columns)
         transformed_columns = []
         for column in idx:
-            binarized = self.encoders[column].transform(
+            encoder = self.encoders.get(column, None)
+            if encoder is None:
+                continue
+            binarized = encoder.transform(
                 X[column].str.split(self.separator).map(lambda x: list(map(lambda y: y.strip(), x)))
             )
             binarized_df = pd.DataFrame.sparse.from_spmatrix(
@@ -644,6 +653,10 @@ class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
     def is_fit(self):
         return len(self.encoders) > 0
 
+    def validate_data(self, X):
+        if not isinstance(X, pd.DataFrame):
+            raise ValueError("Input should be a pandas DataFrame.")
+        return X.astype(str, copy=True)
 
 class OrdinalEncoder(OrdinalEncoder):
     def __init__(self):
@@ -1249,14 +1262,14 @@ def get_past_covariates_df(
 
     pc_df = masked_data.reset_index(
         [i for i in masked_data.index.names if i not in [
-            *feature_list, 'Год записи'
+            *feature_list, 'recording_decade'
             ]
         ],
         drop=True
     )
     pc_df = pc_df.reset_index()
 
-    grouped = pc_df.groupby([*feature_list, 'Год записи'])
+    grouped = pc_df.groupby([*feature_list, 'recording_decade'])
 
     pc_df_ema = grouped.apply(
         lambda x: x.iloc[:, 2:].mean(axis=0).ewm(
@@ -1276,9 +1289,3 @@ def get_past_covariates_df(
     pc_df_emv = pc_df_emv.set_index('aggregation', append=True)
 
     return pd.concat([pc_df_ema, pc_df_emv], axis=0).T
-
-
-
-
-
-
