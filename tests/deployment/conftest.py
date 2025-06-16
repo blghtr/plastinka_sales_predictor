@@ -84,10 +84,9 @@ def isolated_db_session(monkeypatch):
     Provides a completely isolated database session for a single test.
 
     - Creates a temporary database file.
-    - Sets the DATABASE_URL environment variable to point to this file.
-    - Ensures that the application's config and database modules are reloaded
-      to use this new database.
-    - Cleans up the temporary database file and directory afterward.
+    - Uses monkeypatch to safely set environment variables (auto-cleanup)
+    - Initializes database schema for the isolated database
+    - REMOVED: Dangerous global module deletion that causes test pollution
     
     Yields:
         str: The file path to the temporary database.
@@ -96,16 +95,14 @@ def isolated_db_session(monkeypatch):
     try:
         db_path = Path(temp_dir) / "test_isolated.db"
         
-        # Ensure modules are gone before we start
-        if "deployment.app.config" in sys.modules:
-            del sys.modules["deployment.app.config"]
-        if "deployment.app.db.database" in sys.modules:
-            del sys.modules["deployment.app.db.database"]
-
+        # CRITICAL FIX: DO NOT delete modules from sys.modules!
+        # This was causing massive state pollution affecting other tests.
+        # monkeypatch automatically handles environment variable cleanup.
+        
+        # Set environment variable for this test only (monkeypatch auto-cleans)
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
-        # Import fresh modules that will use the monkeypatched env var
-        from deployment.app.config import settings
+        # Import modules (don't force reload - let them use current environment)
         from deployment.app.db.schema import init_db
         from deployment.app.db.database import dict_factory
 
@@ -130,7 +127,7 @@ def isolated_db_session(monkeypatch):
         gc.collect()
         # Use shutil.rmtree with ignore_errors=True for robust cleanup
         shutil.rmtree(temp_dir, ignore_errors=True)
-
+        # monkeypatch automatically restores environment variables
 
 @pytest.fixture(scope="function")
 def temp_db():
@@ -290,26 +287,11 @@ def client(
         finally:
             conn_for_schema_init.close()
 
-        # 3. Ensure a fresh import of app and settings by deleting from sys.modules.
-        # This will force modules to be reloaded from scratch, picking up new env vars.
-        if 'deployment.app.main' in sys.modules:
-            del sys.modules['deployment.app.main']
-        if 'deployment.app.config' in sys.modules:
-            del sys.modules['deployment.app.config']
-        if 'deployment.app.services.auth' in sys.modules:
-            del sys.modules['deployment.app.services.auth']
-        if 'deployment.app.api.health' in sys.modules:
-            del sys.modules['deployment.app.api.health']
-        if 'deployment.app.api.jobs' in sys.modules:
-            del sys.modules['deployment.app.api.jobs']
-        if 'deployment.app.api.models_configs' in sys.modules:
-            del sys.modules['deployment.app.api.models_configs']
-        if 'deployment.app.api.admin' in sys.modules:
-            del sys.modules['deployment.app.api.admin']
-        if 'deployment.app.utils.error_handling' in sys.modules:
-            del sys.modules['deployment.app.utils.error_handling']
-
-        print("[DEBUG conftest] All relevant modules deleted from sys.modules.")
+        # 3. SAFE APPROACH: Instead of deleting modules from sys.modules (which causes global state pollution),
+        # we'll work with the existing modules and update their settings objects directly.
+        # This follows the Testing Policy guidelines for safe test isolation.
+        
+        print("[DEBUG conftest] Using safe module reinitialization approach (no sys.modules deletion).")
         sys.stdout.flush()
 
         # Now, import config and immediately update its global 'settings' instance
@@ -406,11 +388,15 @@ def client(
         # Add override for get_current_api_key_validated
         app.dependency_overrides[get_current_api_key_validated] = mock_get_current_api_key_validated_override
 
-        # The data_retention functions are now patched at the source, so we don't need these overrides.
-        # app.dependency_overrides[run_cleanup_job] = mock_run_cleanup_job_fixture
-        # app.dependency_overrides[cleanup_old_predictions] = mock_cleanup_old_predictions_fixture
-        # app.dependency_overrides[cleanup_old_historical_data] = mock_cleanup_old_historical_data_fixture
-        # app.dependency_overrides[cleanup_old_models] = mock_cleanup_old_models_fixture
+        # Import the admin module to patch the function references there
+        from deployment.app.api import admin
+        
+        # Patch the functions where they are imported and used (in admin module)
+        # This ensures the lambda dependencies get the mocked versions
+        admin.run_cleanup_job = mock_run_cleanup_job_fixture
+        admin.cleanup_old_predictions = mock_cleanup_old_predictions_fixture
+        admin.cleanup_old_historical_data = mock_cleanup_old_historical_data_fixture
+        admin.cleanup_old_models = mock_cleanup_old_models_fixture
         
         # We still need to override the get_db_conn_and_close dependency in the admin router
         app.dependency_overrides[get_db_conn_and_close] = lambda: mock_db_conn_fixture
@@ -481,11 +467,8 @@ def mock_retry_monitor_global(monkeypatch):
     })
     mock_module.reset_retry_statistics = MagicMock(return_value={})
     
-    # Ensure this mock is always applied before any imports happen
+    # SAFE APPROACH: Use monkeypatch to replace the module instead of deleting from sys.modules
+    # This follows Testing Policy guidelines for safe test isolation
     monkeypatch.setitem(sys.modules, "deployment.app.utils.retry_monitor", mock_module)
-    
-    # Also delete any existing import to force re-import
-    if "deployment.app.utils.retry_monitor" in sys.modules:
-        del sys.modules["deployment.app.utils.retry_monitor"]
         
     yield mock_module

@@ -1,7 +1,6 @@
 """
 API endpoints for working with models and parameter sets.
 """
-import debugpy
 from fastapi import APIRouter, HTTPException, Query, Depends, Body, UploadFile, File, Form
 from typing import Dict, Any, List, Optional
 import logging
@@ -252,9 +251,6 @@ async def upload_config(
     api_key: bool = Depends(get_current_api_key_validated)
 ):
     """Upload (create) a new config."""
-    #debugpy.listen(5678)
-    #debugpy.wait_for_client()
-    #breakpoint()
     from deployment.app.db.database import create_or_get_config
     try:
         config_id = create_or_get_config(request.json_payload, is_active=request.is_active)

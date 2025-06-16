@@ -9,7 +9,6 @@ import logging
 from pathlib import Path
 import aiofiles
 import shutil
-import debugpy
 import traceback
 from deployment.app.models.api_models import (
     JobResponse, JobDetails, JobsList, JobStatus, JobType,
@@ -72,9 +71,6 @@ async def create_data_upload_job(
     
     Returns a job ID that can be used to check the job status.
     """
-    #breakpoint()
-    #debugpy.wait_for_client()
-    #breakpoint()
     job_id = None
     temp_job_dir = None
     try:

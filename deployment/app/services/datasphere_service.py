@@ -172,15 +172,14 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path) -> No
     # Based on prepare_datasets.py, it should produce 'train.dill' and 'val.dill'
     train_data_file = input_dir_path / "train.dill"
     val_data_file = input_dir_path / "val.dill"
-    full_data_file = input_dir_path / "full.dill"
+
     if not train_data_file.is_file() or not val_data_file.is_file():
         missing_datasets = []
         if not train_data_file.is_file():
             missing_datasets.append("train.dill")
         if not val_data_file.is_file():
             missing_datasets.append("val.dill")
-        if not full_data_file.is_file():
-            missing_datasets.append("full.dill")
+
         error_msg = f"Missing required dataset files in input directory '{input_dir_path}' for job {job_id}: {', '.join(missing_datasets)}."
         logger.error(f"[{job_id}] {error_msg}")
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
@@ -246,6 +245,14 @@ async def _archive_input_directory(job_id: str, input_dir: str) -> str:
         with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for file_path in input_dir_path.rglob('*'):
                 if not file_path.is_file():
+                    continue
+                
+                # Skip the archive file itself to prevent recursive inclusion
+                if file_path.name == archive_name:
+                    continue
+                
+                # Skip DataSphere config file - it's used separately for job submission
+                if file_path.name == "datasphere_config.yaml":
                     continue
                 
                 relative_path = file_path.relative_to(input_dir_path)
@@ -1037,35 +1044,74 @@ async def save_model_file_and_db(
     config: TrainingConfig,
     metrics_data: Optional[Dict[str, Any]]
 ) -> str:
-    """Saves the model file reference to the database."""
+    """
+    Saves the model file to permanent storage and creates a database record.
+    
+    Args:
+        job_id: The job ID that produced this model
+        model_path: Path to the temporary model file (downloaded from DataSphere)
+        ds_job_id: DataSphere job ID that produced this model
+        config: Training configuration used
+        metrics_data: Optional metrics data from training
+        
+    Returns:
+        The generated model ID
+        
+    Raises:
+        RuntimeError: If model file cannot be copied or database record cannot be created
+    """
     try:
         # Generate a unique model ID based on the config's model_id (base name)
         model_id = f"{config.model_id}_{uuid.uuid4().hex[:8]}"
         logger.info(f"[{job_id}] Generated new model ID: {model_id}")
 
+        # Verify source model file exists
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Source model file not found: {model_path}")
+        
+        # Create permanent storage path
+        permanent_model_filename = f"{model_id}.onnx"
+        permanent_model_path = os.path.join(settings.models_dir, permanent_model_filename)
+        
+        logger.info(f"[{job_id}] Copying model from temporary location '{model_path}' to permanent storage '{permanent_model_path}'")
+        
+        # Copy model file to permanent storage
+        try:
+            shutil.copy2(model_path, permanent_model_path)
+            logger.info(f"[{job_id}] Model file successfully copied to permanent storage")
+        except Exception as copy_error:
+            raise RuntimeError(f"Failed to copy model file to permanent storage: {copy_error}") from copy_error
+
+        # Verify the copy was successful
+        if not os.path.exists(permanent_model_path):
+            raise RuntimeError(f"Model file copy verification failed - file not found at destination: {permanent_model_path}")
+        
+        # Get file size from the permanent location
+        file_size = os.path.getsize(permanent_model_path)
+        
         # Construct metadata
-        file_size = os.path.getsize(model_path) if os.path.exists(model_path) else 0
         metadata = {
             "file_size_bytes": file_size,
             "downloaded_from_ds_job": ds_job_id,
-            "original_path": model_path,
+            "original_temp_path": model_path,  # Keep reference to original temp path for debugging
+            "permanent_storage_path": permanent_model_path,
             "config_model_id_base": config.model_id, # Store the base name for tracking
             "metrics": metrics_data or {} # Store metrics with the model
         }
         
-        # Create a record in the database
+        # Create a record in the database with the permanent path
         create_model_record(
             model_id=model_id,
             job_id=job_id,
-            model_path=str(model_path),
+            model_path=str(permanent_model_path),  # Save the permanent path
             created_at=datetime.now(),
             metadata=metadata
         )
-        logger.info(f"[{job_id}] Successfully created model record in DB for model_id: {model_id}")
+        logger.info(f"[{job_id}] Successfully created model record in DB for model_id: {model_id} with permanent path: {permanent_model_path}")
         return model_id
 
     except Exception as e:
-        error_msg = f"Failed to save model file record to DB for path {model_path}: {e}"
+        error_msg = f"Failed to save model file and create DB record: {e}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
         # We don't update job status here, the caller should handle it
         raise RuntimeError(error_msg) from e

@@ -9,8 +9,6 @@ import logging
 from contextlib import contextmanager
 import hashlib
 
-import debugpy
-
 # from app.config import settings
 from deployment.app.config import settings # Corrected absolute import
 
@@ -1799,9 +1797,6 @@ def get_effective_config(settings, logger=None, connection=None):
         ValueError: если ни один сет не найден
     """
     logger.debug("[DEBUG] get_effective_config: called")
-    #debugpy.listen(5678)
-    #debugpy.wait_for_client()
-    #breakpoint()
     active_config_data = get_active_config(connection=connection)
     logger.debug(f"[DEBUG] get_effective_config: active_config_data={active_config_data}")
     if active_config_data:

@@ -44,15 +44,17 @@ def cleanup_old_predictions(days_to_keep: Optional[int] = None, conn=None) -> in
     try:
         # Count records to be deleted
         cursor.execute(
-            "SELECT COUNT(*) FROM fact_predictions WHERE prediction_date < ?", 
+            "SELECT COUNT(*) FROM fact_predictions WHERE DATE(prediction_date) < DATE(?)", 
             (cutoff_date_str,)
         )
-        count = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        # Handle both tuple (normal SQLite) and dict (test with dict_factory) result formats
+        count = result[0] if isinstance(result, (tuple, list)) else list(result.values())[0]
         
         if count > 0:
             # Delete old predictions
             cursor.execute(
-                "DELETE FROM fact_predictions WHERE prediction_date < ?", 
+                "DELETE FROM fact_predictions WHERE DATE(prediction_date) < DATE(?)", 
                 (cutoff_date_str,)
             )
             conn.commit()

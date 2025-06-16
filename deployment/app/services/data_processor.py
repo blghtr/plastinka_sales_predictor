@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import List, Dict, Any
 from datetime import datetime
 import shutil
-import debugpy
 import pandas as pd
 from fastapi import UploadFile
 
@@ -15,10 +14,6 @@ from deployment.app.models.api_models import JobStatus
 
 # Import the necessary functions from the original codebase
 from plastinka_sales_predictor.data_preparation import process_data, get_stock_features
-
-#debugpy.listen(5678)
-#debugpy.wait_for_client()
-#breakpoint()
 
 async def process_data_files(
     job_id: str,

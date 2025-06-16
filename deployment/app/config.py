@@ -323,19 +323,19 @@ class DataSphereSettings(BaseSettings):
     """DataSphere specific settings."""
     # Client settings
     project_id: str = Field(
-        default=os.environ.get("DATASPHERE_PROJECT_ID", ""),
+        default_factory=lambda: os.environ.get("DATASPHERE_PROJECT_ID", ""),
         description="ID of the DataSphere project"
     )
     folder_id: str = Field(
-        default=os.environ.get("DATASPHERE_FOLDER_ID", ""),
+        default_factory=lambda: os.environ.get("DATASPHERE_FOLDER_ID", ""),
         description="Yandex Cloud folder ID"
     )
     oauth_token: Optional[str] = Field(
-        default=os.environ.get("DATASPHERE_OAUTH_TOKEN", None),
+        default_factory=lambda: os.environ.get("DATASPHERE_OAUTH_TOKEN", None),
         description="Yandex Cloud OAuth token (optional, uses profile/env if None)",
     )
     yc_profile: Optional[str] = Field(
-        default=os.environ.get("DATASPHERE_YC_PROFILE", None),
+        default_factory=lambda: os.environ.get("DATASPHERE_YC_PROFILE", None),
         description="Yandex Cloud CLI profile name (optional)"
     )
     
@@ -344,17 +344,17 @@ class DataSphereSettings(BaseSettings):
     
     # Polling configuration
     max_polls: int = Field(
-        default=int(os.environ.get("DATASPHERE_MAX_POLLS", 120)),
+        default_factory=lambda: int(os.environ.get("DATASPHERE_MAX_POLLS", 120)),
         description="Maximum number of times to poll DataSphere job status"
     )
     poll_interval: float = Field(
-        default=float(os.environ.get("DATASPHERE_POLL_INTERVAL", 5.0)),
+        default_factory=lambda: float(os.environ.get("DATASPHERE_POLL_INTERVAL", 5.0)),
         description="Interval in seconds between polling DataSphere job status"
     )
 
     # Add the new setting here
     download_diagnostics_on_success: bool = Field(
-        default=os.environ.get("DATASPHERE_DOWNLOAD_DIAGNOSTICS_ON_SUCCESS", "false").lower() == "true",
+        default_factory=lambda: os.environ.get("DATASPHERE_DOWNLOAD_DIAGNOSTICS_ON_SUCCESS", "false").lower() == "true",
         description="Whether to download logs/diagnostics for successful DataSphere jobs"
     )
 
@@ -435,35 +435,35 @@ class DataRetentionSettings(BaseSettings):
     """Data retention specific settings."""
     # Retention periods (in days)
     sales_retention_days: int = Field(
-        default=int(os.environ.get("RETENTION_SALES_DAYS", 730)),  # ~2 years
+        default_factory=lambda: int(os.environ.get("RETENTION_SALES_DAYS", 730)),  # ~2 years
         description="Retention period for sales data in days"
     )
     stock_retention_days: int = Field(
-        default=int(os.environ.get("RETENTION_STOCK_DAYS", 730)),  # ~2 years
+        default_factory=lambda: int(os.environ.get("RETENTION_STOCK_DAYS", 730)),  # ~2 years
         description="Retention period for stock data in days"
     )
     prediction_retention_days: int = Field(
-        default=int(os.environ.get("RETENTION_PREDICTION_DAYS", 365)),  # ~1 year
+        default_factory=lambda: int(os.environ.get("RETENTION_PREDICTION_DAYS", 365)),  # ~1 year
         description="Retention period for prediction data in days"
     )
     
     # Model management
     models_to_keep: int = Field(
-        default=int(os.environ.get("RETENTION_MODELS_TO_KEEP", 5)),
+        default_factory=lambda: int(os.environ.get("RETENTION_MODELS_TO_KEEP", 5)),
         description="Number of models to keep per parameter set"
     )
     inactive_model_retention_days: int = Field(
-        default=int(os.environ.get("RETENTION_INACTIVE_MODEL_DAYS", 90)),  # ~3 months
+        default_factory=lambda: int(os.environ.get("RETENTION_INACTIVE_MODEL_DAYS", 90)),  # ~3 months
         description="Retention period for inactive models in days"
     )
     
     # Execution settings
     cleanup_enabled: bool = Field(
-        default=os.environ.get("RETENTION_CLEANUP_ENABLED", "true").lower() == "true",
+        default_factory=lambda: os.environ.get("RETENTION_CLEANUP_ENABLED", "true").lower() == "true",
         description="Enable automatic data cleanup"
     )
     cleanup_schedule: str = Field(
-        default=os.environ.get("RETENTION_CLEANUP_SCHEDULE", "0 3 * * 0"),  # 3:00 AM every Sunday
+        default_factory=lambda: os.environ.get("RETENTION_CLEANUP_SCHEDULE", "0 3 * * 0"),  # 3:00 AM every Sunday
         description="Cleanup schedule in cron format"
     )
     
@@ -528,11 +528,11 @@ class AppSettings(BaseSettings):
     data_retention: DataRetentionSettings = Field(default_factory=DataRetentionSettings)
     
     env: str = Field(
-        default=os.environ.get("APP_ENV", "development"),
+        default_factory=lambda: os.environ.get("APP_ENV", "development"),
         description="Application environment (development, testing, production)"
     )
     callback_base_url: str = Field(
-        default=os.environ.get("FASTAPI_CALLBACK_BASE_URL", "http://localhost:8000"),
+        default_factory=lambda: os.environ.get("FASTAPI_CALLBACK_BASE_URL", "http://localhost:8000"),
         description="Base URL for cloud function callbacks"
     )
     callback_route: str = Field(
@@ -540,51 +540,51 @@ class AppSettings(BaseSettings):
         description="Route for cloud function callbacks"
     )
     callback_auth_token: str = Field(
-        default=os.environ.get("CLOUD_CALLBACK_AUTH_TOKEN", ""),
+        default_factory=lambda: os.environ.get("CLOUD_CALLBACK_AUTH_TOKEN", ""),
         description="Authentication token for cloud function callbacks"
     )
     max_upload_size: int = Field(
-        default=int(os.environ.get("MAX_UPLOAD_SIZE", 50 * 1024 * 1024)),  # 50 MB default
+        default_factory=lambda: int(os.environ.get("MAX_UPLOAD_SIZE", 50 * 1024 * 1024)),  # 50 MB default
         description="Maximum upload size in bytes"
     )
     temp_upload_dir: str = Field(
-        default=os.environ.get("TEMP_UPLOAD_DIR", "./temp_uploads"),
+        default_factory=lambda: os.environ.get("TEMP_UPLOAD_DIR", "./temp_uploads"),
         description="Directory for temporary file uploads"
     )
     max_models_to_keep: int = Field(
-        default=int(os.environ.get("MAX_MODELS_TO_KEEP", 5)), 
+        default_factory=lambda: int(os.environ.get("MAX_MODELS_TO_KEEP", 5)), 
         description="Maximum number of trained model artifacts to keep locally"
     )
     file_storage_dir: str = Field(
-        default=os.environ.get("FILE_STORAGE_DIR", "./uploads"),
+        default_factory=lambda: os.environ.get("FILE_STORAGE_DIR", "./uploads"),
         description="Base directory for storing uploaded files (models, reports, etc.)"
     )
     
     # Model and parameters selection settings
     default_metric: str = Field(
-        default=os.environ.get("DEFAULT_METRIC", "val_MIC"),
+        default_factory=lambda: os.environ.get("DEFAULT_METRIC", "val_MIC"),
         description="Default metric name to use for selecting best models/parameters"
     )
     default_metric_higher_is_better: bool = Field(
-        default=os.environ.get("DEFAULT_METRIC_HIGHER_IS_BETTER", "true").lower() == "true",
+        default_factory=lambda: os.environ.get("DEFAULT_METRIC_HIGHER_IS_BETTER", "true").lower() == "true",
         description="Whether higher values of the default metric are better"
     )
     auto_select_best_configs: bool = Field(
-        default=os.environ.get("AUTO_SELECT_BEST_PARAMS", "true").lower() == "true",
+        default_factory=lambda: os.environ.get("AUTO_SELECT_BEST_PARAMS", "true").lower() == "true",
         description="Whether to automatically select the best parameter set as active"
     )
     auto_select_best_model: bool = Field(
-        default=os.environ.get("AUTO_SELECT_BEST_MODEL", "true").lower() == "true",
+        default_factory=lambda: os.environ.get("AUTO_SELECT_BEST_MODEL", "true").lower() == "true",
         description="Whether to automatically select the best model as active"
     )
     project_root_dir: str = Field(
-        default=os.environ.get("PROJECT_ROOT_DIR", str(Path(__file__).resolve().parents[2])),
+        default_factory=lambda: os.environ.get("PROJECT_ROOT_DIR", str(Path(__file__).resolve().parents[2])),
         description="Absolute path to the project root directory."
     )
     
     # New smart data directory configuration
     data_root_dir: str = Field(
-        default=os.environ.get("DATA_ROOT_DIR", _get_default_data_root_dir()),
+        default_factory=lambda: os.environ.get("DATA_ROOT_DIR", _get_default_data_root_dir()),
         description="Root directory for all application data, models, logs, etc."
     )
     

@@ -1,5 +1,4 @@
 import sys
-import debugpy
 import pandas as pd
 from datetime import timedelta
 from plastinka_sales_predictor import configure_logger
@@ -115,11 +114,11 @@ def prepare_datasets(raw_features: dict, config: dict, output_dir: str | None = 
             scaler=scaler,
             input_chunk_length=input_chunk_length,
             output_chunk_length=output_chunk_length,
-            save_dir=save_directory,
+            save_dir=None,
             dataset_name='full',
             past_covariates_span=14,
             past_covariates_fnames=DEFAULT_PAST_COVARIATES_FNAMES,
-            minimum_sales_months=2
+            minimum_sales_months=2,
         )
 
         lags = config.lags
@@ -134,7 +133,8 @@ def prepare_datasets(raw_features: dict, config: dict, output_dir: str | None = 
             transformer=static_transformer
         )
         train_dataset.save(
-            dataset_name='train'
+            dataset_name='train',
+            save_dir=save_directory
         )
 
         logger.info('Creating val dataset...')
@@ -146,7 +146,8 @@ def prepare_datasets(raw_features: dict, config: dict, output_dir: str | None = 
             transformer=static_transformer
         )     
         val_dataset.save(
-            dataset_name='val'
+            dataset_name='val',
+            save_dir=save_directory
         )
         logger.info('Datasets created.')
     except Exception as e:
