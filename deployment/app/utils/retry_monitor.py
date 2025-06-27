@@ -13,7 +13,6 @@ import statistics
 
 logger = logging.getLogger(__name__)
 
-logger.debug("DEBUG: Top of retry_monitor.py module execution.")
 
 class RetryMonitor:
     """
@@ -34,7 +33,6 @@ class RetryMonitor:
             persistence_file: Path to file for persisting statistics (None to disable)
             save_interval_seconds: Interval for saving statistics to file
         """
-        logger.debug("[RetryMonitor.__init__] Initializing with persistence_file: %s", persistence_file)
         self._retry_events = []
         self._capacity = capacity
         self._log_interval = log_interval_seconds
@@ -104,9 +102,7 @@ class RetryMonitor:
             'duration_ms': duration_ms
         }
         
-        logger.debug("[RetryMonitor.record_retry] Attempting to acquire lock for recording event.")
         with self._lock:
-            logger.debug("[RetryMonitor.record_retry] Lock acquired for recording event.")
             # Add event to the list, maintaining capacity
             self._retry_events.append(event)
             if len(self._retry_events) > self._capacity:
@@ -203,7 +199,6 @@ class RetryMonitor:
             if self._persistence_file and current_time - self._last_save_time > self._save_interval:
                 self._save_to_file()
                 self._last_save_time = current_time
-            logger.debug("[RetryMonitor.record_retry] Lock released after recording event.")
     
     def set_alert_threshold(self, threshold_name: str, value: Union[int, float]) -> None:
         """
@@ -274,15 +269,12 @@ class RetryMonitor:
     
     def reset_statistics(self) -> None:
         """Reset all statistics."""
-        logger.debug("[RetryMonitor.reset_statistics] Lock acquired for resetting statistics.")
         with self._lock:
             self._reset_stats()
             
             # Save empty statistics if persistence is enabled
             if self._persistence_file:
-                logger.debug("[RetryMonitor.reset_statistics] Saving empty statistics to %s", self._persistence_file)
                 self._save_to_file()
-            logger.debug("[RetryMonitor.reset_statistics] Lock released after resetting statistics.")
     
     def set_persistence_file(self, file_path: Optional[str]) -> None:
         """
@@ -291,19 +283,14 @@ class RetryMonitor:
         Args:
             file_path: Path to file for persisting statistics, or None to disable
         """
-        logger.debug("[RetryMonitor.set_persistence_file] Attempting to acquire lock.")
         with self._lock:
-            logger.debug("[RetryMonitor.set_persistence_file] Lock acquired.")
             self._persistence_file = file_path
             if file_path and os.path.exists(file_path):
-                logger.debug("[RetryMonitor.set_persistence_file] Loading statistics from %s", file_path)
                 self._load_from_file()
             self._last_save_time = time.time()  # Reset save timer
-            logger.debug("[RetryMonitor.set_persistence_file] Lock released.")
     
     def _reset_stats(self) -> None:
         """Reset all statistical counters."""
-        logger.debug("[RetryMonitor._reset_stats] Resetting all statistical counters.")
         self._total_retries = 0
         self._successful_retries = 0
         self._exhausted_retries = 0
@@ -362,11 +349,9 @@ class RetryMonitor:
     def _save_to_file(self) -> None:
         """Save statistics to the persistence file."""
         if not self._persistence_file:
-            logger.debug("[RetryMonitor._save_to_file] Persistence file not set, skipping save.")
             return
             
         try:
-            logger.debug("[RetryMonitor._save_to_file] Attempting to save to %s", self._persistence_file)
             # Get current statistics
             stats = self.get_statistics()
             
@@ -377,18 +362,15 @@ class RetryMonitor:
             with open(self._persistence_file, 'w') as f:
                 json.dump(stats, f, indent=2)
                 
-            logger.debug("[RetryMonitor._save_to_file] Saved retry statistics to %s", self._persistence_file)
         except Exception as e:
             logger.error("[RetryMonitor._save_to_file] Failed to save retry statistics: %s", str(e))
     
     def _load_from_file(self) -> None:
         """Load statistics from the persistence file."""
         if not self._persistence_file or not os.path.exists(self._persistence_file):
-            logger.debug("[RetryMonitor._load_from_file] Persistence file not set or does not exist, skipping load.")
             return
             
         try:
-            logger.debug("[RetryMonitor._load_from_file] Attempting to load from %s", self._persistence_file)
             with open(self._persistence_file, 'r') as f:
                 stats = json.load(f)
             

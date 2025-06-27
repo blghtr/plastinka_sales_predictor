@@ -100,13 +100,10 @@ def check_database() -> ComponentHealth:
     """Check database connection."""
     conn = None # Initialize conn to None
     try:
-        logger.debug("Attempting to connect to database in check_database...")
         conn = sqlite3.connect(settings.database_path)
-        logger.debug(f"Successfully connected to database. Connection ID: {id(conn)}")
         cursor = conn.cursor()
         cursor.execute("SELECT 1")
         cursor.fetchone()
-        logger.debug("Database connection successful.")
         
         # Check if required tables exist
         # These should be the actual critical tables for the application
@@ -146,7 +143,6 @@ def check_database() -> ComponentHealth:
                 details={"missing_tables": missing_tables}
             )
         
-        logger.debug("Database is healthy.")
         return ComponentHealth(status="healthy")
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}", exc_info=True)
@@ -156,9 +152,7 @@ def check_database() -> ComponentHealth:
         )
     finally:
         if conn:
-            logger.debug(f"Closing database connection. Connection ID: {id(conn)}")
             conn.close()
-            logger.debug("Database connection closed.")
 
 @router.get("/", response_model=HealthResponse)
 async def health_check():
@@ -187,7 +181,6 @@ async def health_check():
         overall_status = "degraded"
         # Degraded status still returns 200 OK
     
-    logger.debug("Health check requested")
     
     return JSONResponse(
         status_code=http_status_code,

@@ -33,8 +33,6 @@ async def get_admin_user(
     Raises:
         HTTPException: If the token is missing or invalid
     """
-    logger.debug(f"[get_admin_user] OAuth2 credentials scheme: {credentials.scheme}, credentials: {credentials.credentials}")
-    logger.debug(f"[get_admin_user] settings.api.api_key: {settings.api.api_key}")
     
     if not settings.api.api_key:
         raise HTTPException(
@@ -77,8 +75,6 @@ async def get_current_api_key_validated(api_key: str = Security(api_key_header_s
     Raises:
         HTTPException: If the API key is missing, not configured, or invalid.
     """
-    logger.debug(f"[Auth Service] get_current_api_key_validated called with api_key: {api_key}")
-    logger.debug(f"[Auth Service] settings.api.x_api_key: {settings.api.x_api_key}")
 
     if not settings.api.x_api_key:
         # Log this situation as it's a server misconfiguration if endpoints are protected

@@ -670,7 +670,6 @@ class RetryContext:
             return f"{module_name}.{function_name}"
         
         except Exception as e:
-            logger.debug(f"Error getting caller name: {str(e)}")
             return "unknown_operation"
         finally:
             # Prevent memory leaks by explicitly cleaning up
