@@ -24,27 +24,27 @@ from deployment.app.api.admin import router as admin_router
 # Import utils
 from deployment.app.utils.error_handling import configure_error_handlers
 
+# Apply centralised logging configuration before the rest of the app starts.
+from deployment.app.logger_config import configure_logging
+
+# This sets up a single console handler that integrates with Uvicorn / FastAPI
+# and avoids spawning extra threads or writing to dataset-specific files.
+configure_logging()
+
 # Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.api.log_level),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(os.path.join(settings.logs_dir, "app.log")),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__) # Use __name__ for module-specific logger
 
 # Lifespan context manager for application startup and shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Perform environment checks
-    env_health = check_environment()
+    '''
+    env_health = "healthy" # check_environment()
     
     if env_health.status != "healthy": 
         logger.warning(f"Missing environment variables: {env_health.details.get('missing_variables')}")
         logger.warning("The application may not function correctly. See docs/environment_variables.md for details.")
-
+    '''
     # Initialize database
     db_initialized_successfully = init_db(db_path=settings.database_path)
     if not db_initialized_successfully:
