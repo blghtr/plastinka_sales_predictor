@@ -266,7 +266,19 @@ cmd: python plastinka_sales_predictor/datasphere_job/train_and_predict.py \\
     fs.makedirs("/test/archive", exist_ok=True)
     fs.create_file(test_archive_path, contents="dummy zip content")
     
-    mock_archive_input_directory = AsyncMock(return_value=test_archive_path)
+    # Mock _archive_input_directory with support for the new archive_dir parameter
+    async def mock_archive_side_effect(job_id, input_dir, archive_dir=None):
+        # If archive_dir is specified, create archive there, otherwise use default path
+        if archive_dir:
+            archive_name = f"{Path(input_dir).name}.zip"
+            archive_path = str(Path(archive_dir) / archive_name)
+            fs.makedirs(archive_dir, exist_ok=True)
+            fs.create_file(archive_path, contents="dummy zip content")
+            return archive_path
+        else:
+            return test_archive_path
+    
+    mock_archive_input_directory = AsyncMock(side_effect=mock_archive_side_effect)
     mocks['_archive_input_directory'] = mock_archive_input_directory
     monkeypatch.setattr(ds_module, '_archive_input_directory', mock_archive_input_directory)
     

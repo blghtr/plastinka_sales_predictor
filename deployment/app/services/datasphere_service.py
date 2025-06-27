@@ -274,13 +274,15 @@ async def _prepare_datasphere_job_submission(job_id: str, config: TrainingConfig
     return str(settings.datasphere_job_config_path)
 
 
-async def _archive_input_directory(job_id: str, input_dir: str) -> str:
+async def _archive_input_directory(job_id: str, input_dir: str, archive_dir: str = None) -> str:
     """
     Archives the input directory into a zip file for DataSphere submission.
     
     Args:
         job_id: The job ID for logging
         input_dir: Path to the input directory to archive
+        archive_dir: Optional directory where to create the archive. 
+                    If None, creates in parent of input_dir (current behavior)
         
     Returns:
         Path to the created archive file
@@ -290,16 +292,26 @@ async def _archive_input_directory(job_id: str, input_dir: str) -> str:
     """
     logger.info(f"[{job_id}] Stage 4b: Archiving input directory '{input_dir}'...")
     
-    # Create archive in the same parent directory as the input directory
+    # Choose where to create the archive
     input_dir_path = Path(input_dir)
     archive_name = f"{input_dir_path.name}.zip"
-    archive_path = input_dir_path.parent / archive_name
+    
+    if archive_dir:
+        archive_path = Path(archive_dir) / archive_name
+        logger.info(f"[{job_id}] Creating archive in specified directory: {archive_path}")
+    else:
+        # Current behavior for backward compatibility
+        archive_path = input_dir_path.parent / archive_name
+        logger.info(f"[{job_id}] Creating archive in parent directory: {archive_path}")
     
     try:
         with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for root, dirs, files in os.walk(input_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
+                    # Skip the archive file itself to avoid recursion
+                    if os.path.abspath(file_path) == os.path.abspath(archive_path):
+                        continue
                     # Calculate relative path from input_dir
                     relative_path = os.path.relpath(file_path, input_dir)
                     zipf.write(file_path, relative_path)
@@ -1212,7 +1224,7 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                 await _verify_datasphere_job_inputs(job_id, temp_input_dir)
 
                 # Stage 4b: Archive Input Directory
-                archive_path = await _archive_input_directory(job_id, temp_input_dir_str)
+                archive_path = await _archive_input_directory(job_id, temp_input_dir_str, temp_input_dir_str)
 
                 # Stage 4c: Create Project Link
                 project_input_link_path = create_project_input_link(

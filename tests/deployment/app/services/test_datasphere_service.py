@@ -417,7 +417,7 @@ class TestFileOperations:
 
     @pytest.mark.asyncio
     async def test_archive_input_directory_success(self, mock_service_env):
-        """Test successful archiving of input directory."""
+        """Test successful archiving of input directory with default behavior."""
         # Arrange
         fs = mock_service_env["fs"]
         input_dir = "/test/input"
@@ -428,16 +428,36 @@ class TestFileOperations:
         fs.create_file(f"{input_dir}/train.dill", contents="train data")
         fs.create_file(f"{input_dir}/val.dill", contents="val data")
 
-        # Override the mock to return a proper path string
-        mock_service_env["_archive_input_directory"].return_value = "/test/output/input.zip"
-
-        # Act
+        # Act - test default behavior (archive_dir=None)
         archive_path = await ds_module._archive_input_directory("test-job", input_dir)
 
         # Assert
         assert archive_path.endswith("input.zip")
-        # Verify the mock was called correctly
+        # Verify the mock was called correctly with default parameters
         mock_service_env["_archive_input_directory"].assert_called_once_with("test-job", input_dir)
+
+    @pytest.mark.asyncio
+    async def test_archive_input_directory_with_same_dir(self, mock_service_env):
+        """Test archiving of input directory into itself (archive in same directory)."""
+        # Arrange
+        fs = mock_service_env["fs"]
+        input_dir = "/test/input"
+
+        # Create test files
+        fs.makedirs(input_dir)
+        fs.create_file(f"{input_dir}/config.json", contents='{"test": "config"}')
+        fs.create_file(f"{input_dir}/train.dill", contents="train data")
+        fs.create_file(f"{input_dir}/val.dill", contents="val data")
+
+        # Act - test with archive_dir same as input_dir (typical use case)
+        archive_path = await ds_module._archive_input_directory("test-job", input_dir, input_dir)
+
+        # Assert
+        assert archive_path.endswith("input.zip")
+        # Archive should be created in the same directory as input
+        assert str(Path(input_dir)) in str(Path(archive_path))
+        # Verify the mock was called correctly with same directory
+        mock_service_env["_archive_input_directory"].assert_called_once_with("test-job", input_dir, input_dir)
 
     @pytest.mark.asyncio
     async def test_download_datasphere_job_results_with_extraction(self, mock_service_env):
