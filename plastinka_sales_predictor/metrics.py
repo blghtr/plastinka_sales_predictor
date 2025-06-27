@@ -59,7 +59,7 @@ class BaseMetricWithZeroHandling(Metric):
         # More specific shape checks will be in the _compute_score of derived classes
 
         scaled_zero = 1e-6 # Threshold to consider an actual value as zero
-        zero_mask = actual_series == scaled_zero # Mask for actuals that are effectively zero
+        zero_mask = actual_series == scaled_zero 
         non_zero_mask = ~zero_mask # Mask for actuals that are non-zero
 
         # Update sub-metrics for zero and non-zero actuals separately

@@ -9,7 +9,7 @@ from plastinka_sales_predictor import (
 )
 from warnings import filterwarnings
 from copy import deepcopy
-from darts.models.forecasting.tide_model import TiDEModel
+from plastinka_sales_predictor.model import CustomTiDEModel as TiDEModel
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import (
     EarlyStopping,
@@ -186,6 +186,7 @@ def get_model(
         log_tensorboard=True,
         torch_metrics=torch_metrics,
         save_checkpoints=save_checkpoints,
+        force_reset=True,
         **model_config,
     )
 
@@ -223,6 +224,15 @@ def train_model(
             torch_metrics=torch_metrics,
             model_config=model_config,
         )
+        
+        # Принудительно выставляем флаг использования статических ковариат
+        # Это необходимо, поскольку при использовании fit_from_dataset() вместо fit()
+        # автоматическая проверка наличия static_covariates в _setup_for_fit_from_dataset() не выполняется
+        if model.supports_static_covariates and model.considers_static_covariates:
+            model._uses_static_covariates = True   
+
+        logger.info("Принудительно установлен флаг _uses_static_covariates = True")
+        
         model = model.fit_from_dataset(ds, val_ds)
 
     except Exception:
