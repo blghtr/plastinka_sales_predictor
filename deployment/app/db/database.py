@@ -61,26 +61,21 @@ def get_db_connection(db_path_override: Optional[Union[str, Path]] = None, exist
     """
     try:
         if existing_connection:
-            logger.debug(f"get_db_connection using existing connection: {id(existing_connection)}")
             return existing_connection
 
         if db_path_override:
             current_db_path = Path(db_path_override)
-            logger.debug(f"get_db_connection using override DB_PATH: {current_db_path}")
         else:
             # Always get the most up-to-date path from settings
             from deployment.app.config import settings
             current_db_path = Path(settings.database_path)
-            logger.debug(f"get_db_connection using settings DB_PATH: {current_db_path}")
 
         current_db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(current_db_path))
-        logger.debug(f"DEBUG: get_db_connection - opened new connection with id: {id(conn)}, path: {current_db_path}")
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.row_factory = dict_factory
         return conn
     except Exception as e:
-        logger.debug(f"DEBUG: get_db_connection - error creating connection: {str(e)}")
         logger.error(f"Failed to connect to database: {str(e)}", exc_info=True)
         raise DatabaseError(f"Database connection failed: {str(e)}", original_error=e)
 
@@ -104,18 +99,15 @@ def db_transaction(db_path_or_conn: Union[str, Path, sqlite3.Connection] = None)
 
     try:
         if isinstance(db_path_or_conn, (str, Path)):
-            logger.debug(f"db_transaction: Creating new connection to {db_path_or_conn}")
             conn = get_db_connection(db_path_or_conn) # Assuming get_db_connection can take a path
             conn_created_internally = True
         elif isinstance(db_path_or_conn, sqlite3.Connection):
             conn = db_path_or_conn
-            logger.debug(f"db_transaction: Using provided connection with id: {id(conn)}")
             # Ensure foreign keys are on for provided connections if not already set by get_db_connection
             # However, get_db_connection already does this. If conn is external, we assume it's configured.
             # For safety, we could execute it, but it might interfere if the user has specific PRAGMA settings.
             # Let's assume external connections are ready or get_db_connection handles it.
         else: # db_path_or_conn is None, use default
-            logger.debug(f"db_transaction: Creating new connection to default DB_PATH: {DB_PATH}")
             conn = get_db_connection() # Uses DB_PATH by default
             conn_created_internally = True
 
@@ -138,7 +130,6 @@ def db_transaction(db_path_or_conn: Union[str, Path, sqlite3.Connection] = None)
 
         yield conn
         conn.commit()
-        logger.debug(f"db_transaction: Transaction committed for connection id: {id(conn)}")
 
     except Exception as e:
         if conn:
@@ -151,7 +142,6 @@ def db_transaction(db_path_or_conn: Union[str, Path, sqlite3.Connection] = None)
         raise DatabaseError(f"Transaction failed: {str(e)}", original_error=e)
     finally:
         if conn and conn_created_internally:
-            logger.debug(f"db_transaction: Closing internally created connection with id: {id(conn)}")
             conn.close()
 def dict_factory(cursor, row):
     """Convert row to dictionary"""
@@ -184,14 +174,11 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
     try:
         if connection:
             conn = connection
-            logger.debug(f"DEBUG: execute_query - Using provided connection with id: {id(conn)}")
-            logger.debug(f"execute_query: Using provided connection with id: {id(conn)}")
             
             try:
-                logger.debug(f"DEBUG: execute_query - Connection isolation level: {conn.isolation_level}")
-                logger.debug(f"execute_query: Connection isolation level: {conn.isolation_level}")
+                # Validate connection state
+                _ = conn.isolation_level
             except Exception as e:
-                logger.debug(f"DEBUG: execute_query - Error checking connection state: {str(e)}")
                 # Throw detailed exception instead of continuing with invalid connection
                 raise DatabaseError(
                     message=f"Connection validation failed: {str(e)}",
@@ -202,16 +189,10 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
         else:
             conn = get_db_connection()
             conn_created = True
-            logger.debug(f"DEBUG: execute_query - Created new connection with id: {id(conn)}")
-            logger.debug(f"execute_query: Created new connection with id: {id(conn)}")
-            
-            logger.debug(f"DEBUG: execute_query - Connection isolation level: {conn.isolation_level}")
-            logger.debug(f"execute_query: Connection isolation level: {conn.isolation_level}")
         
         conn.row_factory = dict_factory
         cursor = conn.cursor()
         
-        logger.debug(f"DEBUG: execute_query - Executing query: {query[:50]}...")
         cursor.execute(query, params)
         
         if query.strip().upper().startswith(("SELECT", "PRAGMA")):
@@ -222,25 +203,14 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
         else:
             # Only commit if this function created the connection
             if conn_created:
-                logger.debug(f"DEBUG: execute_query - Committing changes for connection id: {id(conn)}")
-                logger.debug(f"execute_query: Committing changes for connection id: {id(conn)}")
                 conn.commit()
-            else:
-                logger.debug(f"DEBUG: execute_query - NOT committing changes for external connection id: {id(conn) if conn else None}")
-                logger.debug(f"execute_query: NOT committing changes for external connection id: {id(conn) if conn else None}")
             result = None
             
         return result
         
     except sqlite3.Error as e:
-        logger.debug(f"DEBUG: execute_query - SQLite error: {str(e)}")
         if conn and conn_created:
-            logger.debug(f"DEBUG: execute_query - Rolling back changes for connection id: {id(conn)}")
-            logger.debug(f"execute_query: Rolling back changes for connection id: {id(conn)}")
             conn.rollback()
-        else:
-            logger.debug(f"DEBUG: execute_query - NOT rolling back for external connection id: {id(conn) if conn else None}")
-            logger.debug(f"execute_query: NOT rolling back for external connection id: {id(conn) if conn else None}")
         
         # Log with limited parameter data for security
         safe_params = "..." if params else "()"
@@ -256,10 +226,9 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
         # Close the connection if it was created here
         if conn_created and conn:
             try:
-                logger.debug(f"DEBUG: execute_query - Closing connection with id: {id(conn)}")
                 conn.close()
-            except Exception as close_e:
-                logger.debug(f"DEBUG: execute_query - Error closing connection: {str(close_e)}")
+            except Exception:
+                pass  # Ignore close errors
 
 def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Connection = None) -> None:
     """
@@ -287,13 +256,9 @@ def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Conne
     try:
         if connection:
             conn = connection
-            logger.debug(f"execute_many: Using provided connection with id: {id(conn)}")
-            logger.debug(f"execute_many: Connection isolation level: {conn.isolation_level}")
         else:
             conn = get_db_connection()
             conn_created = True
-            logger.debug(f"execute_many: Created new connection with id: {id(conn)}")
-            logger.debug(f"execute_many: Connection isolation level: {conn.isolation_level}")
             
         cursor = conn.cursor()
         
@@ -301,17 +266,11 @@ def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Conne
         
         # Only commit if we created this connection
         if conn_created:
-            logger.debug(f"execute_many: Committing changes for connection id: {id(conn)}")
             conn.commit()
-        else:
-            logger.debug(f"execute_many: NOT committing for external connection id: {id(conn)}")
         
     except sqlite3.Error as e:
         if conn and conn_created: # Only rollback if this function created the connection
-            logger.debug(f"execute_many: Rolling back due to error for internally created connection id: {id(conn)}")
             conn.rollback()
-        elif conn: # External connection, do not rollback here
-             logger.debug(f"execute_many: NOT rolling back for external connection id: {id(conn)}. Caller is responsible.")
         
         logger.error(f"Database error in executemany: {query[:100]}, params count: {len(params_list)}: {str(e)}", exc_info=True)
         
@@ -324,7 +283,6 @@ def execute_many(query: str, params_list: List[tuple], connection: sqlite3.Conne
         if cursor:
             cursor.close()
         if conn and conn_created:
-            logger.debug(f"execute_many: Closing connection with id: {id(conn)}")
             conn.close()
 
 # Job-related database functions
@@ -367,7 +325,6 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
     )
 
     def _db_operation(conn_to_use: sqlite3.Connection):
-        logger.debug(f"create_job: _db_operation using connection id: {id(conn_to_use)}")
         # execute_query will use the provided conn_to_use and will NOT commit/rollback itself.
         execute_query(sql_query, params_tuple, connection=conn_to_use)
         logger.info(f"Created new job: {job_id} of type {job_type}")
@@ -375,11 +332,9 @@ def create_job(job_type: str, parameters: Dict[str, Any] = None, connection: sql
     try:
         if connection:
             # Operate within the caller's transaction using the provided connection
-            logger.debug(f"create_job: Using provided external connection id: {id(connection)}")
             _db_operation(connection)
         else:
             # Create and manage its own transaction
-            logger.debug("create_job: No external connection, creating new transaction via db_transaction.")
             with db_transaction() as new_conn: # db_transaction handles commit/rollback/close
                 _db_operation(new_conn)
         return job_id
@@ -406,23 +361,17 @@ def update_job_status(job_id: str, status: str, progress: float = None,
     """
     now = datetime.now().isoformat()
 
-    # Debug connection information
-    conn_id = id(connection) if connection else None
-    logger.debug(f"update_job_status: Using connection object id: {conn_id}, externally provided: {connection is not None}")
-
     # Create a database connection if one wasn't provided
     conn_created = False
     if not connection:
         connection = get_db_connection()
         conn_created = True
-        logger.debug(f"DEBUG: update_job_status - Created new connection with id: {id(connection)}") 
     else:
-        logger.debug(f"DEBUG: update_job_status - Using existing connection with id: {id(connection)}")
         # Проверка состояния соединения
         try:
-            logger.debug(f"DEBUG: update_job_status - Connection isolation level: {connection.isolation_level}")
-        except Exception as e:
-            logger.debug(f"DEBUG: update_job_status - Error checking connection state: {str(e)}")
+            _ = connection.isolation_level
+        except Exception:
+            pass  # Connection state check failed
 
 
     try:
@@ -681,7 +630,6 @@ def get_active_config(connection: sqlite3.Connection = None) -> Optional[Dict[st
         else:
             conn = get_db_connection()
             conn_created = True
-        logger.debug(f"[DEBUG] get_active_config: conn id={id(conn)}, conn_created={conn_created}")
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -692,7 +640,6 @@ def get_active_config(connection: sqlite3.Connection = None) -> Optional[Dict[st
             """
         )
         result = cursor.fetchone()
-        logger.debug(f"[DEBUG] get_active_config: found result={result}")
         if not result:
             return None
         # ... existing code ...
@@ -707,7 +654,6 @@ def get_active_config(connection: sqlite3.Connection = None) -> Optional[Dict[st
         except (json.JSONDecodeError, TypeError):
             logger.error(f"Error parsing config JSON: {config_json}")
             config = {}
-        logger.debug(f"[DEBUG] get_active_config: returning config_id={config_id}")
         return {
             "config_id": config_id,
             "config": config
@@ -1796,9 +1742,7 @@ def get_effective_config(settings, logger=None, connection=None):
     Raises:
         ValueError: если ни один сет не найден
     """
-    logger.debug("[DEBUG] get_effective_config: called")
     active_config_data = get_active_config(connection=connection)
-    logger.debug(f"[DEBUG] get_effective_config: active_config_data={active_config_data}")
     if active_config_data:
         if logger:
             logger.info(f"Found active config: {active_config_data['config_id']}")
@@ -1811,7 +1755,6 @@ def get_effective_config(settings, logger=None, connection=None):
         higher_is_better,
         connection=connection
     )
-    logger.debug(f"[DEBUG] get_effective_config: best_config_data={best_config_data}")
     if best_config_data:
         if logger:
             logger.info(f"Using best config by {metric_name}: {best_config_data['config_id']}")
@@ -1819,4 +1762,195 @@ def get_effective_config(settings, logger=None, connection=None):
     error_msg = "No active config and no best config by metric available"
     if logger:
         logger.error(error_msg)
-    raise ValueError(error_msg) 
+    raise ValueError(error_msg)
+
+
+# Functions for DataSphere job cloning optimization
+
+def find_compatible_job(
+    requirements_hash: str, 
+    job_type: str,
+    max_age_days: int = 30,
+    connection: sqlite3.Connection = None
+) -> Optional[str]:
+    """
+    Find the most recent successful job with the same requirements hash.
+    
+    Compatibility criteria:
+    1. Same requirements_hash
+    2. Same job_type (usually TRAINING)
+    3. Status = COMPLETED
+    4. Created within max_age_days
+    5. Sorted by created_at DESC (most recent first)
+    
+    Args:
+        requirements_hash: SHA256 hash of requirements.txt
+        job_type: Type of job to search for
+        max_age_days: Maximum age of job in days
+        connection: Optional database connection
+        
+    Returns:
+        ID of compatible job or None if not found
+        
+    Raises:
+        DatabaseError: If database operation fails
+    """
+    query = """
+        SELECT job_id 
+        FROM jobs 
+        WHERE requirements_hash = ? 
+            AND job_type = ? 
+            AND status = 'completed'
+            AND created_at >= datetime('now', '-' || ? || ' days')
+        ORDER BY created_at DESC 
+        LIMIT 1
+    """
+    
+    try:
+        result = execute_query(
+            query, 
+            (requirements_hash, job_type, max_age_days), 
+            fetchall=False,
+            connection=connection
+        )
+        
+        if result:
+            return result['job_id']
+        else:
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error finding compatible job for hash {requirements_hash[:8]}...: {e}")
+        raise DatabaseError(
+            f"Failed to find compatible job: {str(e)}", 
+            query=query, 
+            params=(requirements_hash, job_type, max_age_days),
+            original_error=e
+        )
+
+
+def update_job_requirements_hash(
+    job_id: str, 
+    requirements_hash: str,
+    connection: sqlite3.Connection = None
+) -> None:
+    """
+    Update the requirements hash for a job.
+    
+    Args:
+        job_id: ID of the job
+        requirements_hash: SHA256 hash of requirements.txt
+        connection: Optional database connection
+        
+    Raises:
+        DatabaseError: If database operation fails
+    """
+    query = """
+        UPDATE jobs 
+        SET requirements_hash = ?, updated_at = ?
+        WHERE job_id = ?
+    """
+    
+    try:
+        execute_query(
+            query, 
+            (requirements_hash, datetime.now().isoformat(), job_id),
+            connection=connection
+        )
+        
+    except Exception as e:
+        logger.error(f"Error updating requirements hash for job {job_id}: {e}")
+        raise DatabaseError(
+            f"Failed to update requirements hash for job {job_id}: {str(e)}", 
+            query=query, 
+            params=(requirements_hash, datetime.now().isoformat(), job_id),
+            original_error=e
+        )
+
+
+def update_job_parent_reference(
+    job_id: str, 
+    parent_job_id: str, 
+    requirements_hash: str,
+    connection: sqlite3.Connection = None
+) -> None:
+    """
+    Set the parent job reference and requirements hash for a cloned job.
+    
+    Args:
+        job_id: ID of the cloned job
+        parent_job_id: ID of the parent job that was cloned
+        requirements_hash: SHA256 hash of requirements.txt
+        connection: Optional database connection
+        
+    Raises:
+        DatabaseError: If database operation fails
+    """
+    query = """
+        UPDATE jobs 
+        SET parent_job_id = ?, requirements_hash = ?, updated_at = ?
+        WHERE job_id = ?
+    """
+    
+    try:
+        execute_query(
+            query, 
+            (parent_job_id, requirements_hash, datetime.now().isoformat(), job_id),
+            connection=connection
+        )
+        
+    except Exception as e:
+        logger.error(f"Error updating parent reference for job {job_id}: {e}")
+        raise DatabaseError(
+            f"Failed to update parent reference for job {job_id}: {str(e)}", 
+            query=query, 
+            params=(parent_job_id, requirements_hash, datetime.now().isoformat(), job_id),
+            original_error=e
+        )
+
+
+def get_job_requirements_hash(
+    job_id: str,
+    connection: sqlite3.Connection = None
+) -> Optional[str]:
+    """
+    Get the requirements hash for a specific job.
+    
+    Args:
+        job_id: ID of the job
+        connection: Optional database connection
+        
+    Returns:
+        SHA256 hash of requirements or None if not found
+        
+    Raises:
+        DatabaseError: If database operation fails
+    """
+    query = """
+        SELECT requirements_hash 
+        FROM jobs 
+        WHERE job_id = ?
+    """
+    
+    try:
+        result = execute_query(
+            query, 
+            (job_id,), 
+            fetchall=False,
+            connection=connection
+        )
+        
+        if result:
+            hash_value = result['requirements_hash']
+            return hash_value
+        else:
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error getting requirements hash for job {job_id}: {e}")
+        raise DatabaseError(
+            f"Failed to get requirements hash for job {job_id}: {str(e)}", 
+            query=query, 
+            params=(job_id,),
+            original_error=e
+        ) 

@@ -34,14 +34,25 @@ from deployment.app.db.database import (
     get_or_create_multiindex_id,
     execute_many,
     get_db_connection,
-    get_effective_config
+    get_effective_config,
+    # Job cloning optimization functions
+    find_compatible_job,
+    update_job_requirements_hash,
+    update_job_parent_reference,
+    get_job_requirements_hash
 )
 from deployment.app.models.api_models import JobStatus, TrainingConfig
 from deployment.app.config import AppSettings
 from deployment.datasphere.client import DataSphereClient
+from deployment.app.utils.requirements_hash import (
+    calculate_requirements_hash,
+    get_requirements_file_path,
+    requirements_changed_since_job,
+    get_requirements_hash_for_current_state,
+    validate_requirements_file
+)
 from deployment.datasphere.prepare_datasets import get_datasets
 
-from deployment.app.utils.file_utilities import _get_directory_hash
 import zipfile
 
 # Initialize settings
@@ -68,9 +79,65 @@ CLIENT_CANCEL_TIMEOUT_SECONDS = settings.datasphere.client_cancel_timeout_second
 # Set up logger
 logger = logging.getLogger(__name__)
 
-# Helper Functions for run_job stages
+# Helper Functions for Project Input Linking
+
+def create_project_input_link(archive_path: str, project_root: str) -> str:
+    """
+    Creates cross-platform link to archive in project root.
+    
+    Args:
+        archive_path: Path to the temporary archive file
+        project_root: Path to the project root directory
+        
+    Returns:
+        Path to the created link/file in project root
+        
+    Raises:
+        RuntimeError: If linking/copying fails
+    """
+    project_input_path = os.path.join(project_root, "input.zip")
+    
+    # Remove existing file/link if present
+    if os.path.exists(project_input_path):
+        try:
+            os.remove(project_input_path)
+        except OSError as e:
+            logger.warning(f"Failed to remove existing input.zip: {e}")
+    
+    try:
+        if os.name == 'posix':  # Linux/macOS - symlink
+            os.symlink(archive_path, project_input_path)
+            logger.info(f"Created symlink: {project_input_path} -> {archive_path}")
+        else:  # Windows - hard link
+            os.link(archive_path, project_input_path)
+            logger.info(f"Created hard link: {project_input_path} -> {archive_path}")
+    except OSError as e:
+        # Fallback to copying if linking fails
+        try:
+            shutil.copy2(archive_path, project_input_path)
+            logger.warning(f"Failed to create link ({e}), copied file instead: {project_input_path}")
+        except Exception as copy_e:
+            error_msg = f"Failed to create link and copy fallback failed: {copy_e}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from copy_e
+    
+    return project_input_path
 
 
+def cleanup_project_input_link(project_root: str) -> None:
+    """
+    Removes input.zip link/file from project root.
+    
+    Args:
+        project_root: Path to the project root directory
+    """
+    project_input_path = os.path.join(project_root, "input.zip")
+    try:
+        if os.path.exists(project_input_path):
+            os.remove(project_input_path)
+            logger.info(f"Cleaned up project input link: {project_input_path}")
+    except OSError as e:
+        logger.warning(f"Failed to cleanup project input link: {e}")
 
 
 async def _prepare_job_datasets(job_id: str, config: TrainingConfig, start_date_for_dataset: str = None, end_date_for_dataset: str = None, output_dir: str = None) -> None:
@@ -93,6 +160,7 @@ async def _prepare_job_datasets(job_id: str, config: TrainingConfig, start_date_
         raise RuntimeError(f"Failed to prepare datasets during job {job_id}. Original error: {e}") from e
 
 
+
 async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
     """Initializes and returns the DataSphere client."""
     logger.info(f"[{job_id}] Stage 3: Initializing DataSphere client...")
@@ -103,7 +171,6 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
     client_config = settings.datasphere.client # Get config dict
 
     try:
-        logger.debug(f"[{job_id}] Attempting to initialize DataSphereClient with timeout {CLIENT_INIT_TIMEOUT_SECONDS}s.")
         # DataSphereClient constructor is synchronous, run in a thread
         client = await asyncio.wait_for(
             asyncio.to_thread(DataSphereClient, **client_config),
@@ -189,11 +256,9 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path) -> No
     update_job_status(job_id, JobStatus.RUNNING.value, progress=20, status_message="DataSphere job inputs verified.")
 
 
-async def _prepare_datasphere_job_submission(job_id: str, config: TrainingConfig, target_input_dir: Path) -> Tuple[str, str]:
-    """Prepares the parameters file and DataSphere config for job submission."""
+async def _prepare_datasphere_job_submission(job_id: str, config: TrainingConfig, target_input_dir: Path) -> str:
+    """Prepares the parameters file for job submission."""
     logger.info(f"[{job_id}] Stage 4a: Preparing DataSphere job submission inputs...")
-    # Generate a unique ID component for this DS job run (used for output/results dir later)
-    ds_job_run_suffix = f"ds_job_{job_id}_{uuid.uuid4().hex[:8]}"
 
     # Save training config as JSON
     config_json_path = str(target_input_dir / "config.json")
@@ -202,86 +267,203 @@ async def _prepare_datasphere_job_submission(job_id: str, config: TrainingConfig
         # Use model_dump_json for Pydantic v2+
         json.dump(config.model_dump(), f, indent=2) # Save training config
 
-    # Create ready DataSphere YAML config from template
-    template_config_path = settings.datasphere_job_config_path
-    ready_config_path = str(target_input_dir / "datasphere_config.yaml")
+    logger.info(f"[{job_id}] DataSphere job submission inputs prepared.")
+    update_job_status(job_id, JobStatus.RUNNING.value, progress=18, status_message="Job submission inputs prepared.")
     
-    logger.info(f"[{job_id}] Creating ready DataSphere config from template {template_config_path}")
-    
-    # Load template YAML config
-    with open(template_config_path, 'r', encoding='utf-8') as f:
-        config_data = yaml.safe_load(f)
-    
-    # Add inputs section with input.zip in correct format (list of dict-like entries)
-    config_data['inputs'] = ['input.zip: INPUT']
-    
-    # Save ready config
-    with open(ready_config_path, 'w', encoding='utf-8') as f:
-        yaml.dump(config_data, f, default_flow_style=False, allow_unicode=True)
-    
-    logger.info(f"[{job_id}] Ready DataSphere config saved to {ready_config_path}")
-
-    # Return the suffix for identifying the run and the path to the ready config file
-    return ds_job_run_suffix, ready_config_path
+    # Return the path to the static template config file
+    return str(settings.datasphere_job_config_path)
 
 
 async def _archive_input_directory(job_id: str, input_dir: str) -> str:
-    """Archives the contents of the input directory into input.zip."""
-    logger.info(f"[{job_id}] Stage 4b: Archiving input directory {input_dir}...")
-    update_job_status(job_id, JobStatus.RUNNING.value, status_message="Archiving input files...")
-
-    archive_name = "input.zip"
-    archive_path = os.path.join(input_dir, archive_name)
-
-    # Basic check for directory existence before archiving
+    """
+    Archives the input directory into a zip file for DataSphere submission.
+    
+    Args:
+        job_id: The job ID for logging
+        input_dir: Path to the input directory to archive
+        
+    Returns:
+        Path to the created archive file
+        
+    Raises:
+        RuntimeError: If archiving fails
+    """
+    logger.info(f"[{job_id}] Stage 4b: Archiving input directory '{input_dir}'...")
+    
+    # Create archive in the same parent directory as the input directory
     input_dir_path = Path(input_dir)
-    if not input_dir_path.exists() or not input_dir_path.is_dir():
-        error_msg = f"Cannot archive: Input directory '{input_dir}' does not exist or is not a directory for job {job_id}."
-        logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
-        raise RuntimeError(error_msg)
-
+    archive_name = f"{input_dir_path.name}.zip"
+    archive_path = input_dir_path.parent / archive_name
+    
     try:
         with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for file_path in input_dir_path.rglob('*'):
-                if not file_path.is_file():
-                    continue
-                
-                # Skip the archive file itself to prevent recursive inclusion
-                if file_path.name == archive_name:
-                    continue
-                
-                # Skip DataSphere config file - it's used separately for job submission
-                if file_path.name == "datasphere_config.yaml":
-                    continue
-                
-                relative_path = file_path.relative_to(input_dir_path)
-                zipf.write(file_path, arcname=relative_path)
-
-        logger.info(f"[{job_id}] Successfully created input archive at {archive_path}")
-        update_job_status(job_id, JobStatus.RUNNING.value, progress=22, status_message="Input archive created.")
-        return archive_path
+            for root, dirs, files in os.walk(input_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # Calculate relative path from input_dir
+                    relative_path = os.path.relpath(file_path, input_dir)
+                    zipf.write(file_path, relative_path)
+        
+        logger.info(f"[{job_id}] Input directory archived to: {archive_path}")
+        update_job_status(job_id, JobStatus.RUNNING.value, progress=23, status_message="Input directory archived.")
+        return str(archive_path)
     except Exception as e:
-        logger.error(f"[{job_id}] Failed to create input archive from {input_dir}: {e}", exc_info=True)
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=f"Failed to archive inputs: {e}")
-        raise RuntimeError(f"Failed to create input archive: {e}") from e
+        error_msg = f"Failed to archive input directory: {str(e)}"
+        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        raise RuntimeError(error_msg) from e
 
 
-async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_config_path: str) -> str:
+def _should_use_cloning(requirements_hash: str, job_type: str) -> Tuple[bool, Optional[str]]:
     """
-    Submits a job to DataSphere and returns the DS job ID.
+    Determines whether to use job cloning based on requirements hash and available compatible jobs.
+    
+    Args:
+        requirements_hash: SHA256 hash of requirements.txt
+        job_type: Type of job (e.g., 'TRAINING')
+        
+    Returns:
+        Tuple of (should_clone, compatible_job_id)
+        - should_clone: True if cloning should be used
+        - compatible_job_id: ID of compatible job to clone from, or None
+    """
+    if not settings.datasphere.enable_job_cloning:
+        return False, None
+    
+    if not requirements_hash:
+        return False, None
+    
+    try:
+        compatible_job_id = find_compatible_job(
+            requirements_hash=requirements_hash,
+            job_type=job_type,
+            max_age_days=settings.datasphere.compatible_job_max_age_days
+        )
+        
+        if compatible_job_id:
+            logger.info(f"Found compatible job for cloning: {compatible_job_id}")
+            return True, compatible_job_id
+        else:
+            logger.info("No compatible job found for cloning")
+            return False, None
+            
+    except Exception as e:
+        logger.warning(f"Error searching for compatible job: {e}")
+        return False, None
+
+
+async def _clone_datasphere_job(
+    job_id: str,
+    client: DataSphereClient, 
+    source_ds_job_id: str,
+    ready_config_path: str,
+    work_dir: str
+) -> str:
+    """
+    Clones an existing DataSphere job with new input files.
+    
+    Args:
+        job_id: Our internal job ID
+        client: DataSphere client instance
+        source_ds_job_id: DataSphere job ID to clone from
+        ready_config_path: Path to job configuration
+        work_dir: Working directory for temporary files
+        
+    Returns:
+        DataSphere job ID of the cloned job
+        
+    Raises:
+        RuntimeError: If cloning fails or times out
+    """
+    logger.info(f"[{job_id}] Attempting to clone DataSphere job {source_ds_job_id}")
+    
+    try:
+        # Use the clone_job method with timeout and work_dir
+        cloned_ds_job_id = await asyncio.wait_for(
+            asyncio.to_thread(client.clone_job, source_ds_job_id, ready_config_path, work_dir),
+            timeout=settings.datasphere.clone_timeout_seconds
+        )
+        
+        logger.info(f"[{job_id}] Successfully cloned job {source_ds_job_id} -> {cloned_ds_job_id}")
+        return cloned_ds_job_id
+        
+    except asyncio.TimeoutError:
+        error_msg = f"DataSphere job cloning timed out after {settings.datasphere.clone_timeout_seconds} seconds"
+        logger.error(f"[{job_id}] {error_msg}")
+        raise RuntimeError(error_msg) from asyncio.TimeoutError
+    except Exception as e:
+        error_msg = f"Failed to clone DataSphere job {source_ds_job_id}: {str(e)}"
+        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+        raise RuntimeError(error_msg) from e
+
+
+async def _create_new_datasphere_job(
+    job_id: str,
+    client: DataSphereClient,
+    ready_config_path: str,
+    work_dir: str
+) -> str:
+    """
+    Creates a new DataSphere job (current logic).
+    
+    Args:
+        job_id: Our internal job ID
+        client: DataSphere client instance
+        ready_config_path: Path to job configuration
+        work_dir: Working directory for temporary files
+        
+    Returns:
+        DataSphere job ID of the new job
+        
+    Raises:
+        RuntimeError: If job creation fails or times out
+    """
+    logger.info(f"[{job_id}] Creating new DataSphere job")
+    
+    try:
+        # Use the existing submit_job method with timeout and work_dir
+        ds_job_id = await asyncio.wait_for(
+            asyncio.to_thread(client.submit_job, config_path=ready_config_path, work_dir=work_dir),
+            timeout=CLIENT_SUBMIT_TIMEOUT_SECONDS
+        )
+        
+        logger.info(f"[{job_id}] Successfully created new job: {ds_job_id}")
+        return ds_job_id
+        
+    except asyncio.TimeoutError:
+        error_msg = f"DataSphere job creation timed out after {CLIENT_SUBMIT_TIMEOUT_SECONDS} seconds"
+        logger.error(f"[{job_id}] {error_msg}")
+        raise RuntimeError(error_msg) from asyncio.TimeoutError
+    except Exception as e:
+        error_msg = f"Failed to create new DataSphere job: {str(e)}"
+        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+        raise RuntimeError(error_msg) from e
+
+
+async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_config_path: str, work_dir: str, requirements_hash: Optional[str] = None) -> str:
+    """
+    Submits or clones a DataSphere job based on requirements hash and returns the DS job ID.
+    
+    Strategy:
+    1. Check if job cloning is enabled and requirements hash is available
+    2. If enabled, search for compatible job with same requirements hash
+    3. If found -> attempt to clone that job with new input files
+    4. If cloning fails or no compatible job -> create new job as before
+    5. Update job record with appropriate references
     
     Args:
         job_id: The job ID in our system
         client: Initialized DataSphere client
         ready_config_path: Path to the ready configuration file
+        work_dir: Working directory for temporary files
+        requirements_hash: SHA256 hash of requirements.txt for cloning optimization
         
     Returns:
         The DataSphere job ID
         
     Raises:
         FileNotFoundError: If the config file doesn't exist
-        RuntimeError: If job submission fails or times out
+        RuntimeError: If both cloning and new job creation fail
     """
     if not os.path.exists(ready_config_path):
         error_msg = f"DataSphere job config YAML not found at: {ready_config_path}"
@@ -289,31 +471,71 @@ async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_co
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
 
-    logger.info(f"[{job_id}] Submitting job to DataSphere using ready config: {ready_config_path}. Timeout: {CLIENT_SUBMIT_TIMEOUT_SECONDS}s")
+    logger.info(f"[{job_id}] Job cloning enabled: {settings.datasphere.enable_job_cloning}")
+    logger.info(f"[{job_id}] Requirements hash: {requirements_hash}")
 
     try:
-        # client.submit_job is synchronous, run in a thread with timeout
-        ds_job_id = await asyncio.wait_for(
-            asyncio.to_thread(client.submit_job, config_path=ready_config_path),
-            timeout=CLIENT_SUBMIT_TIMEOUT_SECONDS
-        )
-        logger.info(f"[{job_id}] DataSphere Job submitted, DS Job ID: {ds_job_id}")
+        # Try cloning first if conditions are met
+        if requirements_hash and settings.datasphere.enable_job_cloning:
+            should_clone, compatible_job_id = _should_use_cloning(requirements_hash, "TRAINING")
+            
+            if should_clone and compatible_job_id:
+                try:
+                    logger.info(f"[{job_id}] Found compatible job: {compatible_job_id}")
+                    logger.info(f"[{job_id}] Using job cloning strategy")
+                    
+                    # Attempt to clone the job
+                    ds_job_id = await _clone_datasphere_job(
+                        job_id, client, compatible_job_id, ready_config_path, work_dir
+                    )
+                    
+                    # Update job record with parent reference
+                    try:
+                        update_job_parent_reference(job_id, compatible_job_id, requirements_hash)
+                        logger.info(f"[{job_id}] Successfully cloned job {compatible_job_id} -> {ds_job_id}")
+                    except Exception as db_error:
+                        logger.warning(f"[{job_id}] Failed to update parent reference in DB: {db_error}")
+                    
+                    # Update status with cloning info
+                    update_job_status(job_id, JobStatus.RUNNING.value, progress=25, 
+                                    status_message=f"DS Job {ds_job_id} submitted via cloning from {compatible_job_id}.")
+                    return ds_job_id
+                    
+                except Exception as clone_error:
+                    logger.warning(f"[{job_id}] Job cloning failed: {clone_error}")
+                    if settings.datasphere.auto_fallback_to_new_job:
+                        logger.info(f"[{job_id}] Falling back to new job creation")
+                    else:
+                        raise RuntimeError(f"Job cloning failed and auto-fallback is disabled: {clone_error}") from clone_error
+            else:
+                logger.info(f"[{job_id}] No compatible job found, creating new job")
+        else:
+            logger.info(f"[{job_id}] Job cloning not available (hash: {bool(requirements_hash)}, enabled: {settings.datasphere.enable_job_cloning})")
+
+        # Fallback: create new job (original logic)
+        logger.info(f"[{job_id}] Creating new DataSphere job")
+        ds_job_id = await _create_new_datasphere_job(job_id, client, ready_config_path, work_dir)
+        
+        # Update job record with requirements hash (without parent_job_id)
+        if requirements_hash:
+            try:
+                update_job_requirements_hash(job_id, requirements_hash)
+            except Exception as db_error:
+                logger.warning(f"[{job_id}] Failed to update requirements hash in DB: {db_error}")
+        
+        # Update status
+        strategy = "new creation" if not requirements_hash or not settings.datasphere.enable_job_cloning else "new creation (fallback)"
         update_job_status(job_id, JobStatus.RUNNING.value, progress=25, 
-                        status_message=f"DS Job {ds_job_id} submitted.")
+                        status_message=f"DS Job {ds_job_id} submitted via {strategy}.")
         return ds_job_id
-    except asyncio.TimeoutError:
-        error_msg = f"DataSphere job submission timed out after {CLIENT_SUBMIT_TIMEOUT_SECONDS} seconds."
-        logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
-        raise RuntimeError(error_msg) from asyncio.TimeoutError
+        
     except Exception as e:
-        # This will catch DataSphereClientError from client.submit_job or other unexpected errors
-        error_msg = f"Failed to submit DataSphere job: {str(e)}"
-        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
-        if "DataSphereClientError" in str(type(e)):
-            raise # Re-raise original DataSphereClientError
-        raise RuntimeError(error_msg) from e
+        if not isinstance(e, (FileNotFoundError, RuntimeError)):
+            error_msg = f"Both job cloning and new job creation failed: {str(e)}"
+            logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+            update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+            raise RuntimeError(error_msg) from e
+        raise
 
 
 async def _check_datasphere_job_status(job_id: str, ds_job_id: str, client: DataSphereClient) -> str:
@@ -331,14 +553,12 @@ async def _check_datasphere_job_status(job_id: str, ds_job_id: str, client: Data
     Raises:
         RuntimeError: If getting status fails or times out
     """
-    logger.debug(f"[{job_id}] Checking DataSphere job status for DS Job ID: {ds_job_id}. Timeout: {CLIENT_STATUS_TIMEOUT_SECONDS}s")
     try:
         # client.get_job_status is synchronous, run in a thread with timeout
         current_ds_status_str = await asyncio.wait_for(
             asyncio.to_thread(client.get_job_status, ds_job_id),
             timeout=CLIENT_STATUS_TIMEOUT_SECONDS
         )
-        logger.debug(f"[{job_id}] Got status: {current_ds_status_str} for DS Job ID: {ds_job_id}")
         return current_ds_status_str
     except asyncio.TimeoutError:
         error_msg = f"DataSphere job status check timed out after {CLIENT_STATUS_TIMEOUT_SECONDS} seconds for DS Job ID: {ds_job_id}."
@@ -359,8 +579,7 @@ async def _download_datasphere_job_results(
     job_id: str, 
     ds_job_id: str, 
     client: DataSphereClient, 
-    results_dir: str,
-    ds_job_run_suffix: str
+    results_dir: str
 ) -> Tuple[Dict[str, Any] | None, str | None, str | None]:
     """Downloads and processes the results from a DataSphere job."""
     logger.info(f"[{job_id}] Stage 5a: Downloading results for ds_job '{ds_job_id}' to '{results_dir}'...")
@@ -391,7 +610,6 @@ async def _download_datasphere_job_results(
                 
                 # Optional: Remove the archive file after extraction
                 os.remove(output_zip_path)
-                logger.debug(f"[{job_id}] Removed output.zip archive after extraction")
             except zipfile.BadZipFile as e:
                 logger.error(f"[{job_id}] Invalid zip file format for output.zip: {e}")
                 # Continue processing in case individual files exist
@@ -440,7 +658,7 @@ async def _download_datasphere_job_results(
         # This block is for logging the downloaded files for debug purposes
         try:
             if os.path.exists(results_dir):
-                logger.debug(f"[{job_id}] Contents of results directory '{results_dir}': {os.listdir(results_dir)}")
+                pass  # Debug logging removed
         except Exception as e:
             logger.warning(f"[{job_id}] Could not list contents of results directory '{results_dir}': {e}")
 
@@ -494,9 +712,10 @@ async def _download_logs_diagnostics(
 async def _process_datasphere_job(
     job_id: str,
     client: DataSphereClient,
-    ds_job_run_suffix: str,
     ds_job_specific_output_base_dir: str,
-    ready_config_path: str
+    ready_config_path: str,
+    work_dir: str,
+    requirements_hash: Optional[str] = None
 ) -> Tuple[str, str, Dict[str, Any] | None, str | None, str | None, int]:
     """
     Coordinates the DataSphere job lifecycle including submission, monitoring, and result fetching.
@@ -504,17 +723,18 @@ async def _process_datasphere_job(
     Args:
         job_id: ID of the job
         client: DataSphere client
-        ds_job_run_suffix: Unique identifier for this run
         ds_job_specific_output_base_dir: Directory for this run's outputs/results
         ready_config_path: Path to the ready DataSphere config file
+        work_dir: Working directory for temporary files
+        requirements_hash: SHA256 hash of requirements.txt for cloning optimization
         
     Returns:
         Tuple of (ds_job_id, results_dir, metrics_data, model_path, predictions_path, polls)
     """
-    logger.info(f"[{job_id}] Stage 5: Processing DataSphere job {ds_job_run_suffix}...")
+    logger.info(f"[{job_id}] Stage 5: Processing DataSphere job...")
     
-    # Submit the job
-    ds_job_id = await _submit_datasphere_job(job_id, client, ready_config_path)
+    # Submit the job (with cloning optimization if available)
+    ds_job_id = await _submit_datasphere_job(job_id, client, ready_config_path, work_dir, requirements_hash)
 
     completed = False
     max_polls = settings.datasphere.max_polls
@@ -525,11 +745,9 @@ async def _process_datasphere_job(
     model_path = None
 
     logger.info(f"[{job_id}] Polling DS Job {ds_job_id} status (max_polls={max_polls}, poll_interval={poll_interval}s).")
-    logger.debug(f"DEBUG MONITOR: DS Job ID: {ds_job_id}, Max polls from settings: {settings.datasphere.max_polls}")
 
     # Monitor job status
     while not completed and polls < max_polls:
-        logger.debug(f"DEBUG MONITOR: Entering poll loop, poll {polls + 1} for DS Job ID: {ds_job_id}")
         await asyncio.sleep(poll_interval)
         polls += 1
 
@@ -555,41 +773,29 @@ async def _process_datasphere_job(
             status_message=f"DS Job {ds_job_id}: {current_ds_status_str}"
         )
 
-        if current_ds_status in ["completed", "success"]:
+        if current_ds_status in ["completed", "success"]:  # "success" kept for backward-compat
             completed = True
             logger.info(f"[{job_id}] DS Job {ds_job_id} completed. Downloading results...")
 
-            # Create a dedicated directory for results
-            results_download_dir = os.path.join(
-                ds_job_specific_output_base_dir,
-                "results"
-            )
-            
             # Download and process results
             metrics_data, predictions_path, model_path = await _download_datasphere_job_results(
-                job_id, ds_job_id, client, results_download_dir, ds_job_run_suffix
+                job_id, ds_job_id, client, ds_job_specific_output_base_dir
             )
 
             # Download logs and diagnostics if configured
             download_diag_on_success = getattr(settings.datasphere, 'download_diagnostics_on_success', False)
             if download_diag_on_success:
-                logs_dir = os.path.join(results_download_dir, "logs_diagnostics_success")
+                logs_dir = os.path.join(ds_job_specific_output_base_dir, "logs_diagnostics_success")
                 await _download_logs_diagnostics(job_id, ds_job_id, client, logs_dir, is_success=True)
             else: 
                 logger.info(f"[{job_id}] Skipping optional download of logs/diagnostics for successful job based on settings.")
 
-        elif current_ds_status in ["failed", "error", "cancelled"]:
-            # Define results directory for consistency
-            results_download_dir = os.path.join(
-                ds_job_specific_output_base_dir,
-                "results"
-            )
-            
+        elif current_ds_status in ["failed", "cancelled", "cancelling"]:
             error_detail = f"DS Job {ds_job_id} ended with status: {current_ds_status_str}."
             logger.error(f"[{job_id}] {error_detail}")
 
             # Download logs for failed job
-            logs_dir = os.path.join(results_download_dir, "logs_diagnostics")
+            logs_dir = os.path.join(ds_job_specific_output_base_dir, "logs_diagnostics")
             await _download_logs_diagnostics(job_id, ds_job_id, client, logs_dir, is_success=False)
             error_detail += f" Logs/diagnostics may be available in {logs_dir}."
 
@@ -602,7 +808,7 @@ async def _process_datasphere_job(
         update_job_status(job_id, status=JobStatus.FAILED.value, error_message=str(timeout_message))
         raise TimeoutError(timeout_message)
 
-    return ds_job_id, results_download_dir, metrics_data, model_path, predictions_path, polls
+    return ds_job_id, ds_job_specific_output_base_dir, metrics_data, model_path, predictions_path, polls
 
 
 async def _perform_model_cleanup(job_id: str, current_model_id: str) -> None:
@@ -616,7 +822,6 @@ async def _perform_model_cleanup(job_id: str, current_model_id: str) -> None:
             # Note: The current model (current_model_id) is initially inactive.
             recent_kept_models_info = get_recent_models(limit=num_models_to_keep)
             kept_model_ids = {m['model_id'] for m in recent_kept_models_info} # Use a set for faster lookups
-            logger.debug(f"[{job_id}] Initially identified models to keep (by recent creation): {kept_model_ids}")
 
             # Fetch all models (or a reasonable limit) to find candidates for deletion
             all_models_info = get_all_models(limit=1000)
@@ -678,7 +883,6 @@ async def _process_job_results(
             logger.info(f"[{job_id}] Model saved with ID: {model_id_for_status}")
 
             if predictions_path:
-                logger.info(f"[{job_id}] DEBUG_SERVICE: predictions_path exists. Proceeding to save predictions to DB from '{predictions_path}'...")
                 prediction_result_info = save_predictions_to_db(
                     predictions_path=predictions_path,
                     job_id=job_id,
@@ -689,13 +893,12 @@ async def _process_job_results(
                 logger.warning(f"[{job_id}] No predictions file found, cannot save predictions to DB.")
                 warnings_list.append("Predictions file not found in results.")
         else:
-            logger.warning(f"[{job_id}] DEBUG_SERVICE: model_path is None or empty. Skipping model and prediction saving.")
+            logger.warning(f"[{job_id}] Model path is None or empty. Skipping model and prediction saving.")
             warnings_list.append("Model file not found in results.")
 
         # Create a record of the training result with metrics
         training_result_id = None
         if metrics_data:
-            logger.info(f"[{job_id}] DEBUG_SERVICE: metrics_data exists. Proceeding to create training result record...")
             training_result_id = create_training_result(
                 job_id=job_id,
                 config_id=config_id,
@@ -733,6 +936,34 @@ async def _process_job_results(
         if job_details and job_details.get('status') != JobStatus.FAILED.value:
             update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg, status_message=error_msg)
         raise
+
+
+async def _calculate_requirements_hash_for_job(job_id: str) -> Optional[str]:
+    """
+    Calculates requirements hash for cloning optimization.
+    
+    Args:
+        job_id: The job ID for logging purposes
+        
+    Returns:
+        SHA256 hash of requirements.txt if available and valid, None otherwise
+    """
+    requirements_hash = None
+    try:
+        requirements_path = get_requirements_file_path()
+        if validate_requirements_file(requirements_path):
+            requirements_hash = calculate_requirements_hash(requirements_path)
+            logger.info(f"[{job_id}] Requirements hash calculated: {requirements_hash}")
+            
+            # Store hash in database for this job
+            update_job_requirements_hash(job_id, requirements_hash)
+        else:
+            logger.warning(f"[{job_id}] Requirements file not found or invalid: {requirements_path}")
+    except Exception as e:
+        logger.warning(f"[{job_id}] Failed to calculate requirements hash: {e}")
+        requirements_hash = None
+    
+    return requirements_hash
 
 
 async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> List[str]:
@@ -925,11 +1156,16 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
     """
     Runs a DataSphere training job pipeline: setup, execution, monitoring, result processing, cleanup.
     """
-    logger.debug(f"[{job_id}] run_job: Initial settings.project_root_dir = {settings.project_root_dir}")
     ds_job_id: Optional[str] = None
-    ds_job_run_suffix: Optional[str] = None 
     client: Optional[DataSphereClient] = None
+    project_input_link_path: Optional[str] = None
     job_completed_successfully = False
+
+    import debugpy
+    debugpy.listen(5678)
+    debugpy.wait_for_client()
+    print("Waiting for debugger to attach...")
+    debugpy.breakpoint()
 
     try:
         with tempfile.TemporaryDirectory(dir=str(settings.datasphere_input_dir)) as temp_input_dir_str, \
@@ -944,6 +1180,7 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                 # Stage 1: Get Parameters (already provided)
                 if training_config is None:
                     raise ValueError("No training configuration was provided or found.")
+                
                 config = TrainingConfig(**training_config)
 
                 # Stage 2: Prepare Datasets
@@ -953,21 +1190,33 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                 client = await _initialize_datasphere_client(job_id)
 
                 # Stage 4a: Prepare DS Job Submission Inputs
-                ds_job_run_suffix, ready_config_path = await _prepare_datasphere_job_submission(job_id, config, temp_input_dir)
+                static_config_path = await _prepare_datasphere_job_submission(job_id, config, temp_input_dir)
 
                 # Stage 4a.1: Verify DataSphere job inputs
                 await _verify_datasphere_job_inputs(job_id, temp_input_dir)
 
                 # Stage 4b: Archive Input Directory
-                _ = await _archive_input_directory(job_id, temp_input_dir_str)
+                archive_path = await _archive_input_directory(job_id, temp_input_dir_str)
+
+                # Stage 4c: Create Project Link
+                project_input_link_path = create_project_input_link(
+                    archive_path, 
+                    str(settings.datasphere_job_dir)
+                )
+                logger.info(f"[{job_id}] Created project input link: {project_input_link_path}")
+                update_job_status(job_id, JobStatus.RUNNING.value, progress=24, status_message="Project input link created.")
+
+                # Stage 4d: Calculate requirements hash for cloning optimization
+                requirements_hash = await _calculate_requirements_hash_for_job(job_id)
 
                 # Stage 5: Submit and Monitor DS Job
                 ds_job_id, results_dir_from_process, metrics_data, model_path, predictions_path, polls = await _process_datasphere_job(
                     job_id,
                     client,
-                    ds_job_run_suffix,
                     temp_output_dir,
-                    ready_config_path
+                    static_config_path,
+                    temp_input_dir_str,  # Pass temp_input_dir as work_dir for local modules
+                    requirements_hash
                 )
 
                 # Stage 6: Process Results
@@ -1023,12 +1272,14 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                     update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg, status_message=error_msg)
                 raise 
             finally:
+                # Cleanup project input link regardless of success/failure
+                if project_input_link_path:
+                    cleanup_project_input_link(str(settings.project_root_dir))
+                
                 # The temporary directories are cleaned up automatically by the context manager.
                 # Final log message for job run completion.
                 current_ds_job_id_log = ds_job_id if 'ds_job_id' in locals() and ds_job_id else "N/A"
-                current_ds_job_suffix_log = ds_job_run_suffix if 'ds_job_run_suffix' in locals() and ds_job_run_suffix else "N/A"
-                ds_job_info_str = f"DS Job ID: {current_ds_job_id_log}, DS Job Suffix: {current_ds_job_suffix_log}"
-                logger.info(f"[{job_id}] Job run processing finished. ({ds_job_info_str}). Temporary directories will be cleaned up automatically.")
+                logger.info(f"[{job_id}] Job run processing finished. DS Job ID: {current_ds_job_id_log}. Temporary directories and project links cleaned up automatically.")
 
     except Exception as e:
         # This will catch errors in creating the temporary directories themselves.
