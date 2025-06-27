@@ -22,6 +22,7 @@ DEFAULT_CONFIG_PATH = 'config/model_config.json'
 DEFAULT_MODEL_OUTPUT_REF = 'model.onnx'
 DEFAULT_PREDICTION_OUTPUT_REF = 'predictions.csv'
 DEFAULT_METRICS_OUTPUT_REF = 'metrics.json'
+DEFAULT_MODEL_NAME = 'TiDE'
 
 
 logger = configure_logger()
@@ -44,16 +45,18 @@ def train_model(
     logger.info("Starting model training...")
     logger.info("Initializing TiDEModel...")
 
+    # Handle both test and production configuration formats
+    if 'nn_model_config' in config:
+        config['model_config'] = config.pop('nn_model_config')
+    # If model_config already exists, use it as is (for tests)
+    
     # Instantiate the model
     config['model_config']['n_epochs'] = 1
-    model_id = config['model_id']
-
     metrics_dict = {}
 
     # Train the model
     try:
         logger.info("Train first time to determine effective epochs")
-        config['model_id'] = model_id + '_n_epochs_search'
         
         # First training run - with validation dataset
         model = _train_model(
@@ -61,7 +64,8 @@ def train_model(
                 config,
                 train_dataset,
                 val_dataset
-            )
+            ),
+            model_name=f'{DEFAULT_MODEL_NAME}__n_epochs_search'
         )
         
         # Capture validation metrics from first training phase
@@ -83,19 +87,21 @@ def train_model(
         config['model_config']['n_epochs'] = effective_epochs
         logger.info(f"Effective epochs: {effective_epochs}")
 
-        full_train_ds = train_dataset.setup_dataset(
-            window=(0, train_dataset._n_time_steps),
-        )
+        if hasattr(train_dataset, 'reset_window'):
+            full_train_ds = train_dataset.reset_window()
+        else:
+            full_train_ds = train_dataset.setup_dataset(
+                window=(0, train_dataset._n_time_steps)
+            )
 
         logger.info("Train model on full dataset")
-        config['model_id'] = model_id
-        
         # Second training run - with full training dataset
         model = _train_model(
             *prepare_for_training(
                 config,
                 full_train_ds
-            )
+            ),
+            model_name=f'{DEFAULT_MODEL_NAME}__full_train'
         )
         
         # Capture training metrics from the second training phase
@@ -116,6 +122,7 @@ def train_model(
 
     return model, metrics_dict
 
+
 def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.DataFrame:
     """Generates sales predictions using the trained model."""
     logger.info("Starting sales prediction...")
@@ -123,8 +130,6 @@ def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.Data
     # Extract inputs from dataset object
     data_dict = predict_dataset.to_dict()
     series = data_dict['series']
-    targets = [s[-1:] for s in series]
-    series = [s[:-1] for s in series]
     future_covariates = data_dict['future_covariates']
     past_covariates = data_dict['past_covariates']
     labels = data_dict['labels']
@@ -145,7 +150,6 @@ def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.Data
         predictions_df = get_predictions_df(
             predictions,
             series,
-            targets,
             future_covariates,
             labels,
             predict_dataset._index_names_mapping,
@@ -162,7 +166,6 @@ def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.Data
 def get_predictions_df(
         preds,
         series,
-        targets, 
         future_covariates, 
         labels,
         index_names_mapping,
@@ -174,7 +177,7 @@ def get_predictions_df(
         return array
     
     preds_, labels_ = [], []
-    for p, _, _, _, l in zip(preds, series, targets, future_covariates, labels):
+    for p, _, _, l in zip(preds, series, future_covariates, labels):
         preds_.append(_maybe_inverse_transform(p.data_array().values))
         labels_.append(l)
         
@@ -203,18 +206,39 @@ def get_predictions_df(
     return preds_df
 
 
-def validate_input_directory(input_dir: str) -> None:
+def validate_input_directory(input_path: str) -> str:
     """
-    Validate that input directory exists and is a directory.
+    Validate input and extract if it's a ZIP archive.
     
     Args:
-        input_dir: Path to input directory
+        input_path: Path to input directory or ZIP file
+        
+    Returns:
+        Path to directory containing input files
         
     Raises:
         SystemExit: If validation fails
     """
-    if not os.path.isdir(input_dir):
-        logger.error(f"Input path is not a directory: {input_dir}")
+    # Check if input is a ZIP file
+    if zipfile.is_zipfile(input_path):
+        logger.info(f"Input is a ZIP file: {input_path}. Extracting...")
+        temp_dir = tempfile.mkdtemp(prefix="plastinka_input_")
+        try:
+            with zipfile.ZipFile(input_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            logger.info(f"ZIP file extracted to: {temp_dir}")
+            return temp_dir
+        except Exception as e:
+            logger.error(f"Failed to extract ZIP file {input_path}: {e}")
+            sys.exit(1)
+    
+    # Check if it's a directory
+    elif os.path.isdir(input_path):
+        logger.info(f"Input is a directory: {input_path}")
+        return input_path
+    
+    else:
+        logger.error(f"Input path is neither a directory nor a valid ZIP file: {input_path}")
         sys.exit(1)
 
 
@@ -333,20 +357,21 @@ def validate_archive_files(files_to_archive: list) -> None:
             sys.exit(1)
 
 
-def load_configuration(input_dir: str) -> dict:
+def load_configuration(input_path: str) -> tuple:
     """
-    Load and validate configuration from input directory.
+    Load and validate configuration from input directory or ZIP file.
     
     Args:
-        input_dir: Directory containing config.json file
+        input_path: Path to directory or ZIP file containing config.json
         
     Returns:
-        Configuration dictionary
+        Tuple of (configuration_dictionary, actual_input_directory)
         
     Raises:
         SystemExit: If configuration loading fails
     """
-    validate_input_directory(input_dir)
+    # Validate and get actual input directory (extract ZIP if needed)
+    input_dir = validate_input_directory(input_path)
     
     config_file_path = os.path.join(input_dir, "config.json")
     validate_config_file(config_file_path)
@@ -356,7 +381,7 @@ def load_configuration(input_dir: str) -> dict:
             config = json.load(f)
         
         logger.info(f"Configuration loaded successfully from {config_file_path}")
-        return config
+        return config, input_dir
         
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in configuration file {config_file_path}: {e}")
@@ -660,6 +685,10 @@ def main(input_dir, output):
     logger.info("Starting datasphere job...")
     logger.info(f'Loading inputs from {input_dir}...')
     
+    # Resolve output path to be absolute so it's created in the working directory, not temp directory
+    output_path = os.path.abspath(output)
+    logger.info(f"Archive will be created at: {output_path}")
+    
     # Use temporary directory context manager for proper resource management
     with tempfile.TemporaryDirectory(prefix="plastinka_temp_outputs_") as temp_output_dir:
         logger.info(f"Created temporary output directory: {temp_output_dir}")
@@ -670,19 +699,26 @@ def main(input_dir, output):
         prediction_output = os.path.join(temp_output_dir, DEFAULT_PREDICTION_OUTPUT_REF)
         metrics_output = os.path.join(temp_output_dir, DEFAULT_METRICS_OUTPUT_REF)
         
-        # 1. Load configuration
-        config = load_configuration(input_dir)
+        # 1. Load configuration (and get actual input directory)
+        config, actual_input_dir = load_configuration(input_dir)
         
         # 2. Load datasets
-        train_dataset, val_dataset = load_datasets(input_dir)
+        train_dataset, val_dataset = load_datasets(actual_input_dir)
         
         # 3. Train model
         model, training_metrics, training_duration_seconds = run_training(
             train_dataset, val_dataset, config
         )
         
+        if hasattr(train_dataset, 'reset_window'):
+            full_train_ds = train_dataset.reset_window()
+        else:
+            full_train_ds = train_dataset.setup_dataset(
+                window=(0, train_dataset._n_time_steps)
+            )
+
         # 4. Generate predictions
-        predictions = run_prediction(model, train_dataset, config)
+        predictions = run_prediction(model, full_train_ds, config)
         
         # 5. Prepare final metrics
         metrics = prepare_metrics(training_metrics, training_duration_seconds)
@@ -693,7 +729,7 @@ def main(input_dir, output):
         save_metrics_file(metrics, metrics_output)
         
         # 7. Create output archive
-        create_output_archive(temp_output_dir, output)
+        create_output_archive(temp_output_dir, output_path)
         
     logger.info("Train and predict pipeline finished.")
 
