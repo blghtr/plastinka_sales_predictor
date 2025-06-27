@@ -1246,6 +1246,7 @@ def create_prediction_result(
     model_id: str, 
     output_path: str, 
     summary_metrics: Optional[Dict[str, Any]],
+    prediction_month: Optional[date] = None,  # New parameter
     connection: sqlite3.Connection = None
 ) -> str:
     """
@@ -1256,6 +1257,7 @@ def create_prediction_result(
         model_id: ID of the model used for prediction
         output_path: Path to prediction output file
         summary_metrics: Dictionary of prediction metrics
+        prediction_month: Month for which predictions were made
         connection: Optional existing database connection to use
         
     Returns:
@@ -1264,8 +1266,8 @@ def create_prediction_result(
     result_id = generate_id()
     
     query = """
-    INSERT INTO prediction_results (result_id, job_id, model_id, output_path, summary_metrics)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO prediction_results (result_id, job_id, model_id, output_path, summary_metrics, prediction_month)
+    VALUES (?, ?, ?, ?, ?, ?)
     """
     
     params = (
@@ -1273,7 +1275,8 @@ def create_prediction_result(
         job_id,
         model_id,
         output_path,
-        json.dumps(summary_metrics, default=json_default_serializer) if summary_metrics else None
+        json.dumps(summary_metrics, default=json_default_serializer) if summary_metrics else None,
+        prediction_month.isoformat() if prediction_month else None
     )
     
     try:

@@ -8,7 +8,7 @@ from datasphere.client import Client as DatasphereClient
 from datasphere.api import jobs_pb2 as jobs
 from datasphere.config import Config, parse_config, check_limits
 from datasphere.pyenv import define_py_env
-from datasphere.files import prepare_local_modules, prepare_inputs
+from datasphere.files import prepare_local_modules, prepare_inputs, upload_files
 from io import StringIO
 
 logger = logging.getLogger(__name__)
@@ -265,14 +265,13 @@ class DataSphereClient:
             
             # Clone the job using the DataSphere client's clone functionality
             try:
-                cloned_job_id = self._client.clone(
-                    source_job_id=source_job_id,
-                    job_params=job_params,
-                    config=cfg,
-                    project_id=self.project_id,
-                    sha256_to_display_path=sha256_to_display_path
-                )
+                # FIXED: Use correct API signature for DataSphere SDK clone method
+                # Original API: clone(source_job_id: str, cfg_overrides: Config) -> str
+                cloned_job_id = self._client.clone(source_job_id, cfg)
                 logger.info(f"Successfully cloned job {source_job_id} -> {cloned_job_id}")
+                
+                # Upload files for the cloned job
+                upload_files([], cfg.inputs, sha256_to_display_path)
                 
                 # Execute the cloned job
                 op, _ = self._client.execute(cloned_job_id)
@@ -280,9 +279,9 @@ class DataSphereClient:
                 
                 return cloned_job_id
                 
-            except AttributeError:
-                # Fallback: If clone method doesn't exist, use create with clone hint
-                logger.warning("DataSphere client doesn't support clone method, using create with clone hint")
+            except (AttributeError, TypeError) as api_error:
+                # Fallback: If clone method doesn't exist or has wrong signature, use create with clone hint
+                logger.warning(f"DataSphere client clone API issue ({api_error}), using create fallback")
                 
                 # Add clone hint to job parameters if supported
                 if hasattr(job_params, 'clone_from'):

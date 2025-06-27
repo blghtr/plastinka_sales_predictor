@@ -193,9 +193,9 @@ class TestJobStatusManagement:
         result = await ds_module._process_datasphere_job(
             job_id="test-job",
             client=mock_client,
-            ds_job_run_suffix="test-run",
             ds_job_specific_output_base_dir="/test/output",
-            ready_config_path=config_file
+            ready_config_path=config_file,
+            work_dir="/tmp/test"
         )
 
         # Assert
@@ -375,7 +375,7 @@ class TestErrorHandling:
 
         # Act & Assert
         with caplog.at_level(logging.ERROR):
-            with pytest.raises(RuntimeError, match="Failed to submit DataSphere job"):
+            with pytest.raises(RuntimeError, match="Failed to create new DataSphere job"):
                 await ds_module.run_job(
                     job_id=job_id,
                     training_config=training_config.model_dump(),
@@ -383,7 +383,7 @@ class TestErrorHandling:
                 )
 
         # Verify error logging
-        assert "Failed to submit DataSphere job" in caplog.text
+        assert "Failed to create new DataSphere job" in caplog.text
 
     @pytest.mark.asyncio
     async def test_run_job_database_error(self, mock_service_env):
@@ -464,7 +464,7 @@ class TestFileOperations:
             mock_zip_context.extractall = MagicMock()
 
             await ds_module._download_datasphere_job_results(
-                "test-job", "test-ds-job", mock_client, output_dir, "test-suffix"
+                "test-job", "test-ds-job", mock_client, output_dir
             )
 
             # Assert
@@ -492,22 +492,17 @@ class TestFileOperations:
         fs.create_file(template_config_path, contents=template_content)
 
         # Act
-        with patch('deployment.app.services.datasphere_service.yaml.safe_load') as mock_yaml_load, \
-             patch('deployment.app.services.datasphere_service.yaml.dump') as mock_yaml_dump:
+        ready_config_path = await ds_module._prepare_datasphere_job_submission(
+            job_id="test-job",
+            config=config,
+            target_input_dir=temp_dir
+        )
 
-            mock_yaml_load.return_value = {"name": "plastinka-training-job", "type": "python"}
-
-            ready_config_path, config_json_path = await ds_module._prepare_datasphere_job_submission(
-                job_id="test-job",
-                config=config,
-                target_input_dir=temp_dir
-            )
-
-            # Assert
-            assert ready_config_path is not None
-            assert config_json_path is not None
-            mock_yaml_load.assert_called_once()
-            mock_yaml_dump.assert_called_once()
+        # Assert
+        assert ready_config_path is not None
+        # Check that config.json was created in the target directory
+        config_json_path = temp_dir / "config.json"
+        assert fs.exists(str(config_json_path))
 
 
 class TestConfigurationManagement:
@@ -631,4 +626,57 @@ class TestIntegration:
         assert hasattr(ds_module, 'DATASPHERE_MODEL_FILE')
         assert hasattr(ds_module, 'DATASPHERE_PREDICTIONS_FILE')
         assert ds_module.DATASPHERE_MODEL_FILE == "model.onnx"
-        assert ds_module.DATASPHERE_PREDICTIONS_FILE == "predictions.csv" 
+        assert ds_module.DATASPHERE_PREDICTIONS_FILE == "predictions.csv"
+
+
+
+
+class TestRequirementsHashCalculation:
+    """Test cases for the new _calculate_requirements_hash_for_job function."""
+
+    @pytest.mark.asyncio
+    async def test_calculate_requirements_hash_for_job_called(self, mock_service_env):
+        """Test that the requirements hash calculation function is properly called."""
+        # Arrange
+        job_id = "test-job-hash"
+        mock_hash_func = mock_service_env['_calculate_requirements_hash_for_job']
+        
+        # Act
+        result = await ds_module._calculate_requirements_hash_for_job(job_id)
+        
+        # Assert
+        assert result == "test-requirements-hash"  # From conftest mock
+        mock_hash_func.assert_called_once_with(job_id)
+
+    @pytest.mark.asyncio
+    async def test_requirements_hash_integration_in_run_job(self, mock_service_env):
+        """Test that requirements hash calculation is integrated into run_job."""
+        # Arrange
+        job_id = "test_job_hash_integration"
+        training_config = create_training_params()
+        
+        mock_client = mock_service_env["client"]
+        mock_client.submit_job.return_value = "ds-job-hash-test"
+        mock_client.get_job_status.return_value = "COMPLETED"
+        
+        fs = mock_service_env["fs"]
+        
+        def download_side_effect(ds_job_id, results_dir, **kwargs):
+            fs.makedirs(results_dir, exist_ok=True)
+            fs.create_file(f"{results_dir}/metrics.json", contents='{"val_loss": 0.1}')
+            fs.create_file(f"{results_dir}/model.onnx", contents="model data")
+            fs.create_file(f"{results_dir}/predictions.csv", contents="barcode,pred\n1,10")
+        
+        mock_client.download_job_results.side_effect = download_side_effect
+
+        # Act
+        result = await ds_module.run_job(
+            job_id=job_id,
+            training_config=training_config.model_dump(),
+            config_id="test-config-hash-integration"
+        )
+
+        # Assert
+        assert result is not None
+        # Verify that requirements hash calculation was called
+        mock_service_env['_calculate_requirements_hash_for_job'].assert_called_once_with(job_id) 

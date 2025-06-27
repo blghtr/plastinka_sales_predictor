@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock, mock_open
 import yaml
 from io import StringIO
 from pathlib import Path
+import os
 
 from deployment.datasphere.client import DataSphereClient, DataSphereClientError
 
@@ -80,31 +81,42 @@ def test_init_missing_folder_id():
         DataSphereClient(project_id=TEST_PROJECT_ID, folder_id="")
 
 # Test submit_job method
-@patch('deployment.datasphere.client.open', new_callable=mock_open, read_data='job_name: test_job')
-@patch('deployment.datasphere.client.yaml.safe_load')
-@patch('deployment.datasphere.client.yaml.dump')
-@patch('datasphere.config.parse_config')
-def test_submit_job_success(mock_parse_config, mock_yaml_dump, mock_yaml_load, mock_open_file, client, mock_datasphere_client):
+@patch('deployment.datasphere.client.os.chdir')
+@patch('deployment.datasphere.client.tempfile.TemporaryDirectory')
+@patch('deployment.datasphere.client.check_limits')
+@patch('deployment.datasphere.client.prepare_inputs')
+@patch('deployment.datasphere.client.prepare_local_modules')
+@patch('deployment.datasphere.client.define_py_env')
+@patch('deployment.datasphere.client.parse_config')
+@patch('deployment.datasphere.client.open', new_callable=mock_open, read_data='name: test-job\ncmd: python test.py\noutputs:\n  - output.txt: OUTPUT')
+def test_submit_job_success(mock_open_file, mock_parse_config, mock_define_py_env, mock_prepare_local_modules, mock_prepare_inputs, mock_check_limits, mock_tempdir, mock_chdir, client, mock_datasphere_client):
     """Test successful job submission."""
     # Configure mocks
-    config_data = {"job_name": "test_job", "params": {"param1": "value1"}}
-    mock_yaml_load.return_value = config_data
-    mock_yaml_dump.return_value = "job_name: test_job\nparams:\n  param1: value1\n"
-    
     mock_config = MagicMock()
+    mock_config.env.python = None  # No python env for simplicity
+    mock_config.inputs = []
+    mock_job_params = MagicMock()
+    mock_config.get_job_params.return_value = mock_job_params
     mock_parse_config.return_value = mock_config
+    
+    mock_tempdir.return_value.name = '/tmp/test'
+    mock_tempdir.return_value.cleanup = MagicMock()
+    
+    mock_prepare_inputs.return_value = []
+    mock_check_limits.return_value = None
 
     # Call the method
-    job_id = client.submit_job("path/to/config.yaml")
+    job_id = client.submit_job("path/to/config.yaml", "/tmp/test")
     
     # Verify calls
     mock_open_file.assert_called_once_with("path/to/config.yaml", "r")
-    mock_yaml_load.assert_called_once()
-    mock_yaml_dump.assert_called_once_with(config_data)
     mock_parse_config.assert_called_once()
+    mock_prepare_inputs.assert_called_once()
+    mock_check_limits.assert_called_once()
+    mock_chdir.assert_called()  # Should be called to change directory
     
     # Verify the client methods were called
-    mock_datasphere_client.create.assert_called_once()
+    mock_datasphere_client.create.assert_called_once_with(mock_job_params, mock_config, TEST_PROJECT_ID, {})
     mock_datasphere_client.execute.assert_called_once_with(TEST_JOB_ID)
     
     # Verify result
@@ -115,37 +127,47 @@ def test_submit_job_config_not_found(mock_open_file, client):
     """Test job submission with config file not found."""
     mock_open_file.side_effect = FileNotFoundError("File not found")
     
-    with pytest.raises(DataSphereClientError, match="Configuration file not found"):
-        client.submit_job("nonexistent.yaml")
+    with pytest.raises(DataSphereClientError, match="Invalid job configuration format"):
+        client.submit_job("nonexistent.yaml", "/tmp/test")
 
+@patch('deployment.datasphere.client.parse_config')
 @patch('deployment.datasphere.client.open', new_callable=mock_open, read_data='invalid: yaml: file:')
-@patch('deployment.datasphere.client.yaml.safe_load')
-def test_submit_job_invalid_yaml(mock_yaml_load, mock_open_file, client):
+def test_submit_job_invalid_yaml(mock_open_file, mock_parse_config, client):
     """Test job submission with invalid YAML."""
-    mock_yaml_load.side_effect = yaml.YAMLError("YAML parsing failed")
+    mock_parse_config.side_effect = ValueError("mapping values are not allowed")
     
-    with pytest.raises(DataSphereClientError, match="Invalid YAML configuration"):
-        client.submit_job("invalid.yaml")
+    with pytest.raises(DataSphereClientError, match="Invalid job configuration format"):
+        client.submit_job("invalid.yaml", "/tmp/test")
 
-@patch('deployment.datasphere.client.open', new_callable=mock_open, read_data='job_name: test_job')
-@patch('deployment.datasphere.client.yaml.safe_load')
-@patch('deployment.datasphere.client.yaml.dump')
-@patch('datasphere.config.parse_config')
-def test_submit_job_create_failure(mock_parse_config, mock_yaml_dump, mock_yaml_load, mock_open_file, client, mock_datasphere_client):
+@patch('deployment.datasphere.client.os.chdir')
+@patch('deployment.datasphere.client.tempfile.TemporaryDirectory')
+@patch('deployment.datasphere.client.check_limits')
+@patch('deployment.datasphere.client.prepare_inputs')
+@patch('deployment.datasphere.client.prepare_local_modules')
+@patch('deployment.datasphere.client.define_py_env')
+@patch('deployment.datasphere.client.parse_config')
+@patch('deployment.datasphere.client.open', new_callable=mock_open, read_data='name: test-job\ncmd: python test.py\noutputs:\n  - output.txt: OUTPUT')
+def test_submit_job_create_failure(mock_open_file, mock_parse_config, mock_define_py_env, mock_prepare_local_modules, mock_prepare_inputs, mock_check_limits, mock_tempdir, mock_chdir, client, mock_datasphere_client):
     """Test job submission with creation failure."""
     # Configure mocks
-    config_data = {"job_name": "test_job", "params": {"param1": "value1"}}
-    mock_yaml_load.return_value = config_data
-    mock_yaml_dump.return_value = "job_name: test_job\nparams:\n  param1: value1\n"
-    
     mock_config = MagicMock()
+    mock_config.env.python = None
+    mock_config.inputs = []
+    mock_job_params = MagicMock()
+    mock_config.get_job_params.return_value = mock_job_params
     mock_parse_config.return_value = mock_config
+    
+    mock_tempdir.return_value.name = '/tmp/test'
+    mock_tempdir.return_value.cleanup = MagicMock()
+    
+    mock_prepare_inputs.return_value = []
+    mock_check_limits.return_value = None
     
     # Configure create to fail
     mock_datasphere_client.create.side_effect = Exception("Failed to create job")
     
     with pytest.raises(DataSphereClientError, match="Failed to submit job"):
-        client.submit_job("path/to/config.yaml")
+        client.submit_job("path/to/config.yaml", "/tmp/test")
 
 # Test get_job_status method
 def test_get_job_status_success(client, mock_datasphere_client):
@@ -153,7 +175,7 @@ def test_get_job_status_success(client, mock_datasphere_client):
     status = client.get_job_status(TEST_JOB_ID)
     
     mock_datasphere_client.get.assert_called_once_with(TEST_JOB_ID)
-    assert status == "SUCCESS"  # Our MockJob has SUCCESS status
+    assert status == "success"  # Normalised to lowercase
 
 def test_get_job_status_failure(client, mock_datasphere_client):
     """Test failure when getting job status."""
@@ -161,6 +183,46 @@ def test_get_job_status_failure(client, mock_datasphere_client):
     
     with pytest.raises(DataSphereClientError, match="Failed to get job status"):
         client.get_job_status(TEST_JOB_ID)
+
+# New numeric status mapping tests
+def test_get_job_status_numeric_running(client, mock_datasphere_client):
+    """Job.status is numeric 2 (EXECUTING) – should map to 'running'."""
+    # Arrange: make underlying SDK return numeric 2 (EXECUTING)
+    mock_job = MagicMock()
+    mock_job.status = 2  # EXECUTING -> should map to "running"
+    mock_datasphere_client.get.return_value = mock_job
+
+    # Act
+    status = client.get_job_status(TEST_JOB_ID)
+
+    # Assert
+    assert status == "running"
+
+def test_get_job_status_numeric_failed(client, mock_datasphere_client):
+    """Job.status is numeric 5 (ERROR) – should map to 'failed'."""
+    # Arrange: make underlying SDK return numeric 5 (ERROR)
+    mock_job = MagicMock()
+    mock_job.status = 5  # ERROR -> should map to "failed"
+    mock_datasphere_client.get.return_value = mock_job
+
+    # Act
+    status = client.get_job_status(TEST_JOB_ID)
+
+    # Assert
+    assert status == "failed"
+
+def test_get_job_status_numeric_cancelled(client, mock_datasphere_client):
+    """Job.status is numeric 6 (CANCELLED) – should map to 'cancelled'."""
+    # Arrange: make underlying SDK return numeric 6 (CANCELLED)
+    mock_job = MagicMock()
+    mock_job.status = 6  # CANCELLED -> should map to "cancelled"
+    mock_datasphere_client.get.return_value = mock_job
+
+    # Act
+    status = client.get_job_status(TEST_JOB_ID)
+
+    # Assert
+    assert status == "cancelled"
 
 # Test download_job_results method
 def test_download_job_results_success(client, mock_datasphere_client):

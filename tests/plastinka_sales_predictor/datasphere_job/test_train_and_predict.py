@@ -146,7 +146,7 @@ class TestPredictSales:
         mock_model.predict.assert_called_once_with(
             1, 
             num_samples=500, 
-            series=[[], []],  # series with last element removed
+            series=[['data1'], ['data2']],  # series as returned by mock
             future_covariates=['future1', 'future2'], 
             past_covariates=['past1', 'past2']
         )
@@ -179,7 +179,6 @@ class TestGetPredictionsDF:
             mock_preds.append(mock_pred)
         
         series = [['series1'], ['series2'], ['series3'], ['series4'], ['series5']]
-        targets = [['target1'], ['target2'], ['target3'], ['target4'], ['target5']]
         future_covariates = [['future1'], ['future2'], ['future3'], ['future4'], ['future5']]
         # labels should match the number of predictions (5)
         labels = [('label1', 'value1'), ('label1', 'value2'), ('label2', 'value1'), ('label2', 'value2'), ('label3', 'value1')]
@@ -189,7 +188,7 @@ class TestGetPredictionsDF:
         
         # Act
         result = train_and_predict.get_predictions_df(
-            mock_preds, series, targets, future_covariates, labels, 
+            mock_preds, series, future_covariates, labels, 
             index_names_mapping, mock_scaler
         )
         
@@ -210,7 +209,6 @@ class TestGetPredictionsDF:
         mock_pred.data_array.return_value.values = np.array([[1], [2], [3], [4], [5]])
         
         series = [['series1']]
-        targets = [['target1']]
         future_covariates = [['future1']]
         # labels should match the number of rows in the data (5)
         labels = [('label1', 'value1'), ('label1', 'value2'), ('label2', 'value1'), ('label2', 'value2'), ('label3', 'value1')]
@@ -218,7 +216,7 @@ class TestGetPredictionsDF:
         
         # Act
         result = train_and_predict.get_predictions_df(
-            [mock_pred], series, targets, future_covariates, labels, 
+            [mock_pred], series, future_covariates, labels, 
             index_names_mapping, scaler=None
         )
         
@@ -768,6 +766,9 @@ class TestMainFunction:
         
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
+        # Configure reset_window to return a different mock for prediction
+        mock_full_train_ds = MagicMock()
+        mock_train_dataset.reset_window.return_value = mock_full_train_ds
         mock_load_datasets.return_value = (mock_train_dataset, mock_val_dataset)
         
         mock_model = MagicMock()
@@ -792,7 +793,7 @@ class TestMainFunction:
         mock_load_config.assert_called_once_with('/test/input')
         mock_load_datasets.assert_called_once_with('/test/input')
         mock_run_training.assert_called_once_with(mock_train_dataset, mock_val_dataset, config)
-        mock_run_prediction.assert_called_once_with(mock_model, mock_train_dataset, config)
+        mock_run_prediction.assert_called_once_with(mock_model, mock_full_train_ds, config)
         mock_prepare_metrics.assert_called_once_with(training_metrics, duration)
         
         # Verify save operations
@@ -803,7 +804,10 @@ class TestMainFunction:
         mock_save_model.assert_called_once_with(mock_model, expected_model_path)
         mock_save_predictions.assert_called_once_with(predictions, expected_pred_path)
         mock_save_metrics.assert_called_once_with(final_metrics, expected_metrics_path)
-        mock_create_archive.assert_called_once_with("/temp/outputs", "result.zip")
+        # Extract the actual arguments and check basename for cross-platform compatibility
+        create_archive_call_args = mock_create_archive.call_args[0]
+        assert create_archive_call_args[0] == "/temp/outputs"
+        assert os.path.basename(create_archive_call_args[1]) == "result.zip"
     
     def test_main_default_output(self):
         """Test main function with default output parameter."""
@@ -842,7 +846,10 @@ class TestMainFunction:
                                                     # Assert
                                                     assert result.exit_code == 0
                                                     # Verify default output is used
-                                                    mock_archive.assert_called_once_with("/temp/outputs", "output.zip")
+                                                    # Check with basename for cross-platform compatibility
+                                    create_archive_call_args = mock_archive.call_args[0]
+                                    assert create_archive_call_args[0] == "/temp/outputs"
+                                    assert os.path.basename(create_archive_call_args[1]) == "output.zip"
 
 
 # Integration tests

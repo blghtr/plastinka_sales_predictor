@@ -1032,6 +1032,26 @@ def save_predictions_to_db(
         # Generate a UUID for the prediction result
         result_id = str(uuid.uuid4())
         
+        # Calculate prediction month from job parameters
+        prediction_month = None
+        try:
+            job_details = get_job(job_id, connection=direct_db_connection)
+            if job_details and job_details.get('parameters'):
+                params = json.loads(job_details['parameters'])
+                dataset_end_date_str = params.get('dataset_end_date')
+                
+                if dataset_end_date_str:
+                    # Parse dataset_end_date and add 1 month
+                    dataset_end_date = datetime.fromisoformat(dataset_end_date_str.replace('Z', '+00:00'))
+                    if dataset_end_date.month == 12:
+                        prediction_month = dataset_end_date.replace(year=dataset_end_date.year + 1, month=1, day=1)
+                    else:
+                        prediction_month = dataset_end_date.replace(month=dataset_end_date.month + 1, day=1)
+                    
+                    logger.info(f"Calculated prediction month: {prediction_month.strftime('%Y-%m')} for job {job_id}")
+        except Exception as e:
+            logger.warning(f"Could not calculate prediction month for job {job_id}: {e}")
+        
         # Create a connection to the database
         conn = direct_db_connection if direct_db_connection else get_db_connection()
         
@@ -1046,10 +1066,12 @@ def save_predictions_to_db(
             conn.execute(
                 """
                 INSERT INTO prediction_results 
-                (result_id, job_id, model_id, prediction_date, output_path, summary_metrics) 
-                VALUES (?, ?, ?, ?, ?, ?)
+                (result_id, job_id, model_id, prediction_date, prediction_month, output_path, summary_metrics) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (result_id, job_id, model_id, timestamp, predictions_path, "{}")
+                (result_id, job_id, model_id, timestamp, 
+                 prediction_month.date().isoformat() if prediction_month else None,
+                 predictions_path, "{}")
             )
             
             # Prepare data for batch insert into fact_predictions
@@ -1160,12 +1182,6 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
     client: Optional[DataSphereClient] = None
     project_input_link_path: Optional[str] = None
     job_completed_successfully = False
-
-    import debugpy
-    debugpy.listen(5678)
-    debugpy.wait_for_client()
-    print("Waiting for debugger to attach...")
-    debugpy.breakpoint()
 
     try:
         with tempfile.TemporaryDirectory(dir=str(settings.datasphere_input_dir)) as temp_input_dir_str, \

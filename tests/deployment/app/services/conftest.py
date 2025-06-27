@@ -261,9 +261,19 @@ cmd: python plastinka_sales_predictor/datasphere_job/train_and_predict.py \\
     mocks['create_model_record'] = mock_create_model_record
     monkeypatch.setattr(ds_module, 'create_model_record', mock_create_model_record)
 
-    mock_archive_input_directory = AsyncMock()
+    # Create the archive file in fake filesystem first
+    test_archive_path = "/test/archive/input.zip"
+    fs.makedirs("/test/archive", exist_ok=True)
+    fs.create_file(test_archive_path, contents="dummy zip content")
+    
+    mock_archive_input_directory = AsyncMock(return_value=test_archive_path)
     mocks['_archive_input_directory'] = mock_archive_input_directory
     monkeypatch.setattr(ds_module, '_archive_input_directory', mock_archive_input_directory)
+    
+    # Mock the new requirements hash calculation function
+    mock_calculate_requirements_hash_for_job = AsyncMock(return_value="test-requirements-hash")
+    mocks['_calculate_requirements_hash_for_job'] = mock_calculate_requirements_hash_for_job
+    monkeypatch.setattr(ds_module, '_calculate_requirements_hash_for_job', mock_calculate_requirements_hash_for_job)
     
     yield mocks
 
