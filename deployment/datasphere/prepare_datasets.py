@@ -1,7 +1,7 @@
 import sys
 import pandas as pd
 from datetime import timedelta
-from plastinka_sales_predictor import configure_logger
+import logging
 from deployment.app.db import feature_storage
 from plastinka_sales_predictor.data_preparation import (
     PlastinkaTrainingTSDataset,
@@ -11,6 +11,7 @@ from plastinka_sales_predictor.data_preparation import (
     get_monthly_sales_pivot,
 )
 import os
+from collections import defaultdict
 
 
 DEFAULT_OUTPUT_DIR = './datasets/' # Default location if not specified
@@ -29,7 +30,8 @@ DEFAULT_PAST_COVARIATES_FNAMES = [
     'price_category'
 ]
 
-logger = configure_logger(child_logger_name='train_predict_job_preparation')
+# Use application-wide logger configured in deployment.app.logger_config
+logger = logging.getLogger(__name__)
 
 
 def load_data(start_date=None, end_date=None, feature_types=None):
@@ -49,6 +51,9 @@ def load_data(start_date=None, end_date=None, feature_types=None):
 
     try:
         logger.info(f"Loading features from database{' (selected types)' if feature_types else ''}...")
+        logger.info(f"Loading with parameters: start_date={start_date}, end_date={end_date}, feature_types={feature_types}")
+        logger.info("About to call feature_storage.load_features...")
+        
         features = feature_storage.load_features(
             store_type='sql',
             start_date=start_date,
@@ -56,13 +61,15 @@ def load_data(start_date=None, end_date=None, feature_types=None):
             feature_types=feature_types
         )
         logger.info("Features loaded successfully via factory.")
+                    
     except Exception as e:
         logger.error(f"Error loading data via factory: {e}", exc_info=True)
         raise
+    
     return features
 
 
-def prepare_datasets(raw_features: dict, config: dict, output_dir: str | None = None) -> tuple[
+def prepare_datasets(raw_features: dict, config: dict, save_directory: str) -> tuple[
     PlastinkaTrainingTSDataset, PlastinkaTrainingTSDataset
 ]:
     """
@@ -77,79 +84,72 @@ def prepare_datasets(raw_features: dict, config: dict, output_dir: str | None = 
     Returns:
         Tuple of (train_dataset, val_dataset)
     """
-    # Determine the save directory
-    save_directory = output_dir if output_dir is not None else DEFAULT_OUTPUT_DIR
-    os.makedirs(save_directory, exist_ok=True) # Ensure the directory exists
-
     logger.info("Starting feature preparation...")
 
     # Validate required raw features exist
     if 'sales' not in raw_features or 'stock' not in raw_features:
         raise ValueError("Missing required raw feature data.")
 
-    features = raw_features.copy()
+    try:
+        features = raw_features.copy()
+    except Exception as e:
+        logger.error(f"Error copying raw_features: {e}", exc_info=True)
+        raise
+    
+    logger.info("Raw features validation passed, proceeding with feature engineering...")
 
     try:
         # 1. Stock Features (using get_stock_features from prepare_datasets.py)
         features['stock_features'] = get_stock_features(
             features['stock'], features.get('change', pd.DataFrame())
         )
+        logger.info("Step 1 completed: Stock features created successfully.")
 
         # 2. Create Sales Pivot Table
         sales_pivot = get_monthly_sales_pivot(features['sales'])
+        logger.info("Step 2 completed: Sales pivot table created successfully.")
 
         # 3. Initialize Transformers (as per prepare_datasets.py example)
         static_transformer = MultiColumnLabelBinarizer()
         scaler = GlobalLogMinMaxScaler()
 
-        input_chunk_length = sales_pivot.shape[0] - 1
+        dataset_length = sales_pivot.shape[0]
         output_chunk_length = 1
+        lags = config.lags
+        length = lags + 1
+        train_end = max(length, dataset_length - length)
 
-        logger.info('Creating full dataset...')
-        dataset = PlastinkaTrainingTSDataset(
+        if dataset_length <= length:
+            raise ValueError(
+                'Dataset length is less than the length of the lags. '
+                f'Please provide more data. Dataset length: {dataset_length}, lags: {lags}'
+            )
+
+        train_dataset = PlastinkaTrainingTSDataset(
             stock_features=features['stock_features'],
             monthly_sales=sales_pivot,
             static_transformer=static_transformer,
             static_features=DEFAULT_STATIC_FEATURES,
             scaler=scaler,
-            input_chunk_length=input_chunk_length,
+            input_chunk_length=lags,
             output_chunk_length=output_chunk_length,
-            save_dir=None,
-            dataset_name='full',
-            past_covariates_span=14,
+            start=0,
+            end=train_end,
+            save_dir=save_directory,
+            dataset_name='train',
+            past_covariates_span=lags,
             past_covariates_fnames=DEFAULT_PAST_COVARIATES_FNAMES,
             minimum_sales_months=2,
         )
 
-        lags = config.lags
-        length = lags + 1
-        train_end = max(length, dataset.L - length)
-        logger.info('Creating train dataset...')
-        train_dataset = dataset.setup_dataset(
-            input_chunk_length=lags,
-            output_chunk_length=1,
-            window=(0, train_end),
-            scaler=scaler,
-            transformer=static_transformer
-        )
-        train_dataset.save(
-            dataset_name='train',
-            save_dir=save_directory
-        )
-
-        logger.info('Creating val dataset...')
-        val_dataset = dataset.setup_dataset(
-            input_chunk_length=lags,
-            output_chunk_length=1,
-            window=(dataset.L - length, dataset.L),
-            scaler=scaler,
-            transformer=static_transformer
+        val_dataset = train_dataset.setup_dataset(
+            window=(dataset_length - length, dataset_length),
         )     
         val_dataset.save(
-            dataset_name='val',
-            save_dir=save_directory
+            dataset_name='val'
         )
         logger.info('Datasets created.')
+
     except Exception as e:
         logger.error(f"Error during feature preparation: {e}", exc_info=True)
         raise
@@ -171,7 +171,22 @@ def get_datasets(start_date=None, end_date=None, config=None, output_dir: str | 
     Returns:
         Tuple of (train_dataset, val_dataset)
     """
-    raw_features = load_data(start_date, end_date, feature_types)
-    # Pass the output_dir down to the preparation function
-    return prepare_datasets(raw_features, config, output_dir)
+    logger.info('get_datasets function started...')
+    
+    try:
+        raw_features = load_data(start_date, end_date, feature_types)
+        
+        logger.info('Raw features loaded, calling prepare_datasets...')
+        
+        # Pass the output_dir down to the preparation function
+        train_dataset, val_dataset = prepare_datasets(raw_features, config, output_dir)
+        
+        logger.info('prepare_datasets completed, returning datasets from get_datasets...')
+        
+        return train_dataset, val_dataset
+    except Exception as e:
+        logger.error(f"Error in get_datasets: {e}", exc_info=True)
+        raise
+
+
 
