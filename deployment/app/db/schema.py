@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     progress REAL,           -- 0-100 percentage
     requirements_hash TEXT,  -- SHA256 hash of requirements.txt for optimization through cloning
     parent_job_id TEXT,      -- ID of source job when cloning (NULL for new jobs)
+    datasphere_job_id TEXT,  -- DataSphere job ID returned by DataSphere API (NULL for non-datasphere jobs)
     FOREIGN KEY (config_id) REFERENCES configs(config_id)
 );
 
@@ -217,6 +218,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(job_type);
 -- New indexes for job cloning functionality
 CREATE INDEX IF NOT EXISTS idx_jobs_requirements_hash ON jobs(requirements_hash);
 CREATE INDEX IF NOT EXISTS idx_jobs_parent_job_id ON jobs(parent_job_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_datasphere_job_id ON jobs(datasphere_job_id);
 
 -- Index for job status history
 CREATE INDEX IF NOT EXISTS idx_job_history_job_id ON job_status_history(job_id);

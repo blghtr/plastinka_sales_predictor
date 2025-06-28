@@ -377,28 +377,6 @@ class DataSphereSettings(BaseSettings):
         description="Timeout for DataSphere client job cancellation in seconds"
     )
 
-    # Job cloning optimization settings
-    enable_job_cloning: bool = Field(
-        default=True,
-        description="Whether to enable job cloning optimization for faster execution"
-    )
-    compatible_job_max_age_days: int = Field(
-        default=1825,
-        description="Maximum age in days for compatible jobs to be considered for cloning"
-    )
-    requirements_file_path: str = Field(
-        default="plastinka_sales_predictor/datasphere_job/requirements.txt",
-        description="Relative path to requirements.txt file for dependency tracking"
-    )
-    auto_fallback_to_new_job: bool = Field(
-        default=True,
-        description="Whether to automatically fallback to creating new job if cloning fails"
-    )
-    clone_timeout_seconds: int = Field(
-        default=3600,
-        description="Timeout for job cloning operations in seconds (3 minutes default)"
-    )
-
     @property
     def client(self) -> Dict[str, Any]:
         """Get client configuration as a dictionary."""

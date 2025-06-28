@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 from datasphere.client import Client as DatasphereClient
 from datasphere.api import jobs_pb2 as jobs
-from datasphere.config import Config, parse_config, check_limits
+from datasphere.config import Config, parse_config, check_limits, Environment
 from datasphere.pyenv import define_py_env
 from datasphere.files import prepare_local_modules, prepare_inputs, upload_files
 from io import StringIO
@@ -209,107 +209,8 @@ class DataSphereClient:
             raise
 
 
-    def clone_job(self, source_job_id: str, config_path: str, work_dir: str, config_overrides: dict = None) -> str:
-        """
-        Clones an existing DataSphere job with new input files and optional config overrides.
-        
-        This method creates a new job based on an existing successful job, allowing for
-        faster execution by reusing the cached Python environment from the source job.
-        
-        Args:
-            source_job_id: ID of the source job to clone from
-            config_path: Path to the job configuration YAML file (for new inputs)
-            work_dir: Working directory for temporary files.
-            config_overrides: Optional dictionary of configuration overrides
-            
-        Returns:
-            The ID of the cloned job
-            
-        Raises:
-            DataSphereClientError: If cloning fails or source job is invalid
-        """
-        logger.info(f"Cloning DataSphere job {source_job_id} with config: {config_path}")
-        
-        try:
-            # Verify source job exists and is in a valid state
-            source_job = self._client.get(source_job_id)
-            if not source_job:
-                raise DataSphereClientError(f"Source job {source_job_id} not found")
-            
-            # Check if source job is in a state that allows cloning
-            source_status = str(source_job.status)
-            if source_status not in ["COMPLETED", "SUCCESS"]:
-                logger.warning(f"Source job {source_job_id} status is {source_status}, cloning may fail")
-            
-        except Exception as e:
-            logger.error(f"Failed to verify source job {source_job_id}: {e}")
-            raise DataSphereClientError(f"Failed to verify source job: {e}") from e
-        
-        # Change working directory to config file directory for relative path resolution
-        config_path_obj = Path(config_path)
-        config_dir = config_path_obj.parent
-        original_cwd = Path.cwd()
-        
-        try:
-            os.chdir(config_dir)
-            
-            # Prepare job parameters with local modules support (for new inputs)
-            job_params, cfg, sha256_to_display_path = self._prepare_job_with_local_modules(config_path, work_dir)
-            
-            # Apply configuration overrides if provided
-            if config_overrides:
-                # Update job parameters with overrides
-                for key, value in config_overrides.items():
-                    if hasattr(job_params, key):
-                        setattr(job_params, key, value)
-            
-            # Clone the job using the DataSphere client's clone functionality
-            try:
-                # FIXED: Use correct API signature for DataSphere SDK clone method
-                # Original API: clone(source_job_id: str, cfg_overrides: Config) -> str
-                cloned_job_id = self._client.clone(source_job_id, cfg)
-                logger.info(f"Successfully cloned job {source_job_id} -> {cloned_job_id}")
-                
-                # Upload files for the cloned job
-                upload_files([], cfg.inputs, sha256_to_display_path)
-                
-                # Execute the cloned job
-                op, _ = self._client.execute(cloned_job_id)
-                logger.info(f"Successfully started cloned job execution. Operation ID: {op.id}")
-                
-                return cloned_job_id
-                
-            except (AttributeError, TypeError) as api_error:
-                # Fallback: If clone method doesn't exist or has wrong signature, use create with clone hint
-                logger.warning(f"DataSphere client clone API issue ({api_error}), using create fallback")
-                
-                # Add clone hint to job parameters if supported
-                if hasattr(job_params, 'clone_from'):
-                    job_params.clone_from = source_job_id
-                elif hasattr(job_params, 'parent_job_id'):
-                    job_params.parent_job_id = source_job_id
-                
-                cloned_job_id = self._client.create(job_params, cfg, self.project_id, sha256_to_display_path)
-                logger.info(f"Successfully created job with clone hint: {cloned_job_id}")
-                
-                # Execute the job
-                op, _ = self._client.execute(cloned_job_id)
-                logger.info(f"Successfully started job execution. Operation ID: {op.id}")
-                
-                return cloned_job_id
-                
-            except Exception as e:
-                logger.error(f"Failed to clone job {source_job_id}: {e}")
-                raise DataSphereClientError(f"Failed to clone job: {e}") from e
-                
-        except Exception as e:
-            if not isinstance(e, DataSphereClientError):
-                logger.error(f"Unexpected error during job cloning: {e}")
-                raise DataSphereClientError(f"Failed to clone job: {e}") from e
-            raise
-        finally:
-            # Always restore original working directory
-            os.chdir(original_cwd)
+
+
 
     def _read_yaml_config(self, config_path: str) -> dict:
         """Read and parse a YAML configuration file."""

@@ -34,23 +34,11 @@ from deployment.app.db.database import (
     get_or_create_multiindex_id,
     execute_many,
     get_db_connection,
-    get_effective_config,
-    # Job cloning optimization functions
-    find_compatible_job,
-    update_job_requirements_hash,
-    update_job_parent_reference,
-    get_job_requirements_hash
+    get_effective_config
 )
 from deployment.app.models.api_models import JobStatus, TrainingConfig
 from deployment.app.config import AppSettings
 from deployment.datasphere.client import DataSphereClient
-from deployment.app.utils.requirements_hash import (
-    calculate_requirements_hash,
-    get_requirements_file_path,
-    requirements_changed_since_job,
-    get_requirements_hash_for_current_state,
-    validate_requirements_file
-)
 from deployment.datasphere.prepare_datasets import get_datasets
 
 import zipfile
@@ -326,87 +314,10 @@ async def _archive_input_directory(job_id: str, input_dir: str, archive_dir: str
         raise RuntimeError(error_msg) from e
 
 
-def _should_use_cloning(requirements_hash: str, job_type: str) -> Tuple[bool, Optional[str]]:
-    """
-    Determines whether to use job cloning based on requirements hash and available compatible jobs.
-    
-    Args:
-        requirements_hash: SHA256 hash of requirements.txt
-        job_type: Type of job (e.g., 'TRAINING')
-        
-    Returns:
-        Tuple of (should_clone, compatible_job_id)
-        - should_clone: True if cloning should be used
-        - compatible_job_id: ID of compatible job to clone from, or None
-    """
-    if not settings.datasphere.enable_job_cloning:
-        return False, None
-    
-    if not requirements_hash:
-        return False, None
-    
-    try:
-        compatible_job_id = find_compatible_job(
-            requirements_hash=requirements_hash,
-            job_type=job_type,
-            max_age_days=settings.datasphere.compatible_job_max_age_days
-        )
-        
-        if compatible_job_id:
-            logger.info(f"Found compatible job for cloning: {compatible_job_id}")
-            return True, compatible_job_id
-        else:
-            logger.info("No compatible job found for cloning")
-            return False, None
-            
-    except Exception as e:
-        logger.warning(f"Error searching for compatible job: {e}")
-        return False, None
 
 
-async def _clone_datasphere_job(
-    job_id: str,
-    client: DataSphereClient, 
-    source_ds_job_id: str,
-    ready_config_path: str,
-    work_dir: str
-) -> str:
-    """
-    Clones an existing DataSphere job with new input files.
-    
-    Args:
-        job_id: Our internal job ID
-        client: DataSphere client instance
-        source_ds_job_id: DataSphere job ID to clone from
-        ready_config_path: Path to job configuration
-        work_dir: Working directory for temporary files
-        
-    Returns:
-        DataSphere job ID of the cloned job
-        
-    Raises:
-        RuntimeError: If cloning fails or times out
-    """
-    logger.info(f"[{job_id}] Attempting to clone DataSphere job {source_ds_job_id}")
-    
-    try:
-        # Use the clone_job method with timeout and work_dir
-        cloned_ds_job_id = await asyncio.wait_for(
-            asyncio.to_thread(client.clone_job, source_ds_job_id, ready_config_path, work_dir),
-            timeout=settings.datasphere.clone_timeout_seconds
-        )
-        
-        logger.info(f"[{job_id}] Successfully cloned job {source_ds_job_id} -> {cloned_ds_job_id}")
-        return cloned_ds_job_id
-        
-    except asyncio.TimeoutError:
-        error_msg = f"DataSphere job cloning timed out after {settings.datasphere.clone_timeout_seconds} seconds"
-        logger.error(f"[{job_id}] {error_msg}")
-        raise RuntimeError(error_msg) from asyncio.TimeoutError
-    except Exception as e:
-        error_msg = f"Failed to clone DataSphere job {source_ds_job_id}: {str(e)}"
-        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        raise RuntimeError(error_msg) from e
+
+
 
 
 async def _create_new_datasphere_job(
@@ -452,30 +363,22 @@ async def _create_new_datasphere_job(
         raise RuntimeError(error_msg) from e
 
 
-async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_config_path: str, work_dir: str, requirements_hash: Optional[str] = None) -> str:
+async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_config_path: str, work_dir: str) -> str:
     """
-    Submits or clones a DataSphere job based on requirements hash and returns the DS job ID.
-    
-    Strategy:
-    1. Check if job cloning is enabled and requirements hash is available
-    2. If enabled, search for compatible job with same requirements hash
-    3. If found -> attempt to clone that job with new input files
-    4. If cloning fails or no compatible job -> create new job as before
-    5. Update job record with appropriate references
+    Submits a new DataSphere job and returns the DS job ID.
     
     Args:
         job_id: The job ID in our system
         client: Initialized DataSphere client
         ready_config_path: Path to the ready configuration file
         work_dir: Working directory for temporary files
-        requirements_hash: SHA256 hash of requirements.txt for cloning optimization
         
     Returns:
         The DataSphere job ID
         
     Raises:
         FileNotFoundError: If the config file doesn't exist
-        RuntimeError: If both cloning and new job creation fail
+        RuntimeError: If job creation fails
     """
     if not os.path.exists(ready_config_path):
         error_msg = f"DataSphere job config YAML not found at: {ready_config_path}"
@@ -483,67 +386,19 @@ async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_co
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
 
-    logger.info(f"[{job_id}] Job cloning enabled: {settings.datasphere.enable_job_cloning}")
-    logger.info(f"[{job_id}] Requirements hash: {requirements_hash}")
-
     try:
-        # Try cloning first if conditions are met
-        if requirements_hash and settings.datasphere.enable_job_cloning:
-            should_clone, compatible_job_id = _should_use_cloning(requirements_hash, "TRAINING")
-            
-            if should_clone and compatible_job_id:
-                try:
-                    logger.info(f"[{job_id}] Found compatible job: {compatible_job_id}")
-                    logger.info(f"[{job_id}] Using job cloning strategy")
-                    
-                    # Attempt to clone the job
-                    ds_job_id = await _clone_datasphere_job(
-                        job_id, client, compatible_job_id, ready_config_path, work_dir
-                    )
-                    
-                    # Update job record with parent reference
-                    try:
-                        update_job_parent_reference(job_id, compatible_job_id, requirements_hash)
-                        logger.info(f"[{job_id}] Successfully cloned job {compatible_job_id} -> {ds_job_id}")
-                    except Exception as db_error:
-                        logger.warning(f"[{job_id}] Failed to update parent reference in DB: {db_error}")
-                    
-                    # Update status with cloning info
-                    update_job_status(job_id, JobStatus.RUNNING.value, progress=25, 
-                                    status_message=f"DS Job {ds_job_id} submitted via cloning from {compatible_job_id}.")
-                    return ds_job_id
-                    
-                except Exception as clone_error:
-                    logger.warning(f"[{job_id}] Job cloning failed: {clone_error}")
-                    if settings.datasphere.auto_fallback_to_new_job:
-                        logger.info(f"[{job_id}] Falling back to new job creation")
-                    else:
-                        raise RuntimeError(f"Job cloning failed and auto-fallback is disabled: {clone_error}") from clone_error
-            else:
-                logger.info(f"[{job_id}] No compatible job found, creating new job")
-        else:
-            logger.info(f"[{job_id}] Job cloning not available (hash: {bool(requirements_hash)}, enabled: {settings.datasphere.enable_job_cloning})")
-
-        # Fallback: create new job (original logic)
+        # Create new job
         logger.info(f"[{job_id}] Creating new DataSphere job")
         ds_job_id = await _create_new_datasphere_job(job_id, client, ready_config_path, work_dir)
         
-        # Update job record with requirements hash (without parent_job_id)
-        if requirements_hash:
-            try:
-                update_job_requirements_hash(job_id, requirements_hash)
-            except Exception as db_error:
-                logger.warning(f"[{job_id}] Failed to update requirements hash in DB: {db_error}")
-        
         # Update status
-        strategy = "new creation" if not requirements_hash or not settings.datasphere.enable_job_cloning else "new creation (fallback)"
         update_job_status(job_id, JobStatus.RUNNING.value, progress=25, 
-                        status_message=f"DS Job {ds_job_id} submitted via {strategy}.")
+                        status_message=f"DS Job {ds_job_id} submitted.")
         return ds_job_id
         
     except Exception as e:
         if not isinstance(e, (FileNotFoundError, RuntimeError)):
-            error_msg = f"Both job cloning and new job creation failed: {str(e)}"
+            error_msg = f"DataSphere job creation failed: {str(e)}"
             logger.error(f"[{job_id}] {error_msg}", exc_info=True)
             update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
             raise RuntimeError(error_msg) from e
@@ -726,8 +581,7 @@ async def _process_datasphere_job(
     client: DataSphereClient,
     ds_job_specific_output_base_dir: str,
     ready_config_path: str,
-    work_dir: str,
-    requirements_hash: Optional[str] = None
+    work_dir: str
 ) -> Tuple[str, str, Dict[str, Any] | None, str | None, str | None, int]:
     """
     Coordinates the DataSphere job lifecycle including submission, monitoring, and result fetching.
@@ -738,15 +592,14 @@ async def _process_datasphere_job(
         ds_job_specific_output_base_dir: Directory for this run's outputs/results
         ready_config_path: Path to the ready DataSphere config file
         work_dir: Working directory for temporary files
-        requirements_hash: SHA256 hash of requirements.txt for cloning optimization
         
     Returns:
         Tuple of (ds_job_id, results_dir, metrics_data, model_path, predictions_path, polls)
     """
     logger.info(f"[{job_id}] Stage 5: Processing DataSphere job...")
     
-    # Submit the job (with cloning optimization if available)
-    ds_job_id = await _submit_datasphere_job(job_id, client, ready_config_path, work_dir, requirements_hash)
+    # Submit the job
+    ds_job_id = await _submit_datasphere_job(job_id, client, ready_config_path, work_dir)
 
     completed = False
     max_polls = settings.datasphere.max_polls
@@ -950,32 +803,7 @@ async def _process_job_results(
         raise
 
 
-async def _calculate_requirements_hash_for_job(job_id: str) -> Optional[str]:
-    """
-    Calculates requirements hash for cloning optimization.
-    
-    Args:
-        job_id: The job ID for logging purposes
-        
-    Returns:
-        SHA256 hash of requirements.txt if available and valid, None otherwise
-    """
-    requirements_hash = None
-    try:
-        requirements_path = get_requirements_file_path()
-        if validate_requirements_file(requirements_path):
-            requirements_hash = calculate_requirements_hash(requirements_path)
-            logger.info(f"[{job_id}] Requirements hash calculated: {requirements_hash}")
-            
-            # Store hash in database for this job
-            update_job_requirements_hash(job_id, requirements_hash)
-        else:
-            logger.warning(f"[{job_id}] Requirements file not found or invalid: {requirements_path}")
-    except Exception as e:
-        logger.warning(f"[{job_id}] Failed to calculate requirements hash: {e}")
-        requirements_hash = None
-    
-    return requirements_hash
+
 
 
 async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> List[str]:
@@ -1234,17 +1062,13 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                 logger.info(f"[{job_id}] Created project input link: {project_input_link_path}")
                 update_job_status(job_id, JobStatus.RUNNING.value, progress=24, status_message="Project input link created.")
 
-                # Stage 4d: Calculate requirements hash for cloning optimization
-                requirements_hash = await _calculate_requirements_hash_for_job(job_id)
-
                 # Stage 5: Submit and Monitor DS Job
                 ds_job_id, results_dir_from_process, metrics_data, model_path, predictions_path, polls = await _process_datasphere_job(
                     job_id,
                     client,
                     temp_output_dir,
                     static_config_path,
-                    temp_input_dir_str,  # Pass temp_input_dir as work_dir for local modules
-                    requirements_hash
+                    temp_input_dir_str  # Pass temp_input_dir as work_dir for local modules
                 )
 
                 # Stage 6: Process Results
@@ -1306,7 +1130,7 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                 
                 # The temporary directories are cleaned up automatically by the context manager.
                 # Final log message for job run completion.
-                current_ds_job_id_log = ds_job_id if 'ds_job_id' in locals() and ds_job_id else "N/A"
+                current_ds_job_id_log = ds_job_id if 'ds_job_id' in locals() and ds_job_id is not None else "N/A"
                 logger.info(f"[{job_id}] Job run processing finished. DS Job ID: {current_ds_job_id_log}. Temporary directories and project links cleaned up automatically.")
 
     except Exception as e:
