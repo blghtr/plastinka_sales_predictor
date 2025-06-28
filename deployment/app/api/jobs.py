@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Depends, Query, Body, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import List, Optional
 import os
 from datetime import datetime, date
@@ -10,6 +10,7 @@ from pathlib import Path
 import aiofiles
 import shutil
 import traceback
+import io
 from deployment.app.models.api_models import (
     JobResponse, JobDetails, JobsList, JobStatus, JobType,
     DataUploadResponse, TrainingConfig, TrainingResponse,
@@ -29,6 +30,7 @@ from deployment.app.utils.file_validation import validate_excel_file_upload
 from deployment.app.utils.error_handling import ErrorDetail
 from deployment.app.config import settings
 from deployment.app.services.auth import get_current_api_key_validated
+
 
 logger = logging.getLogger("plastinka.api")
 
@@ -400,60 +402,64 @@ async def create_prediction_job(
 
 
 @router.post("/reports", response_model=ReportResponse)
-async def create_report_job(
+def create_prediction_report(
     request: Request,
     params: ReportParams,
-    background_tasks: BackgroundTasks,
     api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
-    Submit a job to generate a report.
+    Generate and return a prediction report with metadata and CSV data.
     
     This will:
-    1. Prepare the data needed for the report
-    2. Generate the report
-    3. Save the report
+    1. Find training jobs with predictions for the specified month
+    2. Extract and enhance prediction data
+    3. Return structured JSON with metadata and CSV data
     
-    Returns a job ID that can be used to check the job status.
+    Returns structured JSON with report metadata and CSV data as string.
     """
     try:
-        # Create a new job
-        job_id = create_job(
-            JobType.REPORT,
-            parameters=params.model_dump()
+        logger.info(f"Generating prediction report for month: {params.prediction_month.strftime('%Y-%m')}")
+        
+        # Generate the report directly
+        report_df = generate_report(params)
+        
+        # Convert DataFrame to CSV string
+        csv_buffer = io.StringIO()
+        report_df.to_csv(csv_buffer, index=False)
+        csv_content = csv_buffer.getvalue()
+        
+        # Check for enriched metrics
+        enriched_cols = ['Средние продажи (шт)', 'Средние продажи (руб)', 'Потерянные продажи (руб)']
+        present_enriched_cols = [col for col in enriched_cols if col in report_df.columns]
+        has_enriched_metrics = len(present_enriched_cols) > 0
+        
+        # Create structured response
+        response = ReportResponse(
+            report_type=params.report_type.value,
+            prediction_month=params.prediction_month.strftime('%Y-%m'),
+            records_count=len(report_df),
+            csv_data=csv_content,
+            has_enriched_metrics=has_enriched_metrics,
+            enriched_columns=present_enriched_cols,
+            generated_at=datetime.now(),
+            filters_applied=params.filters
         )
         
-        # Start the background task
-        background_tasks.add_task(
-            generate_report,
-            job_id=job_id,
-            params=params
-        )
+        logger.info(f"Report generated successfully: {len(report_df)} records, enriched: {has_enriched_metrics}")
+        return response
         
-        logger.info(f"Created report job {job_id} of type: {params.report_type}")
-        return ReportResponse(job_id=job_id, status=JobStatus.PENDING)
-        
-    except DatabaseError as e:
-        logger.error(f"Database error in report job creation: {str(e)}", exc_info=True)
-        error = ErrorDetail(
-            message="Failed to create report job due to database error",
-            code="database_error",
-            status_code=500,
-            details={"error": str(e)}
+    except ValueError as e:
+        logger.error(f"Validation error in report generation: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
         )
-        error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
     except Exception as e:
-        logger.error(f"Unexpected error in report job creation: {str(e)}", exc_info=True)
-        error = ErrorDetail(
-            message="Failed to create report job",
-            code="internal_error",
-            status_code=500,
-            details={"error": str(e)},
-            exception=e
+        logger.error(f"Unexpected error in report generation: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate prediction report"
         )
-        error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
 
 
 @router.get("/{job_id}", response_model=JobDetails)

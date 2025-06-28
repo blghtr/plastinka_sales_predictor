@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS fact_predictions (
     created_at TIMESTAMP NOT NULL,
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id),
     FOREIGN KEY (model_id) REFERENCES models(model_id),
-    FOREIGN KEY (result_id) REFERENCES prediction_results(result_id)
+    FOREIGN KEY (result_id) REFERENCES prediction_results(result_id),
+    UNIQUE(multiindex_id, prediction_date, model_id)
 );
 
 -- Utility Tables
@@ -208,6 +209,7 @@ CREATE INDEX IF NOT EXISTS idx_predictions_result ON fact_predictions(result_id)
 CREATE INDEX IF NOT EXISTS idx_predictions_model ON fact_predictions(model_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_date_model ON fact_predictions(prediction_date, model_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_date_multiindex ON fact_predictions(prediction_date, multiindex_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_date_multiindex_model ON fact_predictions(prediction_date, multiindex_id, model_id);
 
 -- Index for prediction_results
 CREATE INDEX IF NOT EXISTS idx_prediction_results_month ON prediction_results(prediction_month);

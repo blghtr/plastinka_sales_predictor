@@ -11,278 +11,150 @@ import sqlite3
 from collections import defaultdict
 
 from deployment.app.db.database import (
-    update_job_status, create_report_result, execute_query, get_db_connection
+    execute_query, get_db_connection, get_active_model
 )
 from deployment.app.db.feature_storage import load_features
-from deployment.app.models.api_models import JobStatus, ReportParams, ReportType
+from deployment.app.models.api_models import ReportParams, ReportType
 
 logger = logging.getLogger(__name__)
 
 
-async def generate_report(job_id: str, params: ReportParams) -> None:
+def generate_report(params: ReportParams) -> pd.DataFrame:
     """
-    Generate a report using the specified parameters.
+    Generate a prediction report using the specified parameters.
     
     Args:
-        job_id: ID of the job
-        params: Report parameters
-    """
-    try:
-        # Update job status to running
-        update_job_status(job_id, JobStatus.RUNNING.value, progress=0)
-        
-        # Prepare report parameters
-        report_type = params.report_type
-        start_date = params.start_date
-        end_date = params.end_date
-        filters = params.filters or {}
-        
-        # Log the parameters
-        update_job_status(
-            job_id,
-            JobStatus.RUNNING.value,
-            progress=10,
-            status_message=f"Generating {report_type} report"
-        )
-        
-        # Create output directory
-        output_dir = Path(f"deployment/data/reports/{report_type}")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate report based on type
-        output_path = await _generate_report_by_type(
-            report_type=report_type,
-            start_date=start_date,
-            end_date=end_date,
-            filters=filters,
-            output_dir=output_dir,
-            job_id=job_id
-        )
-        
-        # Create result
-        result_id = create_report_result(
-            job_id=job_id,
-            report_type=report_type.value,
-            parameters={
-                "start_date": start_date.isoformat() if start_date else None,
-                "end_date": end_date.isoformat() if end_date else None,
-                "filters": filters
-            },
-            output_path=str(output_path)
-        )
-        
-        # Update job as completed
-        update_job_status(
-            job_id,
-            JobStatus.COMPLETED.value,
-            progress=100,
-            result_id=result_id
-        )
-        
-    except Exception as e:
-        # Update job as failed with error message
-        update_job_status(
-            job_id,
-            JobStatus.FAILED.value,
-            error_message=str(e)
-        )
-        # Re-raise for logging
-        raise
-
-
-async def _generate_report_by_type(
-    report_type: ReportType,
-    start_date: datetime,
-    end_date: datetime,
-    filters: dict,
-    output_dir: Path,
-    job_id: str
-) -> Path:
-    """
-    Generate a report based on its type.
-    
-    Args:
-        report_type: Type of report to generate
-        start_date: Start date for the report
-        end_date: End date for the report
-        filters: Additional filters for the report
-        output_dir: Directory to save the report
-        job_id: ID of the job
+        params: Report parameters (only prediction_report supported)
         
     Returns:
-        Path to the generated report
+        DataFrame with prediction report data
     """
+    # Validate report type
+    if params.report_type != ReportType.PREDICTION_REPORT:
+        raise ValueError(f"Unsupported report type: {params.report_type}")
     
-    if report_type == ReportType.PREDICTION_REPORT:
-        return await _generate_prediction_report(
-            prediction_month=start_date,
-            filters=filters,
-            output_dir=output_dir,
-            job_id=job_id
-        )
-    elif report_type == ReportType.SALES_SUMMARY:
-        return await _generate_sales_summary_report(
-            start_date=start_date,
-            end_date=end_date,
-            filters=filters,
-            output_dir=output_dir,
-            job_id=job_id
-        )
-    elif report_type == ReportType.MODEL_PERFORMANCE:
-        return await _generate_model_performance_report(
-            start_date=start_date,
-            end_date=end_date,
-            filters=filters,
-            output_dir=output_dir,
-            job_id=job_id
-        )
-    elif report_type == ReportType.PREDICTION_ACCURACY:
-        return await _generate_prediction_accuracy_report(
-            start_date=start_date,
-            end_date=end_date,
-            filters=filters,
-            output_dir=output_dir,
-            job_id=job_id
-        )
-    elif report_type == ReportType.INVENTORY_ANALYSIS:
-        return await _generate_inventory_analysis_report(
-            start_date=start_date,
-            end_date=end_date,
-            filters=filters,
-            output_dir=output_dir,
-            job_id=job_id
-        )
-    else:
-        raise ValueError(f"Unsupported report type: {report_type}")
+    # Determine model_id: explicit in params or fallback to active model
+    model_id: Optional[str] = params.model_id
+    if model_id is None:
+        try:
+            active_model_info = get_active_model()
+            model_id = active_model_info.get("model_id") if active_model_info else None
+            if model_id:
+                logger.info(f"Using active model {model_id} for prediction report")
+        except Exception as e:
+            logger.warning(f"Could not fetch active model: {e}")
+            model_id = None  # Proceed without filtering if not available
+
+    # Prepare report parameters
+    prediction_month = params.prediction_month
+    filters = params.filters or {}
+    
+    logger.info(f"Generating prediction report for {prediction_month.strftime('%Y-%m')}")
+    
+    # Generate report
+    return _generate_prediction_report(
+        prediction_month=prediction_month,
+        filters=filters,
+        model_id=model_id
+    )
 
 
-async def _generate_prediction_report(
+def _generate_prediction_report(
     prediction_month: datetime,
     filters: dict,
-    output_dir: Path,
-    job_id: str
-) -> Path:
+    model_id: Optional[str] = None
+) -> pd.DataFrame:
     """
     Generate an enhanced prediction report for a specific month with enriched metrics.
     
     Args:
         prediction_month: Month for which predictions are needed
         filters: Additional filters for the report
-        output_dir: Directory to save the report
-        job_id: ID of the job
+        model_id: Optional model_id for filtering
         
     Returns:
-        Path to the generated report
+        DataFrame with prediction data
     """
-    logger.info(f"[{job_id}] Generating enhanced prediction report for month: {prediction_month.strftime('%Y-%m')}")
+    logger.info(f"Generating enhanced prediction report for month: {prediction_month.strftime('%Y-%m')}")
     
-    # Update progress
-    update_job_status(job_id, JobStatus.RUNNING.value, progress=20, 
-                     status_message="Finding training jobs for prediction month")
-    
-    # Find training jobs that would have predictions for this month
-    training_jobs = _find_training_jobs_for_prediction_month(prediction_month)
+    # Find training jobs that would have predictions for this month and model (if specified)
+    training_jobs = _find_training_jobs_for_prediction_month(prediction_month, model_id)
     
     if not training_jobs:
-        logger.warning(f"[{job_id}] No training jobs found for prediction month {prediction_month.strftime('%Y-%m')}")
-        # Create empty report
-        output_path = output_dir / f"prediction_report_{prediction_month.strftime('%Y_%m')}_empty.csv"
-        pd.DataFrame({
+        logger.warning(f"No training jobs found for prediction month {prediction_month.strftime('%Y-%m')}")
+        # Return empty DataFrame with message
+        return pd.DataFrame({
             'message': [f'No predictions found for month {prediction_month.strftime("%Y-%m")}']
-        }).to_csv(output_path, index=False)
-        return output_path
+        })
     
-    logger.info(f"[{job_id}] Found {len(training_jobs)} training jobs for prediction month")
-    
-    # Update progress
-    update_job_status(job_id, JobStatus.RUNNING.value, progress=40, 
-                     status_message="Extracting predictions from database")
+    logger.info(f"Found {len(training_jobs)} training jobs for prediction month")
     
     # Extract predictions for these jobs
-    predictions_data = _extract_predictions_for_jobs(training_jobs, filters)
+    predictions_data = _extract_predictions_for_jobs(training_jobs, filters, model_id)
     
     if predictions_data.empty:
-        logger.warning(f"[{job_id}] No prediction data found for training jobs")
-        # Create empty report
-        output_path = output_dir / f"prediction_report_{prediction_month.strftime('%Y_%m')}_no_data.csv"
-        pd.DataFrame({
+        logger.warning("No prediction data found for training jobs")
+        # Return empty DataFrame with message
+        return pd.DataFrame({
             'message': [f'No prediction data found for month {prediction_month.strftime("%Y-%m")}']
-        }).to_csv(output_path, index=False)
-        return output_path
+        })
     
-    # NEW: Load raw features and process them for enrichment
-    update_job_status(job_id, JobStatus.RUNNING.value, progress=60, 
-                     status_message="Loading raw features for enrichment")
-    
+    # Try to load raw features and process them for enrichment
     try:
         raw_features = _load_raw_features_for_report(prediction_month)
         
         if raw_features:
-            # Update progress
-            update_job_status(job_id, JobStatus.RUNNING.value, progress=70, 
-                             status_message="Processing features for enriched metrics")
-            
             # Process features to get enriched metrics
             processed_features = _process_features_for_report(raw_features, prediction_month)
             
             if processed_features:
-                # Update progress
-                update_job_status(job_id, JobStatus.RUNNING.value, progress=80, 
-                                 status_message="Extracting enriched columns")
-                
                 # Extract enriched columns for the target month
                 enriched_columns = _extract_features_for_month(processed_features, prediction_month)
                 
                 if not enriched_columns.empty:
                     # Join prediction data with enriched metrics
-                    update_job_status(job_id, JobStatus.RUNNING.value, progress=85, 
-                                     status_message="Joining predictions with enriched metrics")
-                    
                     predictions_data = _join_predictions_with_enriched_metrics(
                         predictions_data, enriched_columns
                     )
-                    logger.info(f"[{job_id}] Successfully enhanced predictions with enriched metrics")
+                    logger.info("Successfully enhanced predictions with enriched metrics")
                 else:
-                    logger.warning(f"[{job_id}] No enriched columns could be extracted for {prediction_month.strftime('%Y-%m')}")
+                    logger.warning(f"No enriched columns could be extracted for {prediction_month.strftime('%Y-%m')}")
             else:
-                logger.warning(f"[{job_id}] No processed features available for enrichment")
+                logger.warning("No processed features available for enrichment")
         else:
-            logger.warning(f"[{job_id}] No raw features available for enrichment")
+            logger.warning("No raw features available for enrichment")
             
     except Exception as e:
-        logger.warning(f"[{job_id}] Could not load/process enriched features: {e}")
+        logger.warning(f"Could not load/process enriched features: {e}")
         # Continue with basic report if enrichment fails
     
-    # Update progress
-    update_job_status(job_id, JobStatus.RUNNING.value, progress=90, 
-                     status_message="Generating final report")
-    
-    # Generate enhanced report file
-    output_path = output_dir / f"prediction_report_{prediction_month.strftime('%Y_%m')}_enhanced.csv"
-    predictions_data.to_csv(output_path, index=False)
-    
-    logger.info(f"[{job_id}] Enhanced prediction report generated: {output_path} with {len(predictions_data)} records")
+    logger.info(f"Enhanced prediction report generated with {len(predictions_data)} records")
     
     # Log column summary
     enriched_cols = ['Средние продажи (шт)', 'Средние продажи (руб)', 'Потерянные продажи (руб)']
     present_enriched_cols = [col for col in enriched_cols if col in predictions_data.columns]
     
     if present_enriched_cols:
-        logger.info(f"[{job_id}] Report includes enriched columns: {present_enriched_cols}")
+        logger.info(f"Report includes enriched columns: {present_enriched_cols}")
     else:
-        logger.info(f"[{job_id}] Report generated with basic prediction data only")
+        logger.info("Report generated with basic prediction data only")
     
-    return output_path
+    return predictions_data
 
 
-def _find_training_jobs_for_prediction_month(prediction_month: datetime, connection: sqlite3.Connection = None) -> List[Dict[str, Any]]:
+def _find_training_jobs_for_prediction_month(
+    prediction_month: datetime,
+    model_id: Optional[str] = None,
+    connection: sqlite3.Connection = None
+) -> List[Dict[str, Any]]:
     """
-    Find training jobs that have predictions for the specified month.
+    Find training jobs that have predictions for the specified month and model.
     
     Now simplified: just look for prediction_results with the target prediction_month.
     
     Args:
         prediction_month: Month for which we need predictions
+        model_id: Optional model_id for filtering
         connection: Optional database connection to use
         
     Returns:
@@ -293,7 +165,7 @@ def _find_training_jobs_for_prediction_month(prediction_month: datetime, connect
     
     logger.info(f"Looking for training jobs with predictions for month: {prediction_month.strftime('%Y-%m')}")
     
-    query = """
+    base_query = """
         SELECT DISTINCT j.job_id, j.parameters, j.created_at, j.status
         FROM jobs j
         JOIN prediction_results pr ON j.job_id = pr.job_id
@@ -301,9 +173,15 @@ def _find_training_jobs_for_prediction_month(prediction_month: datetime, connect
         AND j.status = 'completed'
         AND pr.prediction_month = ?
     """
-    
+
+    params: List[Any] = [target_month_str]
+
+    if model_id:
+        base_query += " AND pr.model_id = ?"
+        params.append(model_id)
+
     try:
-        jobs = execute_query(query, (target_month_str,), fetchall=True, connection=connection)
+        jobs = execute_query(base_query, tuple(params), fetchall=True, connection=connection)
         if jobs:
             logger.info(f"Found {len(jobs)} training jobs with predictions for {prediction_month.strftime('%Y-%m')}")
             for job in jobs:
@@ -318,13 +196,18 @@ def _find_training_jobs_for_prediction_month(prediction_month: datetime, connect
         return []
 
 
-def _extract_predictions_for_jobs(training_jobs: List[Dict[str, Any]], filters: Dict[str, Any]) -> pd.DataFrame:
+def _extract_predictions_for_jobs(
+    training_jobs: List[Dict[str, Any]],
+    filters: Dict[str, Any],
+    model_id: Optional[str] = None
+) -> pd.DataFrame:
     """
     Extract prediction data for the given training jobs.
     
     Args:
         training_jobs: List of training job records
         filters: Additional filters to apply
+        model_id: Optional model_id for filtering
         
     Returns:
         DataFrame with prediction data
@@ -336,14 +219,20 @@ def _extract_predictions_for_jobs(training_jobs: List[Dict[str, Any]], filters: 
     job_ids_placeholder = ','.join(['?' for _ in job_ids])
     
     # Get prediction results for these jobs
-    query = f"""
+    base_query = f"""
         SELECT DISTINCT pr.result_id, pr.job_id, pr.model_id
         FROM prediction_results pr
         WHERE pr.job_id IN ({job_ids_placeholder})
     """
-    
+
+    params_list: List[Any] = job_ids.copy()
+
+    if model_id:
+        base_query += " AND pr.model_id = ?"
+        params_list.append(model_id)
+
     try:
-        prediction_results = execute_query(query, tuple(job_ids), fetchall=True)
+        prediction_results = execute_query(base_query, tuple(params_list), fetchall=True)
         
         if not prediction_results:
             logger.warning("No prediction results found for training jobs")
@@ -356,13 +245,6 @@ def _extract_predictions_for_jobs(training_jobs: List[Dict[str, Any]], filters: 
         predictions_query = f"""
             SELECT 
                 fp.result_id,
-                fp.model_id,
-                fp.prediction_date,
-                fp.quantile_05,
-                fp.quantile_25,
-                fp.quantile_50,
-                fp.quantile_75,
-                fp.quantile_95,
                 dmm.barcode,
                 dmm.artist,
                 dmm.album,
@@ -372,14 +254,28 @@ def _extract_predictions_for_jobs(training_jobs: List[Dict[str, Any]], filters: 
                 dmm.recording_decade,
                 dmm.release_decade,
                 dmm.style,
-                dmm.record_year
+                dmm.record_year,
+                fp.model_id,
+                fp.prediction_date,
+                fp.quantile_05,
+                fp.quantile_25,
+                fp.quantile_50,
+                fp.quantile_75,
+                fp.quantile_95
             FROM fact_predictions fp
             JOIN dim_multiindex_mapping dmm ON fp.multiindex_id = dmm.multiindex_id
             WHERE fp.result_id IN ({result_ids_placeholder})
             ORDER BY dmm.artist, dmm.album, fp.prediction_date
         """
-        
-        predictions_data = execute_query(predictions_query, tuple(result_ids), fetchall=True)
+
+        if model_id:
+            predictions_query += " AND fp.model_id = ?"
+
+        query_params = result_ids.copy()
+        if model_id:
+            query_params.append(model_id)
+
+        predictions_data = execute_query(predictions_query, tuple(query_params), fetchall=True)
         
         if not predictions_data:
             logger.warning("No prediction data found in fact_predictions")
@@ -423,7 +319,7 @@ def _apply_filters_to_dataframe(df: pd.DataFrame, filters: Dict[str, Any]) -> pd
     return filtered_df
 
 
-# New enrichment functions for enhanced prediction reports
+# Enrichment functions for enhanced prediction reports
 def _load_raw_features_for_report(prediction_month: datetime) -> Dict[str, pd.DataFrame]:
     """
     Load raw features needed for enriched report generation.
@@ -488,11 +384,16 @@ def _adapt_features_schema(raw_features: Dict[str, pd.DataFrame]) -> Dict[str, p
                     # We need to reshape to have dates in index for notebook compatibility
                     
                     # Melt the DataFrame to get dates as index level
+                    # Get index column names (these become columns after reset_index)
+                    index_column_names = list(adapted_df.index.names)
                     melted = adapted_df.reset_index().melt(
-                        id_vars=[col for col in adapted_df.reset_index().columns if col not in adapted_df.columns],
+                        id_vars=index_column_names,
                         var_name='_date',
-                        value_name=feature_type
+                        value_name=f"{feature_type}_value"
                     )
+                    
+                    # Rename the new value column back to its original intended name
+                    melted.rename(columns={f"{feature_type}_value": feature_type}, inplace=True)
                     
                     # Set MultiIndex with _date as the last level
                     index_cols = [col for col in melted.columns if col not in ['_date', feature_type]]
@@ -534,7 +435,7 @@ def _process_features_for_report(raw_features: Dict[str, pd.DataFrame], predicti
         logger.info(f"Processing features for report generation for {prediction_month.strftime('%Y-%m')}")
         
         # Adapt schema to match notebook expectations
-        adapted_features = _adapt_features_schema(raw_features)
+        adapted_features = raw_features # _adapt_features_schema(raw_features)
         
         # Check if we have required features
         required_features = ['sales', 'change', 'stock', 'prices']
@@ -698,11 +599,12 @@ def _extract_features_for_month(processed_features: Dict[str, pd.DataFrame], tar
             if feature_key in processed_features:
                 feature_df = processed_features[feature_key]
                 logger.debug(f"Processing feature {feature_key}, shape: {feature_df.shape}")
-                logger.debug(f"Available dates: {feature_df.columns.tolist()}")
+                logger.debug(f"Available dates: {feature_df.index.tolist()}")
                 
                 # Find the closest date to our target
-                available_dates = pd.to_datetime(feature_df.columns)
-                
+                available_dates = pd.to_datetime(feature_df.index)
+                logger.debug(f"Available dates: {available_dates}")
+
                 # Try exact match first
                 if target_date in available_dates:
                     selected_date = target_date
@@ -720,10 +622,8 @@ def _extract_features_for_month(processed_features: Dict[str, pd.DataFrame], tar
                         selected_date = available_dates.max()
                         logger.warning(f"No data for target month {target_month.strftime('%Y-%m')}, using {selected_date}")
                 
-                if selected_date in feature_df.columns:
-                    column_data = pd.DataFrame(
-                        feature_df[selected_date]
-                    ).rename(columns={selected_date: display_name})
+                if selected_date in feature_df.index:
+                    column_data = pd.DataFrame({display_name: feature_df.loc[selected_date]})
                     columns_data.append(column_data)
                     logger.debug(f"Added column {display_name} with {len(column_data)} rows")
         
@@ -814,61 +714,4 @@ def _join_predictions_with_enriched_metrics(predictions_df: pd.DataFrame, enrich
     except Exception as e:
         logger.error(f"Error joining predictions with enriched metrics: {e}", exc_info=True)
         return predictions_df
-
-
-# Stub implementations for other report types
-async def _generate_sales_summary_report(
-    start_date: datetime,
-    end_date: datetime,
-    filters: dict,
-    output_dir: Path,
-    job_id: str
-) -> Path:
-    """Generate sales summary report (stub implementation)."""
-    logger.info(f"[{job_id}] Generating sales summary report (stub)")
-    output_path = output_dir / f"sales_summary_{uuid.uuid4().hex[:8]}.csv"
-    pd.DataFrame({'message': ['Sales summary report not yet implemented']}).to_csv(output_path, index=False)
-    return output_path
-
-
-async def _generate_model_performance_report(
-    start_date: datetime,
-    end_date: datetime,
-    filters: dict,
-    output_dir: Path,
-    job_id: str
-) -> Path:
-    """Generate model performance report (stub implementation)."""
-    logger.info(f"[{job_id}] Generating model performance report (stub)")
-    output_path = output_dir / f"model_performance_{uuid.uuid4().hex[:8]}.csv"
-    pd.DataFrame({'message': ['Model performance report not yet implemented']}).to_csv(output_path, index=False)
-    return output_path
-
-
-async def _generate_prediction_accuracy_report(
-    start_date: datetime,
-    end_date: datetime,
-    filters: dict,
-    output_dir: Path,
-    job_id: str
-) -> Path:
-    """Generate prediction accuracy report (stub implementation)."""
-    logger.info(f"[{job_id}] Generating prediction accuracy report (stub)")
-    output_path = output_dir / f"prediction_accuracy_{uuid.uuid4().hex[:8]}.csv"
-    pd.DataFrame({'message': ['Prediction accuracy report not yet implemented']}).to_csv(output_path, index=False)
-    return output_path
-
-
-async def _generate_inventory_analysis_report(
-    start_date: datetime,
-    end_date: datetime,
-    filters: dict,
-    output_dir: Path,
-    job_id: str
-) -> Path:
-    """Generate inventory analysis report (stub implementation)."""
-    logger.info(f"[{job_id}] Generating inventory analysis report (stub)")
-    output_path = output_dir / f"inventory_analysis_{uuid.uuid4().hex[:8]}.csv"
-    pd.DataFrame({'message': ['Inventory analysis report not yet implemented']}).to_csv(output_path, index=False)
-    return output_path
     

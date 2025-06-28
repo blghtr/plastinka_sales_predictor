@@ -961,7 +961,7 @@ def save_predictions_to_db(
                 cursor = conn.cursor()
                 cursor.executemany(
                     """
-                    INSERT INTO fact_predictions
+                    INSERT OR REPLACE INTO fact_predictions
                     (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -971,7 +971,7 @@ def save_predictions_to_db(
                 # Если прямой вызов не сработал, используем execute_many
                 execute_many(
                     """
-                    INSERT INTO fact_predictions
+                    INSERT OR REPLACE INTO fact_predictions
                     (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -1126,7 +1126,7 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
             finally:
                 # Cleanup project input link regardless of success/failure
                 if project_input_link_path:
-                    cleanup_project_input_link(str(settings.project_root_dir))
+                    cleanup_project_input_link(str(settings.datasphere_job_dir))
                 
                 # The temporary directories are cleaned up automatically by the context manager.
                 # Final log message for job run completion.
