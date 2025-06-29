@@ -1,4 +1,3 @@
-from typing import Optional
 
 import torch
 from darts.models import TiDEModel
@@ -30,14 +29,14 @@ class _MultiSampleTideModule(_TideModule):
         temporal_width_future: int,
         use_layer_norm: bool,
         dropout: float,
-        temporal_hidden_size_past: Optional[int] = None,
-        temporal_hidden_size_future: Optional[int] = None,
+        temporal_hidden_size_past: int | None = None,
+        temporal_hidden_size_future: int | None = None,
         num_samples_for_metrics: int = 100,
         **kwargs,
     ):
         # Store the custom parameter before calling super().__init__
         self.num_samples_for_metrics = num_samples_for_metrics
-        
+
         # Call parent constructor with all required arguments
         super().__init__(
             input_dim=input_dim,

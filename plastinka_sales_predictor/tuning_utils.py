@@ -1,21 +1,27 @@
-from warnings import filterwarnings
-from copy import deepcopy
-from collections import defaultdict
-from pathlib import Path
 import json
-from darts.models.forecasting.torch_forecasting_model import INIT_MODEL_NAME, CHECKPOINTS_FOLDER
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
-import ray
 import os
+from collections import defaultdict
+from copy import deepcopy
+from pathlib import Path
+from warnings import filterwarnings
+
+import pytorch_lightning as pl
 import torch
+from darts.models.forecasting.torch_forecasting_model import (
+    CHECKPOINTS_FOLDER,
+    INIT_MODEL_NAME,
+)
+from pytorch_lightning.callbacks import ModelCheckpoint
+
+import ray
 from plastinka_sales_predictor import (
     DEFAULT_METRICS,
     DartsCheckpointCallback,
-    prepare_for_training,
+    configure_logger,
     get_model,
-    configure_logger
+    prepare_for_training,
 )
+
 filterwarnings('ignore')
 
 
@@ -41,7 +47,7 @@ def load_fixed_params(json_path=None, tunable_params=None):
 
     fixed = {}
     if json_path is not None:
-        with open(json_path, 'r') as f:
+        with open(json_path) as f:
             fixed = json.load(f)
 
     fixed_params = defaultdict(dict)
@@ -56,13 +62,13 @@ def load_fixed_params(json_path=None, tunable_params=None):
             fixed_part = None
             if key in tunable_params:
                 if isinstance(fixed[key], dict):
-                    fixed_part = {k: v for k, v in fixed[key].items() 
+                    fixed_part = {k: v for k, v in fixed[key].items()
                                   if k not in tunable_params[key]}
                 if fixed_part:
                     fixed_params[key] = fixed_part
             else:
                 fixed_params[key] = fixed[key]
-    
+
     return fixed_params
 
 
@@ -81,10 +87,10 @@ def merge_with_fixed_params(tunable_params, fixed_params):
 
 
 def train_model(
-        config, 
-        ds, 
+        config,
+        ds,
         val_ds,
-        random_state=42, 
+        random_state=42,
         model_name='TiDE'
 ):
     def load_from_checkpoint(
@@ -113,7 +119,7 @@ def train_model(
 
             file_name = max(checklist, key=os.path.getctime).name
             return file_name
-        
+
         file_name = None
         trial_dir = Path(ckpt_dir).parent
         ckpt_trial_id = str(trial_dir.parts[-1])[6:]
@@ -145,7 +151,7 @@ def train_model(
             model.model.criterion = loss_fn
             model.model.train_criterion = deepcopy(loss_fn)
             model.model.val_criterion = deepcopy(loss_fn)
-        
+
         torch_metrics = model.model.configure_torch_metrics(
             model.model_params.get("torch_metrics")
         )
@@ -208,7 +214,7 @@ def train_model(
                 model = load_from_checkpoint(checkpoint_dir)
                 inject_callback()
                 print(f"✓ Resumed training from epoch {model.epochs_trained}")
-    
+
     else:
         model_config['nr_epochs_val_period'] = 5
         model = get_model(
@@ -225,7 +231,7 @@ def train_model(
             model_config=model_config
         )
         inject_callback()
-        
+
     model.fit_from_dataset(ds, val_ds)
     return model
 

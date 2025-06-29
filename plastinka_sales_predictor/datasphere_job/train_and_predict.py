@@ -1,22 +1,22 @@
 import json
 import os
 import sys
-import zipfile
-import shutil
 import tempfile
-from datetime import datetime
+import time
+import zipfile
+
 import click
 import numpy as np
 import pandas as pd
+
 # plastinka_sales_predictor imports are now at the top level
 from plastinka_sales_predictor import (
     configure_logger,
+    extract_early_stopping_callback,
     prepare_for_training,
-    train_model as _train_model,
-    extract_early_stopping_callback
 )
+from plastinka_sales_predictor import train_model as _train_model
 from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset
-import time
 
 DEFAULT_CONFIG_PATH = 'config/model_config.json'
 DEFAULT_MODEL_OUTPUT_REF = 'model.onnx'
@@ -49,7 +49,7 @@ def train_model(
     if 'nn_model_config' in config:
         config['model_config'] = config.pop('nn_model_config')
     # If model_config already exists, use it as is (for tests)
-    
+
     # Instantiate the model
     config['model_config']['n_epochs'] = 1
     metrics_dict = {}
@@ -57,7 +57,7 @@ def train_model(
     # Train the model
     try:
         logger.info("Train first time to determine effective epochs")
-        
+
         # First training run - with validation dataset
         model = _train_model(
             *prepare_for_training(
@@ -67,17 +67,17 @@ def train_model(
             ),
             model_name=f'{DEFAULT_MODEL_NAME}__n_epochs_search'
         )
-        
+
         # Capture validation metrics from first training phase
         val_metrics = {}
         if hasattr(model, 'trainer') and hasattr(model.trainer, 'callback_metrics'):
             for k, v in model.trainer.callback_metrics.items():
                 if k.startswith('val'):
                     val_metrics[k] = v.item() if hasattr(v, 'item') else v
-        
+
         metrics_dict['validation'] = val_metrics
         logger.info(f"Captured validation metrics from first training phase: {len(val_metrics)} metrics")
-        
+
         early_stopping = extract_early_stopping_callback(model.trainer)
         effective_epochs = (
             model.trainer.current_epoch - 1
@@ -103,17 +103,17 @@ def train_model(
             ),
             model_name=f'{DEFAULT_MODEL_NAME}__full_train'
         )
-        
+
         # Capture training metrics from the second training phase
         train_metrics = {}
         if hasattr(model, 'trainer') and hasattr(model.trainer, 'callback_metrics'):
             for k, v in model.trainer.callback_metrics.items():
                 if k.startswith('train'):
                     train_metrics[k] = v.item() if hasattr(v, 'item') else v
-        
+
         metrics_dict['training'] = train_metrics
         logger.info(f"Captured training metrics from second training phase: {len(train_metrics)} metrics")
-        
+
         logger.info("Model trained successfully.")
 
     except Exception as e:
@@ -126,7 +126,7 @@ def train_model(
 def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.DataFrame:
     """Generates sales predictions using the trained model."""
     logger.info("Starting sales prediction...")
-    
+
     # Extract inputs from dataset object
     data_dict = predict_dataset.to_dict()
     series = data_dict['series']
@@ -138,15 +138,15 @@ def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.Data
     try:
         # Generate predictions
         predictions = model.predict(
-            1, 
-            num_samples=500, 
-            series=series, 
-            future_covariates=future_covariates, 
+            1,
+            num_samples=500,
+            series=series,
+            future_covariates=future_covariates,
             past_covariates=past_covariates
         )
 
         logger.info("Prediction generation complete.")
-    
+
         predictions_df = get_predictions_df(
             predictions,
             series,
@@ -166,28 +166,28 @@ def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.Data
 def get_predictions_df(
         preds,
         series,
-        future_covariates, 
+        future_covariates,
         labels,
         index_names_mapping,
-        scaler=None, 
+        scaler=None,
 ):
     def _maybe_inverse_transform(array):
         if scaler is not None:
             return scaler.inverse_transform(array)
         return array
-    
+
     preds_, labels_ = [], []
-    for p, _, _, l in zip(preds, series, future_covariates, labels):
+    for p, _, _, l in zip(preds, series, future_covariates, labels, strict=False):
         preds_.append(_maybe_inverse_transform(p.data_array().values))
         labels_.append(l)
-        
+
     preds_ = np.hstack(preds_).squeeze()
 
     level_names = {i: n for n, i in index_names_mapping.items()}
     level_names = [level_names[i] for i in range(len(level_names))]
 
     preds_df = pd.DataFrame(
-        preds_, 
+        preds_,
         index=pd.MultiIndex.from_tuples(
             labels,
             names=level_names
@@ -197,10 +197,10 @@ def get_predictions_df(
     # Используем строковые названия колонок для квантилей
     quantiles = (0.05, 0.25, 0.5, 0.75, 0.95)
     preds_df = preds_df.clip(0).quantile(quantiles, axis=1).T
-    
+
     # Преобразуем названия колонок квантилей в строки
     preds_df.columns = [str(col) for col in preds_df.columns]
-    
+
     preds_df = preds_df.reset_index()
 
     return preds_df
@@ -231,12 +231,12 @@ def validate_input_directory(input_path: str) -> str:
         except Exception as e:
             logger.error(f"Failed to extract ZIP file {input_path}: {e}")
             sys.exit(1)
-    
+
     # Check if it's a directory
     elif os.path.isdir(input_path):
         logger.info(f"Input is a directory: {input_path}")
         return input_path
-    
+
     else:
         logger.error(f"Input path is neither a directory nor a valid ZIP file: {input_path}")
         sys.exit(1)
@@ -302,7 +302,7 @@ def validate_config_parameters(config: dict) -> None:
     if 'lags' not in config:
         logger.error("Configuration missing required 'lags' parameter")
         sys.exit(1)
-        
+
     lags_value = config['lags']
     if not isinstance(lags_value, int) or lags_value < 1:
         logger.error(f"Invalid 'lags' value in configuration: {lags_value}. Must be a positive integer.")
@@ -372,17 +372,17 @@ def load_configuration(input_path: str) -> tuple:
     """
     # Validate and get actual input directory (extract ZIP if needed)
     input_dir = validate_input_directory(input_path)
-    
+
     config_file_path = os.path.join(input_dir, "config.json")
     validate_config_file(config_file_path)
-    
+
     try:
-        with open(config_file_path, 'r') as f:
+        with open(config_file_path) as f:
             config = json.load(f)
-        
+
         logger.info(f"Configuration loaded successfully from {config_file_path}")
         return config, input_dir
-        
+
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in configuration file {config_file_path}: {e}")
         sys.exit(1)
@@ -422,10 +422,10 @@ def load_datasets(input_dir: str) -> tuple:
 
         # Validate loaded dataset objects
         validate_dataset_objects(train_dataset, val_dataset)
-            
+
         logger.info("Datasets validated successfully.")
         return train_dataset, val_dataset
-        
+
     except Exception as e:
         logger.error(f"Error loading datasets: {e}", exc_info=True)
         sys.exit(1)
@@ -458,13 +458,13 @@ def run_training(train_dataset, val_dataset, config: dict) -> tuple:
         training_duration_seconds = end_time - start_time
         logger.info(f"Model training phase completed in {training_duration_seconds:.2f} seconds.")
         logger.info(f"Obtained metrics from training process: validation metrics: {len(training_metrics.get('validation', {}))} items, training metrics: {len(training_metrics.get('training', {}))} items")
-        
+
         if not model:
             logger.error("Model training failed to return a model object. Exiting.")
             sys.exit(1)
-            
+
         return model, training_metrics, training_duration_seconds
-    
+
     except Exception as e:
         logger.error(f"Pipeline failed during model training: {e}")
         sys.exit(1)
@@ -488,14 +488,14 @@ def run_prediction(model, train_dataset, config: dict):
     try:
         # Validate configuration parameters
         validate_config_parameters(config)
-            
+
         L = train_dataset._n_time_steps
         lags_value = config['lags']
         length = lags_value + 1
-        
+
         # Validate window parameters
         validate_prediction_window(L, length)
-            
+
         logger.info(f"Setting up prediction dataset with window ({L - length}, {L})")
         predict_dataset = train_dataset.setup_dataset(
             window=(L - length, L),
@@ -504,13 +504,13 @@ def run_prediction(model, train_dataset, config: dict):
 
         predictions = predict_sales(model, predict_dataset)
         logger.info("Predictions generated successfully.")
-        
+
         if predictions is None:
             logger.error("Prediction failed to return results. Exiting.")
             sys.exit(1)
-            
+
         return predictions
-        
+
     except KeyError as e:
         logger.error(f"Configuration missing required parameter: {e}")
         sys.exit(1)
@@ -531,19 +531,19 @@ def prepare_metrics(training_metrics: dict, training_duration_seconds: float) ->
         Combined metrics dictionary
     """
     metrics = {}
-    
+
     # Add metrics from both training phases
     if 'validation' in training_metrics:
         metrics.update(training_metrics['validation'])
         logger.info(f"Added {len(training_metrics['validation'])} validation metrics from first training phase")
-    
+
     if 'training' in training_metrics:
         metrics.update(training_metrics['training'])
         logger.info(f"Added {len(training_metrics['training'])} training metrics from second training phase")
-    
+
     # Add training duration to metrics
     metrics["training_duration_seconds"] = round(training_duration_seconds, 2)
-    
+
     return metrics
 
 
@@ -561,13 +561,13 @@ def save_model_file(model, model_output: str) -> None:
     try:
         model.to_onnx(model_output)
         logger.info(f"Model saved: {model_output}")
-        
+
         # Validate model file was created
         validate_file_created(model_output, "Model")
 
         model_size = os.path.getsize(model_output)
         logger.info(f"Model file size: {model_size} bytes")
-        
+
     except Exception as e:
         logger.error(f"Failed to save model: {e}", exc_info=True)
         sys.exit(1)
@@ -587,13 +587,13 @@ def save_predictions_file(predictions, prediction_output: str) -> None:
     try:
         predictions.to_csv(prediction_output, index=False)
         logger.info(f"Predictions saved: {prediction_output}")
-        
+
         # Validate predictions file was created
         validate_file_created(prediction_output, "Predictions")
-            
+
         pred_rows = len(predictions)
         logger.info(f"Predictions file contains {pred_rows} rows")
-        
+
     except Exception as e:
         logger.error(f"Failed to save predictions: {e}", exc_info=True)
         sys.exit(1)
@@ -614,11 +614,11 @@ def save_metrics_file(metrics: dict, metrics_output: str) -> None:
         with open(metrics_output, 'w') as f:
             json.dump(metrics, f, indent=2)
         logger.info(f"Metrics saved: {metrics_output}")
-        
+
         # Validate metrics file was created
         validate_file_created(metrics_output, "Metrics")
         logger.info(f"Metrics saved: {len(metrics)} metrics")
-        
+
     except Exception as e:
         logger.error(f"Failed to save metrics: {e}", exc_info=True)
         sys.exit(1)
@@ -639,13 +639,13 @@ def create_output_archive(temp_output_dir: str, output: str) -> None:
         model_output = os.path.join(temp_output_dir, DEFAULT_MODEL_OUTPUT_REF)
         prediction_output = os.path.join(temp_output_dir, DEFAULT_PREDICTION_OUTPUT_REF)
         metrics_output = os.path.join(temp_output_dir, DEFAULT_METRICS_OUTPUT_REF)
-        
+
         files_to_archive = [model_output, prediction_output, metrics_output]
         archived_files = []
-        
+
         # Validate all required files exist before archiving
         validate_archive_files(files_to_archive)
-        
+
         logger.info(f"Creating output archive: {output}")
         with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zipf:
             # Add all files from temp_output_dir to the archive
@@ -654,17 +654,17 @@ def create_output_archive(temp_output_dir: str, output: str) -> None:
                 zipf.write(file_path, archive_name)
                 archived_files.append(archive_name)
                 logger.info(f"Added {file_path} to archive as {archive_name}")
-        
+
         # Validate archive was created
         validate_file_created(output, "Output archive")
-            
+
         archive_size = os.path.getsize(output)
         logger.info(f"Output archive created successfully: {output} ({archive_size} bytes)")
         logger.info(f"Archive contains {len(archived_files)} files: {', '.join(archived_files)}")
-        
+
         # Note: No manual cleanup needed - tempfile.TemporaryDirectory() handles it automatically
         logger.info(f"Temporary directory {temp_output_dir} will be cleaned up automatically")
-        
+
     except Exception as e:
         logger.error(f"Failed to create output archive: {e}", exc_info=True)
         sys.exit(1)
@@ -684,32 +684,32 @@ def main(input_dir, output):
     """
     logger.info("Starting datasphere job...")
     logger.info(f'Loading inputs from {input_dir}...')
-    
+
     # Resolve output path to be absolute so it's created in the working directory, not temp directory
     output_path = os.path.abspath(output)
     logger.info(f"Archive will be created at: {output_path}")
-    
+
     # Use temporary directory context manager for proper resource management
     with tempfile.TemporaryDirectory(prefix="plastinka_temp_outputs_") as temp_output_dir:
         logger.info(f"Created temporary output directory: {temp_output_dir}")
         logger.info(f"Output configuration: temp_dir={temp_output_dir}, archive={output}")
-        
-        # Set default output paths in temp directory  
+
+        # Set default output paths in temp directory
         model_output = os.path.join(temp_output_dir, DEFAULT_MODEL_OUTPUT_REF)
         prediction_output = os.path.join(temp_output_dir, DEFAULT_PREDICTION_OUTPUT_REF)
         metrics_output = os.path.join(temp_output_dir, DEFAULT_METRICS_OUTPUT_REF)
-        
+
         # 1. Load configuration (and get actual input directory)
         config, actual_input_dir = load_configuration(input_dir)
-        
+
         # 2. Load datasets
         train_dataset, val_dataset = load_datasets(actual_input_dir)
-        
+
         # 3. Train model
         model, training_metrics, training_duration_seconds = run_training(
             train_dataset, val_dataset, config
         )
-        
+
         if hasattr(train_dataset, 'reset_window'):
             full_train_ds = train_dataset.reset_window()
         else:
@@ -719,19 +719,19 @@ def main(input_dir, output):
 
         # 4. Generate predictions
         predictions = run_prediction(model, full_train_ds, config)
-        
+
         # 5. Prepare final metrics
         metrics = prepare_metrics(training_metrics, training_duration_seconds)
-        
+
         # 6. Save all outputs
         save_model_file(model, model_output)
         save_predictions_file(predictions, prediction_output)
         save_metrics_file(metrics, metrics_output)
-        
+
         # 7. Create output archive
         create_output_archive(temp_output_dir, output_path)
-        
+
     logger.info("Train and predict pipeline finished.")
 
 if __name__ == '__main__':
-    main() 
+    main()

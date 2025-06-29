@@ -1,6 +1,6 @@
-from darts.utils.likelihood_models import QuantileRegression
 import torch
 from darts.logging import raise_if_not
+from darts.utils.likelihood_models import QuantileRegression
 from scipy.stats import norm
 
 
@@ -16,7 +16,7 @@ class WQuantileRegression(QuantileRegression):
                 ]
             ):
                 q_weights = asymmetric_gaussian_weights(
-                    self.quantiles, 
+                    self.quantiles,
                     peak_location=0.5,
                     sigma_left_factor=sigma_left_factor,
                     sigma_right_factor=sigma_right_factor,
@@ -27,9 +27,9 @@ class WQuantileRegression(QuantileRegression):
 
         if not isinstance(q_weights, torch.Tensor):
             q_weights = torch.tensor(q_weights)
-            
+
         self.q_weights = q_weights
-        
+
     def compute_loss(
         self,
         model_output: torch.Tensor,
@@ -39,7 +39,7 @@ class WQuantileRegression(QuantileRegression):
         dim_q = 3
         device = model_output.device
         self.q_weights = self.q_weights.to(device)
-        
+
         # test if torch model forward produces correct output and store quantiles tensor
         if self.first:
             raise_if_not(
@@ -63,7 +63,7 @@ class WQuantileRegression(QuantileRegression):
         if sample_weight is not None:
             losses = losses * sample_weight
         return losses.mean()
-    
+
 
 def asymmetric_gaussian_weights(quantiles, peak_location, sigma_left_factor, sigma_right_factor, peak_base):
     """Генерирует асимметричные веса с факторами для сигм и базовым пиком."""

@@ -27,22 +27,22 @@ def configure_logger(
         log_file = DEFAULT_LOG_FILE
 
     logger = logging.getLogger(logger_name)
-    
+
     if not logger.handlers:
         logger.setLevel(logging.INFO)
-        
+
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
-        
+
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
-        
+
         if log_file:
             if os.path.dirname(log_file):
                 os.makedirs(os.path.dirname(log_file), exist_ok=True)
-            
+
             file_handler = TimedRotatingFileHandler(
                 log_file,
                 backupCount=5,

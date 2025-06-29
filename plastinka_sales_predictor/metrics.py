@@ -59,7 +59,7 @@ class BaseMetricWithZeroHandling(Metric):
         # More specific shape checks will be in the _compute_score of derived classes
 
         scaled_zero = 1e-6 # Threshold to consider an actual value as zero
-        zero_mask = actual_series == scaled_zero 
+        zero_mask = actual_series == scaled_zero
         non_zero_mask = ~zero_mask # Mask for actuals that are non-zero
 
         # Update sub-metrics for zero and non-zero actuals separately
@@ -94,11 +94,11 @@ class BaseMetricWithZeroHandling(Metric):
 
         penalty = 0
         # Apply exponential penalty if scores deviate from thresholds in the undesired direction
-        for delta, thresh in zip([zero_delta, non_zero_delta], [self.zero_thresh, self.nonzero_thresh]):
+        for delta, thresh in zip([zero_delta, non_zero_delta], [self.zero_thresh, self.nonzero_thresh], strict=False):
             if thresh != 0: # Only apply penalty if a threshold is set
                 # Penalty is applied if the sign of delta matches the penalty_sign (e.g., for 'min' direction, if delta is positive)
                 penalty += self.penalty_sign * float(torch.sign(delta) == self.penalty_sign) * (self.exp_base**abs(delta) - 1)
-        
+
         # Combine scores using harmonic mean and add penalty. Ensure result is non-negative.
         return max(0, harmonic_mean(zero_score, non_zero_score) + penalty)
 
@@ -140,7 +140,7 @@ class MIWS(BaseMetricWithZeroHandling): # Mean Interval Width Score
         # dim=1 means quantiles are computed across the S dimension (samples/quantiles for each data point)
         y_pred_lo = torch.quantile(pred_series, q=self.q_interval[0], dim=1) # Shape: (N,)
         y_pred_hi = torch.quantile(pred_series, q=self.q_interval[1], dim=1) # Shape: (N,)
-        
+
         # Interval width: difference between upper and lower predicted quantiles
         interval_width = y_pred_hi - y_pred_lo # Shape: (N,)
         assert (interval_width >= 0).all(), "Interval width must be non-negative."
@@ -203,7 +203,7 @@ class MIC(BaseMetricWithZeroHandling): # Mean Interval Coverage
         # keepdim=True ensures the output shape is (N, 1) for broadcasting with actual_series (N, 1).
         y_pred_lo = torch.quantile(pred_series, q=self.q_interval[0], dim=-1, keepdim=True) # Shape: (N, 1)
         y_pred_hi = torch.quantile(pred_series, q=self.q_interval[1], dim=-1, keepdim=True) # Shape: (N, 1)
-        
+
         # Check if actual value is within the [y_pred_lo, y_pred_hi] interval
         # Result is a boolean tensor, converted to float (0.0 or 1.0). Shape: (N, 1)
         coverage = ((y_pred_lo <= actual_series) & (actual_series <= y_pred_hi)).float()

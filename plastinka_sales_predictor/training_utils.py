@@ -1,38 +1,35 @@
 import importlib
+import logging
 import uuid
-import torch
-from plastinka_sales_predictor import (
-    PlastinkaTrainingTSDataset,
-    DEFAULT_METRICS,
-    WQuantileRegression,
-    configure_logger
-)
-from warnings import filterwarnings
 from copy import deepcopy
-from plastinka_sales_predictor.model import CustomTiDEModel as TiDEModel
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional, Union
+from warnings import filterwarnings
+
 import pytorch_lightning as pl
+import torch
 from pytorch_lightning.callbacks import (
     EarlyStopping,
+    LearningRateMonitor,
     StochasticWeightAveraging,
-    LearningRateMonitor
 )
-import logging
-from typing_extensions import (
-    TYPE_CHECKING,
-    Optional,
-    Dict,
-    Tuple,
-    Any,
-    Union,
-    List
+from typing_extensions import Any
+
+from plastinka_sales_predictor import (
+    DEFAULT_METRICS,
+    PlastinkaTrainingTSDataset,
+    WQuantileRegression,
+    configure_logger,
 )
-from pathlib import Path
+from plastinka_sales_predictor.model import CustomTiDEModel as TiDEModel
+
 filterwarnings('ignore')
 if TYPE_CHECKING:
-    from torchmetrics import Metric, MetricCollection
-    from plastinka_sales_predictor.data_preparation import PlastinkaBaseTSDataset
     from darts.utils.likelihood_models import Likelihood
     from torch.optim.lr_scheduler import LRScheduler
+    from torchmetrics import Metric, MetricCollection
+
+    from plastinka_sales_predictor.data_preparation import PlastinkaBaseTSDataset
 
 
 logger = configure_logger(
@@ -42,20 +39,20 @@ logger = configure_logger(
 THIS_DIR = Path(__file__).parent
 
 def prepare_for_training(
-        config: Dict[str, Any],
-        ds: 'PlastinkaBaseTSDataset', 
+        config: dict[str, Any],
+        ds: 'PlastinkaBaseTSDataset',
         val_ds: Optional['PlastinkaBaseTSDataset'] = None,
-        callbacks: Optional[List[pl.Callback]] = None
-) -> Tuple[
+        callbacks: list[pl.Callback] | None = None
+) -> tuple[
     'PlastinkaBaseTSDataset',
     Optional['PlastinkaBaseTSDataset'],
-    List[pl.Callback],
-    Dict[str, Any],
-    Dict[str, Any],
-    Dict[str, Any],
-    Dict[str, Any],
+    list[pl.Callback],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
     'Likelihood',
-    Optional[str]
+    str | None
 ]:
     logger.info("Preparing for training")
     config = deepcopy(config)
@@ -99,7 +96,7 @@ def prepare_for_training(
                 **swa_config
             )
         ])
-        
+
         if val_ds is not None:
             val_ds.setup_dataset(
                 input_chunk_length=lags,
@@ -155,17 +152,17 @@ def prepare_for_training(
 
 
 def get_model(
-        optimizer_config: Dict[str, Any],
-        callbacks: List[pl.Callback],
+        optimizer_config: dict[str, Any],
+        callbacks: list[pl.Callback],
         lr_scheduler_cls: 'LRScheduler',
-        lr_shed_config: Dict[str, Any],
+        lr_shed_config: dict[str, Any],
         random_state: int,
         work_dir: str,
         model_name: str,
         save_checkpoints: bool,
         likelihood: 'Likelihood',
         torch_metrics: Union['Metric', 'MetricCollection'],
-        model_config: Dict[str, Any],
+        model_config: dict[str, Any],
 ):
     return TiDEModel(
         output_chunk_length=1,
@@ -194,16 +191,16 @@ def get_model(
 def train_model(
         ds: 'PlastinkaTrainingTSDataset',
         val_ds: Optional['PlastinkaTrainingTSDataset'] = None,
-        callbacks: Optional[List[pl.Callback]] = None,
+        callbacks: list[pl.Callback] | None = None,
         lr_scheduler_cls: Optional['LRScheduler'] = None,
-        lr_shed_config: Optional[Dict[str, Any]] = None,
-        optimizer_config: Optional[Dict[str, Any]] = None,
-        model_config: Optional[Dict[str, Any]] = None,
+        lr_shed_config: dict[str, Any] | None = None,
+        optimizer_config: dict[str, Any] | None = None,
+        model_config: dict[str, Any] | None = None,
         likelihood: Optional['Likelihood'] = None,
-        model_id: Optional[str] = None,
-        model_name: Optional[str] = 'TiDE',
-        random_state: Optional[int] = 42,
-        torch_metrics: Optional[Union['Metric', 'MetricCollection']] = None,
+        model_id: str | None = None,
+        model_name: str | None = 'TiDE',
+        random_state: int | None = 42,
+        torch_metrics: Union['Metric', 'MetricCollection'] | None = None,
 ) -> TiDEModel:
     if torch_metrics is None:
         torch_metrics = DEFAULT_METRICS
@@ -224,21 +221,21 @@ def train_model(
             torch_metrics=torch_metrics,
             model_config=model_config,
         )
-        
+
         # Принудительно выставляем флаг использования статических ковариат
         # Это необходимо, поскольку при использовании fit_from_dataset() вместо fit()
         # автоматическая проверка наличия static_covariates в _setup_for_fit_from_dataset() не выполняется
         if model.supports_static_covariates and model.considers_static_covariates:
-            model._uses_static_covariates = True   
+            model._uses_static_covariates = True
 
         logger.info("Принудительно установлен флаг _uses_static_covariates = True")
-        
+
         model = model.fit_from_dataset(ds, val_ds)
 
     except Exception:
         logger.error("Error training model.")
         raise
-        
+
     return model
 
 

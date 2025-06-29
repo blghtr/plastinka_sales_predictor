@@ -1,16 +1,18 @@
+from collections import OrderedDict, defaultdict
+from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from copy import deepcopy
+from datetime import datetime
+from pathlib import Path
+
+import dill
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.preprocessing import MultiLabelBinarizer, OrdinalEncoder, minmax_scale
-from pathlib import Path
-from typing_extensions import Callable, Optional, Union, Sequence, Self
 from darts.timeseries import TimeSeries
 from darts.utils.data.training_dataset import MixedCovariatesTrainingDataset
-import dill
-from collections import defaultdict, OrderedDict
-from datetime import datetime
-from contextlib import contextmanager
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.preprocessing import MultiLabelBinarizer, OrdinalEncoder, minmax_scale
+from typing_extensions import Self
 
 COLTYPES = {
     'Штрихкод': str,
@@ -51,27 +53,27 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             stock_features: pd.DataFrame,
             monthly_sales: pd.DataFrame,
             static_transformer: BaseEstimator = None,
-            static_features: Optional[Sequence[str]] = None,
+            static_features: Sequence[str] | None = None,
             scaler: BaseEstimator = None,
             weight_coef: float = 0.,
             input_chunk_length: int = 12,
             output_chunk_length: int = 1,
             start: int = 0,
-            end: Optional[int] = None,
+            end: int | None = None,
             past_covariates_fnames: Sequence[str] = (
                 'release_type', 'cover_type', 'style', 'price_category'
             ),
             past_covariates_span: int = 3,
-            save_dir: Optional[str] = None, 
-            dataset_name: Optional[str] = None,
-            dtype: Union[str, np.dtype] = np.float32,
+            save_dir: str | None = None,
+            dataset_name: str | None = None,
+            dtype: str | np.dtype = np.float32,
             minimum_sales_months: int = 1
     ):
         super().__init__()
         # --- Регуляризация временного индекса ---
         monthly_sales = ensure_monthly_regular_index(monthly_sales)
         stock_features = ensure_monthly_regular_index(stock_features)
-        
+
         self.dtype = dtype
         multiidxs = (
             monthly_sales.
@@ -125,12 +127,12 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
         self._idx_mapping = self._build_index_mapping()
         self.save_dir = save_dir
         self.dataset_name = dataset_name
-        
+
         if save_dir is not None:
             self.save(save_dir, dataset_name)
 
     @classmethod
-    def from_dill(cls, dill_path: Union[str, Path]):
+    def from_dill(cls, dill_path: str | Path):
         with open(dill_path, 'rb') as f:
             return dill.load(f)
 
@@ -166,8 +168,8 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
 
     def save(
             self,
-            save_dir: Optional[Union[str, Path]] = None, 
-            dataset_name: Optional[str] = None
+            save_dir: str | Path | None = None,
+            dataset_name: str | None = None
     ):
         if save_dir is None:
             save_dir = self.save_dir
@@ -183,7 +185,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
 
         with open(save_dir / f'{dataset_name}.dill', 'wb') as f:
             dill.dump(self, f)
-        
+
 
     def prepare_past_covariates(self, span=None):
         if span is not None:
@@ -233,7 +235,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
 
         return static_covariates
 
-    def get_future_covariates(self, item_multiidx):  
+    def get_future_covariates(self, item_multiidx):
         time_index = self.time_index
         is_hot = (
             time_index.
@@ -277,7 +279,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
         )
 
         past_cov_arr = np.hstack(past_covariates)
-            
+
         if self.scaler:
             past_cov_arr = self.scaler.transform(past_cov_arr)
 
@@ -293,7 +295,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             [
                 input_chunk_length > 1,
                 output_chunk_length > 0,
-                ((self.end - self.start) >= 
+                ((self.end - self.start) >=
                  (input_chunk_length + output_chunk_length))
             ]
         ):
@@ -346,7 +348,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             static_features: Sequence[str] | None = None,
             copy: bool = True,
             reindex: bool = True
-    ) -> Optional[Self]:
+    ) -> Self | None:
         if copy:
             ds = deepcopy(self)
         else:
@@ -354,7 +356,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
 
         if input_chunk_length and output_chunk_length:
             ds.set_length(
-                input_chunk_length, 
+                input_chunk_length,
                 output_chunk_length
             )
 
@@ -376,7 +378,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             ds._idx_mapping = ds._build_index_mapping()
 
         ds.prepare_past_covariates(span)
-        
+
         if copy:
             return ds
 
@@ -413,7 +415,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             enough_sales and
             (self._allow_empty_stock or in_stock)
         )
-    
+
     def set_reweight_fn(self, alpha):
         def reweight_fn(array):
             min_weight = 0.1
@@ -438,21 +440,21 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
         """Context manager to temporarily extend data arrays for inference."""
         # ---- SAVE ORIGINAL STATE ----
         orig_monthly_sales = self._monthly_sales
-        orig_stock_features = self._stock_features  
+        orig_stock_features = self._stock_features
         orig_time_index = self._time_index
         orig_n_time_steps = self._n_time_steps
         orig_end = self.end
-        
+
         try:
             # ---- CREATE PADDING ----
             pad = self.output_chunk_length
             zero_sales = np.zeros((pad, self._monthly_sales.shape[1]), dtype=self._monthly_sales.dtype)
             zero_stock = np.zeros((pad, *self._stock_features.shape[1:]), dtype=self._stock_features.dtype)
-            
+
             # ---- EXTEND ARRAYS ----
             self._monthly_sales = np.vstack([self._monthly_sales, zero_sales])
             self._stock_features = np.vstack([self._stock_features, zero_stock])
-            
+
             # ---- EXTEND TIME INDEX ----
             last_date = orig_time_index[-1]
             new_dates = pd.date_range(
@@ -461,13 +463,13 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
                 freq='MS'
             )
             self._time_index = orig_time_index.append(new_dates)
-            
+
             # ---- UPDATE DERIVED ATTRIBUTES AND REBUILD CACHE ----
             self._n_time_steps = self._monthly_sales.shape[0]  # Автоматически из shape
             self.reset_window(copy=False)  # Автоматически установит self.end и пересоберет кеш
-            
+
             yield
-            
+
         finally:
             # ---- ROLLBACK ALL CHANGES ----
             self._monthly_sales = orig_monthly_sales
@@ -481,16 +483,16 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             prefix=''
     ):
         dataset_dict = defaultdict(list)
-        
+
         # Сохраняем состояние флагов
         self.return_ts = True
         self._allow_empty_stock = True
         old_idx_mapping = self._index_mapping
-        
+
         # Используем контекст-менеджер для временного расширения
         with self.pad_for_inference():
             self._build_index_mapping()
-            
+
             for i in range(len(self)):
                 (
                     past_target,
@@ -502,61 +504,61 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
                     _,  # Это последний элемент перед предсказанием
                     ts
                 ) = self[i]
-                
+
                 time_index = ts.time_index
                 future_covariates = np.vstack([historic_future_covariates, future_covariates])
-                
+
                 # НЕ добавляем future_target к series - оставляем только историческую часть
                 series = past_target  # Только прошлое, без future_target
-                
+
                 future_covariates = TimeSeries.from_times_and_values(
                     time_index[:len(future_covariates)],  # Соответствующая длина
                     future_covariates
                 )
                 past_covariates = TimeSeries.from_times_and_values(
-                    time_index[:past_covariates.shape[0]], 
+                    time_index[:past_covariates.shape[0]],
                     past_covariates
                 )
                 # Создаем новый TimeSeries с правильной длиной для series (только past_target)
                 ts = TimeSeries.from_times_and_values(
-                    time_index[:series.shape[0]], 
+                    time_index[:series.shape[0]],
                     series,
                     static_covariates=ts.static_covariates
                 )
-                
+
                 if self._index_mapping:
                     i = self._index_mapping[i]
-                    
+
                 labels = self._idx2multiidx[i // self.outputs_per_array]
 
                 dataset_dict[f'{prefix}series'].append(ts)
                 dataset_dict[f'{prefix}future_covariates'].append(future_covariates)
                 dataset_dict[f'{prefix}past_covariates'].append(past_covariates)
                 dataset_dict[f'{prefix}labels'].append(labels)
-        
+
         # Откатываем флаги
         self.return_ts = False
         self._allow_empty_stock = False
         self._index_mapping = old_idx_mapping
 
         return dataset_dict
-    
+
     def _get_item_sales(self, item_multiidx):
         return self.monthly_sales[
             :, self._multiidx2idx[item_multiidx]
         ]
-    
+
     def _get_item_stock(self, item_multiidx):
         return self.stock_features[
             :, :, self._multiidx2idx[item_multiidx]
         ]
-    
+
     @property
     def monthly_sales(self):
         if self._monthly_sales is not None:
             return self._monthly_sales[self.start:self.end]
         return None
-    
+
     @property
     def monthly_sales_df(self):
         if self._monthly_sales is not None:
@@ -569,7 +571,7 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
                 )
             )
         return None
-    
+
     @property
     def stock_features(self):
         if self._stock_features is not None:
@@ -579,11 +581,11 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
     @property
     def time_index(self):
         return self._time_index[self.start:self.end]
-    
+
     @property
     def outputs_per_array(self):
         return self.L - self.input_chunk_length - self.output_chunk_length + 1
-    
+
     @property
     def L(self):
         return self.end - self.start
@@ -594,16 +596,16 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
         item = index // self.outputs_per_array
 
         length = (
-            self.input_chunk_length + 
+            self.input_chunk_length +
             self.output_chunk_length
         )
         start_index = index % self.outputs_per_array
         end_index = (
-            (start_index + length) if 
+            (start_index + length) if
             (start_index + length) < self._n_time_steps else None
         )
         return item, start_index, end_index
-    
+
     def __len__(self):
         if self._index_mapping:
             return len(self._index_mapping)
@@ -792,7 +794,7 @@ def validate_date_columns(df: pd.DataFrame) -> pd.DataFrame:
     def fill_partial_years_np_where(series):
         try:
             is_not_20 = ~series.str.startswith('2')
-            valid_str = series.str.extract('(^\d+)')[0]
+            valid_str = series.str.extract(r'(^\d+)')[0]
             padding_9 = (4 - valid_str.str.len().astype(int)).map(lambda x: '9' * x)
             padding_1 = (4 - valid_str.str.len().astype(int)).map(lambda x: '1' * x)
             return np.where(is_not_20, valid_str + padding_9, valid_str + padding_1)
@@ -958,8 +960,8 @@ def categorize_prices(df: pd.DataFrame, bins=None, q=(0.05, 0.3, 0.5, 0.75, 0.9,
 
 
 def filter_by_date(
-        df: pd.DataFrame, 
-        cutoff_date: Optional[str], 
+        df: pd.DataFrame,
+        cutoff_date: str | None,
         cut_before=False
     ) -> pd.DataFrame:
     if cutoff_date is None:
@@ -997,7 +999,7 @@ def process_data(
         stock_path: str,
         sales_path: str,
         cutoff_date: str,
-        bins: Optional[pd.Series] = None
+        bins: pd.Series | None = None
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
     keys_no_dates = GROUP_KEYS
     all_keys = ['Дата создания', 'Дата продажи', *GROUP_KEYS]
@@ -1022,7 +1024,7 @@ def process_data(
         })
 
     def _process_stock(
-            preprocessed_df, 
+            preprocessed_df,
             keys_no_dates
         ):
         # Fork for stock (everything before cutoff)
@@ -1039,7 +1041,7 @@ def process_data(
             count=('count', 'sum'),
             mean_price=('mean_price', 'mean')
         )
-        
+
         monthly_stock, monthly_prices = (
             monthly_df.loc[:, 'count'],
             monthly_df.loc[:, 'mean_price']
@@ -1057,7 +1059,7 @@ def process_data(
             cutoff_date,
             cut_before=True
         )
-        
+
         prices = sales.groupby(
             keys_no_dates
         ).agg(
@@ -1072,7 +1074,7 @@ def process_data(
         sold = sales.groupby(
             sold_keys
         ).agg(outflow=('count', 'sum')) * -1
-        
+
         arrived = sales.groupby(
             arrived_keys
         ).agg(inflow=('count', 'sum'))
@@ -1081,7 +1083,7 @@ def process_data(
             index={'Дата создания': '_date'},
             inplace=True
         )
-        
+
         sold.rename_axis(
             index={'Дата продажи': '_date'},
             inplace=True
@@ -1122,9 +1124,9 @@ def process_data(
         )
         if sort:
             df = df.sort_index(level='_date')
-    
+
         return df
-    
+
     # Process actual stock data
     stock_df = pd.read_excel(stock_path, dtype='str')
     counted_df, bins = get_preprocessed_df(
@@ -1184,7 +1186,7 @@ def process_data(
             else:
                 # Use read_excel for Excel files
                 current_df = pd.read_excel(p, dtype='str')
-            
+
             if not current_df.empty:
                 if file_df.empty:
                     file_df = current_df
@@ -1231,7 +1233,7 @@ def process_data(
                 )
             )
             fn = (
-                'mean' 
+                'mean'
                 if feature == 'prices'
                 else 'sum'
             )
@@ -1241,16 +1243,16 @@ def process_data(
                 feature,
                 sort=sort_index
             )
-        
+
         else:
             features[feature] = pd.DataFrame()
 
     if not features['stock'].empty:
         stock_column_name = pd.to_datetime(
-            cutoff_date, 
+            cutoff_date,
             dayfirst=True
         )
-        
+
         features['stock'] = (
             features['stock'].
             rename(
@@ -1259,7 +1261,7 @@ def process_data(
                 }
             )
         )
-    
+
     return features
 
 
@@ -1294,7 +1296,7 @@ def get_stock_features(
             aggfunc='sum',
             fill_value=0,
         )
-        
+
         stock = stock.join(shp, how='outer').fillna(0).cumsum(axis=1)
 
         # Attempt to sort columns; fallback gracefully if mixed dtypes
@@ -1396,7 +1398,7 @@ def get_past_covariates_df(
 
     pc_df_emv = grouped.apply(
         lambda x: x.iloc[:, 2:].mean(axis=0).ewm(
-            span=span, 
+            span=span,
             adjust=False
         ).var()
     ).bfill(axis=1, limit=3).fillna(0)

@@ -1,9 +1,11 @@
-from ray.train import Checkpoint
-from ray import train
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
 import tempfile
 from pathlib import Path
+
+from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks import ModelCheckpoint
+
+from ray import train
+from ray.train import Checkpoint
 
 
 class DartsCheckpointCallback(ModelCheckpoint):
