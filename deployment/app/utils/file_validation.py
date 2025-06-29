@@ -1,6 +1,6 @@
-import os
 import logging
-from typing import Tuple, Optional, List
+import os
+
 from fastapi import UploadFile
 
 from deployment.app.utils.validation import ValidationError
@@ -20,9 +20,9 @@ VALID_EXCEL_CONTENT_TYPES = [
 
 
 async def validate_file_size(
-    file: UploadFile, 
+    file: UploadFile,
     max_size: int = DEFAULT_MAX_FILE_SIZE
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """
     Validate that the file size is within allowed limits.
     
@@ -39,12 +39,12 @@ async def validate_file_size(
         file.file.seek(0, os.SEEK_END)
         file_size = file.file.tell()
         file.file.seek(file_pos)  # Reset to original position
-        
+
         if file_size > max_size:
             error_msg = f"File too large: {file_size} bytes (max {max_size} bytes)"
             logger.warning(f"File size validation failed: {error_msg}")
             return False, error_msg
-            
+
         return True, None
     except Exception as e:
         error_msg = f"Error checking file size: {str(e)}"
@@ -54,8 +54,8 @@ async def validate_file_size(
 
 async def validate_content_type(
     file: UploadFile,
-    valid_types: List[str]
-) -> Tuple[bool, Optional[str]]:
+    valid_types: list[str]
+) -> tuple[bool, str | None]:
     """
     Validate that the file's content type is allowed.
     
@@ -67,20 +67,20 @@ async def validate_content_type(
         Tuple of (is_valid, error_message)
     """
     content_type = file.content_type or ""
-    
+
     if content_type not in valid_types:
         # Check file extension as a fallback
         filename = file.filename or ""
         file_ext = os.path.splitext(filename.lower())[1]
-        
+
         if valid_types == VALID_EXCEL_CONTENT_TYPES and file_ext in [".xls", ".xlsx"]:
             # Allow Excel files by extension if content_type is unreliable
             return True, None
-            
+
         error_msg = f"Invalid content type: {content_type}"
         logger.warning(f"Content type validation failed: {error_msg}")
         return False, error_msg
-        
+
     return True, None
 
 
@@ -102,7 +102,7 @@ async def validate_excel_file_upload(file: UploadFile) -> None:
                 "content_type": file.content_type
             }
         )
-    
+
     # Check file size
     is_valid_size, size_error = await validate_file_size(file, MAX_EXCEL_FILE_SIZE)
     if not is_valid_size:
@@ -112,4 +112,4 @@ async def validate_excel_file_upload(file: UploadFile) -> None:
                 "filename": file.filename,
                 "max_size_mb": MAX_EXCEL_FILE_SIZE / (1024 * 1024)
             }
-        ) 
+        )

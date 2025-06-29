@@ -1,12 +1,11 @@
+import atexit
 import logging
 import logging.config
 import os
 import queue
-import atexit
-from logging.handlers import TimedRotatingFileHandler, QueueHandler, QueueListener
-from typing import Optional
+from logging.handlers import QueueHandler, QueueListener, TimedRotatingFileHandler
 
-from deployment.app.config import settings
+from deployment.app.config import get_settings
 
 # -----------------------------------------------------------------------------
 # Centralised asynchronous logging configuration
@@ -21,13 +20,14 @@ from deployment.app.config import settings
 _LOG_FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 
 # Singleton objects so configure_logging() can be called more than once safely
-_log_queue: Optional[queue.Queue] = None
-_queue_listener: Optional[QueueListener] = None
+_log_queue: queue.Queue | None = None
+_queue_listener: QueueListener | None = None
 
 
 def _build_handlers() -> list[logging.Handler]:
     """Create concrete handlers that will be managed by QueueListener."""
     formatter = logging.Formatter(_LOG_FORMAT)
+    settings = get_settings()
 
     # Console handler (stderr – integrates with Uvicorn/Starlette)
     console_handler = logging.StreamHandler()
@@ -67,6 +67,7 @@ def configure_logging() -> None:
     # Non-blocking queue handler attached to root logger
     _log_queue = queue.Queue(-1)  # Infinite size
     queue_handler = QueueHandler(_log_queue)
+    settings = get_settings()
 
     root_logger = logging.getLogger()
     root_logger.setLevel(settings.api.log_level.upper())
@@ -86,4 +87,4 @@ def configure_logging() -> None:
         if _queue_listener:
             _queue_listener.stop()
 
-    atexit.register(_shutdown_logging) 
+    atexit.register(_shutdown_logging)

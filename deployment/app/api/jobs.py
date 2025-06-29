@@ -1,36 +1,65 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Depends, Query, Body, Request, status
-from fastapi.responses import JSONResponse, StreamingResponse
-from typing import List, Optional
-import os
-from datetime import datetime, date
-import uuid
+import io
 import json
 import logging
-from pathlib import Path
-import aiofiles
+import os
 import shutil
-import traceback
-import io
-from deployment.app.models.api_models import (
-    JobResponse, JobDetails, JobsList, JobStatus, JobType,
-    DataUploadResponse, TrainingConfig, TrainingResponse,
-    PredictionParams, PredictionResponse, ReportParams, ReportResponse
+from datetime import datetime
+from pathlib import Path
+
+import aiofiles
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
 )
+from fastapi.responses import JSONResponse
+
+from deployment.app.config import get_settings
 from deployment.app.db.database import (
-    create_job, update_job_status, get_job, list_jobs,
-    get_data_upload_result, get_training_result, get_prediction_result, get_report_result,
-    create_data_upload_result, create_training_result, create_prediction_result, create_report_result,
-    DatabaseError, get_effective_config
+    DatabaseError,
+    create_job,
+    get_data_upload_result,
+    get_effective_config,
+    get_job,
+    get_prediction_result,
+    get_report_result,
+    get_training_result,
+    list_jobs,
+    update_job_status,
 )
+from deployment.app.models.api_models import (
+    DataUploadResponse,
+    JobDetails,
+    JobsList,
+    JobStatus,
+    JobType,
+    PredictionParams,
+    PredictionResponse,
+    ReportParams,
+    ReportResponse,
+    TrainingResponse,
+    JobResponse,
+)
+from deployment.app.services.auth import get_current_api_key_validated
 from deployment.app.services.data_processor import process_data_files
 from deployment.app.services.datasphere_service import run_job
-from deployment.app.services.report_service import generate_report
-from deployment.app.utils.validation import validate_stock_file, validate_sales_file, validate_date_format, ValidationError, validate_historical_date_range
-from deployment.app.utils.file_validation import validate_excel_file_upload
+from deployment.app.services.report_service import run_report_job
 from deployment.app.utils.error_handling import ErrorDetail
-from deployment.app.config import settings
-from deployment.app.services.auth import get_current_api_key_validated
-
+from deployment.app.utils.file_validation import validate_excel_file_upload
+from deployment.app.utils.validation import (
+    ValidationError,
+    validate_date_format,
+    validate_historical_date_range,
+    validate_sales_file,
+    validate_stock_file,
+)
 
 logger = logging.getLogger("plastinka.api")
 
@@ -59,7 +88,7 @@ async def create_data_upload_job(
     request: Request,
     background_tasks: BackgroundTasks,
     stock_file: UploadFile = File(..., description="Excel file with stock data"),
-    sales_files: List[UploadFile] = File(..., description="Excel files with sales data"),
+    sales_files: list[UploadFile] = File(..., description="Excel files with sales data"),
     cutoff_date: str = Form("30.09.2022", description="Cutoff date for data processing (DD.MM.YYYY)"),
     api_key: bool = Depends(get_current_api_key_validated)
 ):
@@ -83,10 +112,10 @@ async def create_data_upload_job(
                 message="Invalid cutoff date format. Expected format: DD.MM.YYYY",
                 details={"cutoff_date": cutoff_date}
             )
-        
+
         # Validate stock file format and size
         await validate_excel_file_upload(stock_file)
-        
+
         # Validate stock file content
         stock_content = await stock_file.read()
         is_valid_stock, stock_error = validate_stock_file(stock_content)
@@ -95,15 +124,15 @@ async def create_data_upload_job(
                 message=f"Invalid stock file: {stock_error}",
                 details={"filename": stock_file.filename}
             )
-        
+
         # Reset file position
         await stock_file.seek(0)
-        
+
         # Validate sales files
         for i, sales_file in enumerate(sales_files):
             # Validate sales file format and size
             await validate_excel_file_upload(sales_file)
-            
+
             # Validate sales file content
             sales_content = await sales_file.read()
             is_valid_sales, sales_error = validate_sales_file(sales_content)
@@ -114,7 +143,7 @@ async def create_data_upload_job(
                 )
             # Reset file position
             await sales_file.seek(0)
-        
+
         # Create a new job *before* creating the temp directory
         job_id = create_job(
             JobType.DATA_UPLOAD,
@@ -124,14 +153,14 @@ async def create_data_upload_job(
                 "cutoff_date": cutoff_date
             }
         )
-        
+
         # Создаем уникальную временную директорию для этого задания
         # Используем базовую директорию из настроек
-        base_temp_dir = Path(settings.temp_upload_dir)
+        base_temp_dir = Path(get_settings().temp_upload_dir)
         base_temp_dir.mkdir(parents=True, exist_ok=True) # Убедимся, что базовая директория существует
         temp_job_dir = base_temp_dir / job_id
         temp_job_dir.mkdir(exist_ok=False) # Создаем уникальную директорию задания
-        
+
         # Создаем поддиректорию для файлов продаж
         sales_dir = temp_job_dir / "sales"
         sales_dir.mkdir(exist_ok=True)
@@ -152,10 +181,10 @@ async def create_data_upload_job(
             cutoff_date=cutoff_date,
             temp_dir_path=str(temp_job_dir) # Передаем путь для очистки
         )
-        
+
         logger.info(f"Created data upload job {job_id} with files: {stock_file.filename} and {len(sales_files)} sales files")
         return DataUploadResponse(job_id=job_id, status=JobStatus.PENDING)
-        
+
     except ValidationError:
         # ValidationError is handled by the app_validation_exception_handler
         raise
@@ -199,11 +228,11 @@ async def create_data_upload_job(
              detailed_error_reason = (f"Path {temp_job_dir} for job {job_id} already existed, but it's not a regular file or directory, "
                                       f"or its status is inaccessible. Original error: {e}")
              logger.error(detailed_error_reason)
-        
+
         # Fail the job with the detailed reason
         if job_id:
             update_job_status(job_id, JobStatus.FAILED.value, error_message=detailed_error_reason)
-        
+
         error = ErrorDetail(
             message="Failed to initialize job resources: A path conflict occurred.",
             code="job_resource_conflict", # More specific error code
@@ -226,7 +255,7 @@ async def create_data_upload_job(
         if temp_job_dir and temp_job_dir.exists():
             shutil.rmtree(temp_job_dir, ignore_errors=True)
             logger.info(f"Cleaned up temporary directory {temp_job_dir} after error.")
-            
+
         error = ErrorDetail(
             message="Failed to create data upload job",
             code="internal_error",
@@ -242,8 +271,8 @@ async def create_data_upload_job(
 async def create_training_job(
     request: Request,
     background_tasks: BackgroundTasks,
-    dataset_start_date: Optional[str] = None,
-    dataset_end_date: Optional[str] = None,
+    dataset_start_date: str | None = None,
+    dataset_end_date: str | None = None,
     api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
@@ -295,7 +324,7 @@ async def create_training_job(
                 )
 
         # 3. Получение конфига
-        config = get_effective_config(settings, logger=logger)
+        config = get_effective_config(get_settings(), logger=logger)
         if config is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -377,7 +406,7 @@ async def create_prediction_job(
     """
     try:
         raise NotImplementedError("Prediction job is not implemented yet")
-        
+
     except DatabaseError as e:
         logger.error(f"Database error in prediction job creation: {str(e)}", exc_info=True)
         error = ErrorDetail(
@@ -401,64 +430,42 @@ async def create_prediction_job(
         return JSONResponse(status_code=500, content=error.to_dict())
 
 
-@router.post("/reports", response_model=ReportResponse)
-def create_prediction_report(
+@router.post("/reports", response_model=JobResponse)
+async def create_prediction_report_job(
     request: Request,
     params: ReportParams,
+    background_tasks: BackgroundTasks,
     api_key: bool = Depends(get_current_api_key_validated)
 ):
     """
-    Generate and return a prediction report with metadata and CSV data.
+    Submit a job to generate a prediction report.
     
     This will:
-    1. Find training jobs with predictions for the specified month
-    2. Extract and enhance prediction data
-    3. Return structured JSON with metadata and CSV data
+    1. Create a job record in the database.
+    2. Add a background task to generate the report.
     
-    Returns structured JSON with report metadata and CSV data as string.
+    Returns a job ID that can be used to check the job status.
     """
     try:
-        logger.info(f"Generating prediction report for month: {params.prediction_month.strftime('%Y-%m')}")
-        
-        # Generate the report directly
-        report_df = generate_report(params)
-        
-        # Convert DataFrame to CSV string
-        csv_buffer = io.StringIO()
-        report_df.to_csv(csv_buffer, index=False)
-        csv_content = csv_buffer.getvalue()
-        
-        # Check for enriched metrics
-        enriched_cols = ['Средние продажи (шт)', 'Средние продажи (руб)', 'Потерянные продажи (руб)']
-        present_enriched_cols = [col for col in enriched_cols if col in report_df.columns]
-        has_enriched_metrics = len(present_enriched_cols) > 0
-        
-        # Create structured response
-        response = ReportResponse(
-            report_type=params.report_type.value,
-            prediction_month=params.prediction_month.strftime('%Y-%m'),
-            records_count=len(report_df),
-            csv_data=csv_content,
-            has_enriched_metrics=has_enriched_metrics,
-            enriched_columns=present_enriched_cols,
-            generated_at=datetime.now(),
-            filters_applied=params.filters
+        logger.info(f"Received request to generate report for month: {params.prediction_month.strftime('%Y-%m')}")
+
+        # Create a job record
+        job_id = create_job(
+            job_type=JobType.REPORT,
+            parameters=params.model_dump()
         )
         
-        logger.info(f"Report generated successfully: {len(report_df)} records, enriched: {has_enriched_metrics}")
-        return response
+        # Add the report generation to background tasks
+        background_tasks.add_task(run_report_job, job_id=job_id, params=params)
         
-    except ValueError as e:
-        logger.error(f"Validation error in report generation: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        logger.info(f"Report job created with ID: {job_id}")
+        return JobResponse(job_id=job_id, status=JobStatus.PENDING)
+
     except Exception as e:
-        logger.error(f"Unexpected error in report generation: {str(e)}", exc_info=True)
+        logger.error(f"Failed to create report job: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate prediction report"
+            detail="Failed to create report job"
         )
 
 
@@ -471,10 +478,10 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
     """
     try:
         job = get_job(job_id)
-        
+
         if not job:
             raise HTTPException(status_code=404, detail=f"Job with ID {job_id} not found")
-        
+
         # Build basic response
         response = JobDetails(
             job_id=job["job_id"],
@@ -485,11 +492,11 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
             progress=job["progress"] or 0.0,
             error=job["error_message"]
         )
-        
+
         # Add result data if job is completed and has a result
         if job["status"] == JobStatus.COMPLETED.value and job["result_id"]:
             result = {}
-            
+
             if job["job_type"] == JobType.DATA_UPLOAD.value:
                 data_result = get_data_upload_result(job["result_id"])
                 if data_result:
@@ -498,7 +505,7 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
                         "features_generated": json.loads(data_result["features_generated"]),
                         "processing_run_id": data_result["processing_run_id"]
                     }
-                    
+
             elif job["job_type"] == JobType.TRAINING.value:
                 training_result = get_training_result(job["result_id"])
                 if training_result:
@@ -508,7 +515,7 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
                         "parameters": json.loads(training_result["parameters"]),
                         "duration": training_result["duration"]
                     }
-                    
+
             elif job["job_type"] == JobType.PREDICTION.value:
                 prediction_result = get_prediction_result(job["result_id"])
                 if prediction_result:
@@ -518,7 +525,7 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
                         "output_path": prediction_result["output_path"],
                         "summary_metrics": json.loads(prediction_result["summary_metrics"])
                     }
-                    
+
             elif job["job_type"] == JobType.REPORT.value:
                 report_result = get_report_result(job["result_id"])
                 if report_result:
@@ -527,11 +534,11 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
                         "parameters": json.loads(report_result["parameters"]),
                         "output_path": report_result["output_path"]
                     }
-            
+
             response.result = result
-            
+
         return response
-        
+
     except HTTPException:
         # Let built-in handlers deal with HTTP exceptions
         raise
@@ -562,8 +569,8 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
 @router.get("", response_model=JobsList)
 async def list_all_jobs(
     request: Request,
-    job_type: Optional[JobType] = None,
-    status: Optional[JobStatus] = None,
+    job_type: JobType | None = None,
+    status: JobStatus | None = None,
     limit: int = Query(100, ge=1, le=1000),
     api_key: bool = Depends(get_current_api_key_validated)
 ):
@@ -576,7 +583,7 @@ async def list_all_jobs(
             status=status.value if status else None,
             limit=limit
         )
-        
+
         # Convert job data to JobDetails objects
         jobs = []
         for job in jobs_data:
@@ -590,9 +597,9 @@ async def list_all_jobs(
                 error=job["error_message"]
             )
             jobs.append(job_details)
-        
+
         return JobsList(jobs=jobs, total=len(jobs))
-        
+
     except DatabaseError as e:
         logger.error(f"Unexpected error in list_all_jobs: {str(e)}", exc_info=True)
         error = ErrorDetail(
@@ -614,4 +621,4 @@ async def list_all_jobs(
             exception=e
         )
         error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict()) 
+        return JSONResponse(status_code=500, content=error.to_dict())

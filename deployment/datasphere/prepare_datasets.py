@@ -1,18 +1,15 @@
-import sys
-import pandas as pd
-from datetime import timedelta
 import logging
+
+import pandas as pd
+
 from deployment.app.db import feature_storage
 from plastinka_sales_predictor.data_preparation import (
-    PlastinkaTrainingTSDataset,
-    MultiColumnLabelBinarizer,
     GlobalLogMinMaxScaler,
-    get_stock_features,
+    MultiColumnLabelBinarizer,
+    PlastinkaTrainingTSDataset,
     get_monthly_sales_pivot,
+    get_stock_features,
 )
-import os
-from collections import defaultdict
-
 
 DEFAULT_OUTPUT_DIR = './datasets/' # Default location if not specified
 DEFAULT_STATIC_FEATURES = [
@@ -53,7 +50,7 @@ def load_data(start_date=None, end_date=None, feature_types=None):
         logger.info(f"Loading features from database{' (selected types)' if feature_types else ''}...")
         logger.info(f"Loading with parameters: start_date={start_date}, end_date={end_date}, feature_types={feature_types}")
         logger.info("About to call feature_storage.load_features...")
-        
+
         features = feature_storage.load_features(
             store_type='sql',
             start_date=start_date,
@@ -61,11 +58,11 @@ def load_data(start_date=None, end_date=None, feature_types=None):
             feature_types=feature_types
         )
         logger.info("Features loaded successfully via factory.")
-                    
+
     except Exception as e:
         logger.error(f"Error loading data via factory: {e}", exc_info=True)
         raise
-    
+
     return features
 
 
@@ -95,7 +92,7 @@ def prepare_datasets(raw_features: dict, config: dict, save_directory: str) -> t
     except Exception as e:
         logger.error(f"Error copying raw_features: {e}", exc_info=True)
         raise
-    
+
     logger.info("Raw features validation passed, proceeding with feature engineering...")
 
     try:
@@ -144,7 +141,7 @@ def prepare_datasets(raw_features: dict, config: dict, save_directory: str) -> t
 
         val_dataset = train_dataset.setup_dataset(
             window=(dataset_length - length, dataset_length),
-        )     
+        )
         val_dataset.save(
             dataset_name='val'
         )
@@ -172,17 +169,17 @@ def get_datasets(start_date=None, end_date=None, config=None, output_dir: str | 
         Tuple of (train_dataset, val_dataset)
     """
     logger.info('get_datasets function started...')
-    
+
     try:
         raw_features = load_data(start_date, end_date, feature_types)
-        
+
         logger.info('Raw features loaded, calling prepare_datasets...')
-        
+
         # Pass the output_dir down to the preparation function
         train_dataset, val_dataset = prepare_datasets(raw_features, config, output_dir)
-        
+
         logger.info('prepare_datasets completed, returning datasets from get_datasets...')
-        
+
         return train_dataset, val_dataset
     except Exception as e:
         logger.error(f"Error in get_datasets: {e}", exc_info=True)

@@ -5,11 +5,12 @@ Provides functionality to collect, analyze, and log retry patterns.
 import json
 import logging
 import os
-import time
-from datetime import datetime
-from threading import Lock, RLock
-from typing import Dict, Any, List, Optional, Set, Union, Tuple, Callable
 import statistics
+import time
+from collections.abc import Callable
+from datetime import datetime
+from threading import RLock
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +22,9 @@ class RetryMonitor:
     This class is thread-safe and provides insights into retry patterns
     across different components of the application.
     """
-    
-    def __init__(self, capacity: int = 1000, log_interval_seconds: int = 300, 
-                persistence_file: Optional[str] = None, save_interval_seconds: int = 600):
+
+    def __init__(self, capacity: int = 1000, log_interval_seconds: int = 300,
+                persistence_file: str | None = None, save_interval_seconds: int = 600):
         """
         Initialize retry monitor.
         
@@ -38,15 +39,15 @@ class RetryMonitor:
         self._log_interval = log_interval_seconds
         self._lock = RLock()
         self._last_log_time = time.time()
-        
+
         # Persistence settings
         self._persistence_file = persistence_file
         self._save_interval = save_interval_seconds
         self._last_save_time = time.time()
-        
+
         # Track operations with high failure rates
         self._high_failure_operations = set()
-        
+
         # Alert thresholds and handlers
         self._alert_thresholds = {
             'total_failures_count': 10,      # Alert after X total failures
@@ -58,24 +59,24 @@ class RetryMonitor:
         self._alert_handlers = []
         self._alerted_operations = set()      # Track operations that have triggered alerts
         self._operation_consecutive_failures = {}  # Track consecutive failures by operation
-        
+
         # Initialize statistics
         self._reset_stats()
-        
+
         # Load previous statistics if persistence file exists
         if self._persistence_file and os.path.exists(self._persistence_file):
             self._load_from_file()
-    
+
     def record_retry(
-        self, 
-        operation: str, 
+        self,
+        operation: str,
         exception_type: str,
-        exception_message: str, 
-        attempt: int, 
+        exception_message: str,
+        attempt: int,
         max_attempts: int,
         successful: bool,
         component: str,
-        duration_ms: Optional[int] = None
+        duration_ms: int | None = None
     ) -> None:
         """
         Record a retry event.
@@ -101,23 +102,23 @@ class RetryMonitor:
             'component': component,
             'duration_ms': duration_ms
         }
-        
+
         with self._lock:
             # Add event to the list, maintaining capacity
             self._retry_events.append(event)
             if len(self._retry_events) > self._capacity:
                 self._retry_events.pop(0)
-            
+
             # Update statistics
             self._total_retries += 1
-            
+
             # Create a key for this operation
             operation_key = f"{component}.{operation}"
-            
+
             # Update consecutive failures tracking
             if not successful:
                 self._operation_consecutive_failures[operation_key] = self._operation_consecutive_failures.get(operation_key, 0) + 1
-                
+
                 # Check consecutive failures alert threshold
                 if (self._operation_consecutive_failures[operation_key] >=
                     self._alert_thresholds['consecutive_failures']):
@@ -130,17 +131,17 @@ class RetryMonitor:
             else:
                 # Reset consecutive failures counter on success
                 self._operation_consecutive_failures[operation_key] = 0
-            
+
             if attempt == max_attempts and not successful:
                 self._exhausted_retries += 1
-                
+
                 # Track operations with exhausted retries
                 self._operation_failures[operation_key] = self._operation_failures.get(operation_key, 0) + 1
-                
+
                 # Check if this operation has high failure rates
                 if self._operation_failures[operation_key] >= 5:
                     self._high_failure_operations.add(operation_key)
-                
+
                 # Check total failures alert threshold
                 if self._operation_failures[operation_key] >= self._alert_thresholds['total_failures_count']:
                     self._check_alert(
@@ -149,7 +150,7 @@ class RetryMonitor:
                         alert_value=self._operation_failures[operation_key],
                         event=event
                     )
-                
+
                 # Check exhausted retries alert threshold
                 if self._exhausted_retries >= self._alert_thresholds['exhausted_retries_count']:
                     self._check_alert(
@@ -158,12 +159,12 @@ class RetryMonitor:
                         alert_value=self._exhausted_retries,
                         event=event
                     )
-            
+
             if successful:
                 self._successful_retries += 1
                 if attempt > 1:
                     self._successful_after_retry += 1
-            
+
             # Check response time alert threshold if duration provided
             if duration_ms and duration_ms > self._alert_thresholds['response_time_ms']:
                 self._check_alert(
@@ -172,7 +173,7 @@ class RetryMonitor:
                     alert_value=duration_ms,
                     event=event
                 )
-            
+
             # Calculate and check failure rate
             total_op_attempts = sum(1 for e in self._retry_events
                                 if f"{e['component']}.{e['operation']}" == operation_key)
@@ -188,19 +189,19 @@ class RetryMonitor:
                         alert_value=failure_rate,
                         event=event
                     )
-            
+
             # Check if it's time to log statistics
             current_time = time.time()
             if current_time - self._last_log_time > self._log_interval:
                 self._log_statistics()
                 self._last_log_time = current_time
-            
+
             # Check if it's time to save statistics
             if self._persistence_file and current_time - self._last_save_time > self._save_interval:
                 self._save_to_file()
                 self._last_save_time = current_time
-    
-    def set_alert_threshold(self, threshold_name: str, value: Union[int, float]) -> None:
+
+    def set_alert_threshold(self, threshold_name: str, value: int | float) -> None:
         """
         Set an alert threshold value.
         
@@ -213,8 +214,8 @@ class RetryMonitor:
                 self._alert_thresholds[threshold_name] = value
             else:
                 logger.warning(f"Unknown alert threshold: {threshold_name}")
-    
-    def register_alert_handler(self, handler: Callable[[str, str, Any, Dict[str, Any]], None]) -> None:
+
+    def register_alert_handler(self, handler: Callable[[str, str, Any, dict[str, Any]], None]) -> None:
         """
         Register a function to be called when alert thresholds are exceeded.
         
@@ -223,8 +224,8 @@ class RetryMonitor:
         """
         with self._lock:
             self._alert_handlers.append(handler)
-    
-    def get_statistics(self) -> Dict[str, Any]:
+
+    def get_statistics(self) -> dict[str, Any]:
         """
         Get current retry statistics.
         
@@ -244,10 +245,10 @@ class RetryMonitor:
                 'exception_stats': self._get_exception_stats(),
                 'timestamp': datetime.now().isoformat()
             }
-            
+
             return stats
-    
-    def get_high_failure_operations(self) -> Set[str]:
+
+    def get_high_failure_operations(self) -> set[str]:
         """
         Get operations with high failure rates.
         
@@ -256,8 +257,8 @@ class RetryMonitor:
         """
         with self._lock:
             return self._high_failure_operations.copy()
-    
-    def get_alerted_operations(self) -> Set[str]:
+
+    def get_alerted_operations(self) -> set[str]:
         """
         Get operations that have triggered alerts.
         
@@ -266,17 +267,17 @@ class RetryMonitor:
         """
         with self._lock:
             return self._alerted_operations.copy()
-    
+
     def reset_statistics(self) -> None:
         """Reset all statistics."""
         with self._lock:
             self._reset_stats()
-            
+
             # Save empty statistics if persistence is enabled
             if self._persistence_file:
                 self._save_to_file()
-    
-    def set_persistence_file(self, file_path: Optional[str]) -> None:
+
+    def set_persistence_file(self, file_path: str | None) -> None:
         """
         Set the persistence file path.
         
@@ -288,7 +289,7 @@ class RetryMonitor:
             if file_path and os.path.exists(file_path):
                 self._load_from_file()
             self._last_save_time = time.time()  # Reset save timer
-    
+
     def _reset_stats(self) -> None:
         """Reset all statistical counters."""
         self._total_retries = 0
@@ -299,8 +300,8 @@ class RetryMonitor:
         self._high_failure_operations = set()
         self._alerted_operations = set()
         self._operation_consecutive_failures = {}
-    
-    def _check_alert(self, operation_key: str, alert_type: str, alert_value: Any, event: Dict[str, Any]) -> None:
+
+    def _check_alert(self, operation_key: str, alert_type: str, alert_value: Any, event: dict[str, Any]) -> None:
         """
         Check if an alert should be triggered and notify handlers.
         
@@ -312,94 +313,94 @@ class RetryMonitor:
         """
         # Mark this operation as alerted
         self._alerted_operations.add(operation_key)
-        
+
         # Log the alert
         threshold_value = self._alert_thresholds[alert_type]
         logger.warning(
             f"Alert threshold exceeded for {operation_key}: "
             f"{alert_type}={alert_value} (threshold={threshold_value})"
         )
-        
+
         # Call registered alert handlers
         for handler in self._alert_handlers:
             try:
                 handler(operation_key, alert_type, alert_value, event)
             except Exception as e:
                 logger.error(f"Error in alert handler: {str(e)}")
-    
+
     def _log_statistics(self) -> None:
         """Log current statistics."""
         stats = self.get_statistics()
-        
+
         logger.info(f"Retry statistics: "
                    f"total={stats['total_retries']}, "
                    f"successful={stats['successful_retries']}, "
                    f"exhausted={stats['exhausted_retries']}")
-        
+
         # Log high failure operations
         if stats['high_failure_operations']:
             logger.warning(f"Operations with high failure rates: "
                          f"{', '.join(stats['high_failure_operations'])}")
-            
+
         # Log alerted operations
         if stats['alerted_operations']:
             logger.warning(f"Operations that triggered alerts: "
                          f"{', '.join(stats['alerted_operations'])}")
-    
+
     def _save_to_file(self) -> None:
         """Save statistics to the persistence file."""
         if not self._persistence_file:
             return
-            
+
         try:
             # Get current statistics
             stats = self.get_statistics()
-            
+
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(os.path.abspath(self._persistence_file)), exist_ok=True)
-            
+
             # Save to file
             with open(self._persistence_file, 'w') as f:
                 json.dump(stats, f, indent=2)
-                
+
         except Exception as e:
             logger.error("[RetryMonitor._save_to_file] Failed to save retry statistics: %s", str(e))
-    
+
     def _load_from_file(self) -> None:
         """Load statistics from the persistence file."""
         if not self._persistence_file or not os.path.exists(self._persistence_file):
             return
-            
+
         try:
-            with open(self._persistence_file, 'r') as f:
+            with open(self._persistence_file) as f:
                 stats = json.load(f)
-            
+
             # Restore statistics
             self._total_retries = stats.get('total_retries', 0)
             self._successful_retries = stats.get('successful_retries', 0)
             self._exhausted_retries = stats.get('exhausted_retries', 0)
             self._successful_after_retry = stats.get('successful_after_retry', 0)
             self._high_failure_operations = set(stats.get('high_failure_operations', []))
-            
+
             # Restore operation failures
             operation_stats = stats.get('operation_stats', {})
             for op, op_stats in operation_stats.items():
                 count = op_stats.get('count', 0)
                 success_rate = op_stats.get('success_rate', 0)
-                
+
                 # Estimate failures based on count and success rate
                 if count > 0 and success_rate < 1.0:
                     failures = int(count * (1 - success_rate))
                     if failures > 0:
                         self._operation_failures[op] = failures
-            
+
             logger.info(f"Loaded retry statistics from {self._persistence_file}")
         except Exception as e:
             logger.error("Failed to load retry statistics: %s", str(e))
             # Initialize with empty statistics
             self._reset_stats()
-    
-    def _get_operation_stats(self) -> Dict[str, Dict[str, Any]]:
+
+    def _get_operation_stats(self) -> dict[str, dict[str, Any]]:
         """
         Calculate statistics for each operation.
         
@@ -413,15 +414,15 @@ class RetryMonitor:
             if operation not in operation_events:
                 operation_events[operation] = []
             operation_events[operation].append(event)
-        
+
         # Calculate statistics for each operation
         operation_stats = {}
         for operation, events in operation_events.items():
             attempts = [event['attempt'] for event in events]
             successful = [event for event in events if event['successful']]
-            duration_values = [event['duration_ms'] for event in events 
+            duration_values = [event['duration_ms'] for event in events
                              if event['duration_ms'] is not None]
-            
+
             operation_stats[operation] = {
                 'count': len(events),
                 'success_rate': len(successful) / len(events) if events else 0,
@@ -430,10 +431,10 @@ class RetryMonitor:
                 'last_exception': events[-1]['exception_type'] if events else None,
                 'last_exception_message': events[-1]['exception_message'] if events else None
             }
-        
+
         return operation_stats
-    
-    def _get_exception_stats(self) -> Dict[str, Dict[str, Any]]:
+
+    def _get_exception_stats(self) -> dict[str, dict[str, Any]]:
         """
         Calculate statistics for each exception type.
         
@@ -447,7 +448,7 @@ class RetryMonitor:
             if exception_type not in exception_events:
                 exception_events[exception_type] = []
             exception_events[exception_type].append(event)
-        
+
         # Calculate statistics for each exception type
         exception_stats = {}
         for exception_type, events in exception_events.items():
@@ -457,19 +458,19 @@ class RetryMonitor:
                 if operation not in by_operation:
                     by_operation[operation] = 0
                 by_operation[operation] += 1
-            
+
             exception_stats[exception_type] = {
                 'count': len(events),
                 'success_rate': len([e for e in events if e['successful']]) / len(events) if events else 0,
                 'by_operation': by_operation
             }
-        
+
         return exception_stats
 
 
 # Global singleton instance of RetryMonitor
 # Default persistence file in logs directory
-DEFAULT_PERSISTENCE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
+DEFAULT_PERSISTENCE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                                        'logs', 'retry_statistics.json')
 
 # Create logs directory if it doesn't exist
@@ -478,13 +479,13 @@ os.makedirs(os.path.dirname(DEFAULT_PERSISTENCE_PATH), exist_ok=True)
 retry_monitor = RetryMonitor(persistence_file=DEFAULT_PERSISTENCE_PATH)
 
 def record_retry(
-    operation: str, 
-    exception: Exception, 
-    attempt: int, 
+    operation: str,
+    exception: Exception,
+    attempt: int,
     max_attempts: int,
     successful: bool,
     component: str,
-    duration_ms: Optional[int] = None
+    duration_ms: int | None = None
 ) -> None:
     """
     Record a retry event using the global monitor.
@@ -510,7 +511,7 @@ def record_retry(
     )
 
 
-def get_retry_statistics() -> Dict[str, Any]:
+def get_retry_statistics() -> dict[str, Any]:
     """
     Get current retry statistics from the global monitor.
     
@@ -520,7 +521,7 @@ def get_retry_statistics() -> Dict[str, Any]:
     return retry_monitor.get_statistics()
 
 
-def get_high_failure_operations() -> Set[str]:
+def get_high_failure_operations() -> set[str]:
     """
     Get operations with high failure rates from the global monitor.
     
@@ -536,7 +537,7 @@ def reset_retry_statistics() -> None:
 
 
 # Default alert handler that logs alerts
-def log_alert_handler(operation_key: str, alert_type: str, alert_value: Any, event: Dict[str, Any]) -> None:
+def log_alert_handler(operation_key: str, alert_type: str, alert_value: Any, event: dict[str, Any]) -> None:
     """
     Default alert handler that logs detailed alert information.
     
@@ -557,7 +558,7 @@ def log_alert_handler(operation_key: str, alert_type: str, alert_value: Any, eve
 # Register the default alert handler with the global retry monitor
 retry_monitor.register_alert_handler(log_alert_handler)
 
-def set_alert_threshold(threshold_name: str, value: Union[int, float]) -> None:
+def set_alert_threshold(threshold_name: str, value: int | float) -> None:
     """
     Set an alert threshold value in the global monitor.
     
@@ -567,7 +568,7 @@ def set_alert_threshold(threshold_name: str, value: Union[int, float]) -> None:
     """
     retry_monitor.set_alert_threshold(threshold_name, value)
 
-def register_alert_handler(handler: Callable[[str, str, Any, Dict[str, Any]], None]) -> None:
+def register_alert_handler(handler: Callable[[str, str, Any, dict[str, Any]], None]) -> None:
     """
     Register an alert handler with the global monitor.
     
@@ -576,11 +577,11 @@ def register_alert_handler(handler: Callable[[str, str, Any, Dict[str, Any]], No
     """
     retry_monitor.register_alert_handler(handler)
 
-def get_alerted_operations() -> Set[str]:
+def get_alerted_operations() -> set[str]:
     """
     Get operations that have triggered alerts from the global monitor.
     
     Returns:
         Set of operation names
     """
-    return retry_monitor.get_alerted_operations() 
+    return retry_monitor.get_alerted_operations()

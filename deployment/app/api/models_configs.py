@@ -1,39 +1,46 @@
 """
 API endpoints for working with models and parameter sets.
 """
-from fastapi import APIRouter, HTTPException, Query, Depends, Body, UploadFile, File, Form
-from typing import Dict, Any, List, Optional
-import logging
-from pydantic import BaseModel, Field, ConfigDict
-import os
 import json as jsonlib
+import logging
+import os
 
-from deployment.app.db.database import (
-    get_active_config,
-    set_config_active,
-    get_best_config_by_metric,
-    get_active_model,
-    set_model_active,
-    get_best_model_by_metric,
-    get_recent_models,
-    get_configs,
-    delete_configs_by_ids,
-    get_all_models,
-    delete_models_by_ids,
-    create_model_record,
-    get_job,
-    create_job
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
 )
-from deployment.app.config import settings
-from deployment.app.services.auth import get_current_api_key_validated
+
+from deployment.app.config import get_settings
+from deployment.app.db.database import (
+    create_job,
+    create_model_record,
+    delete_configs_by_ids,
+    delete_models_by_ids,
+    get_active_config,
+    get_active_model,
+    get_all_models,
+    get_best_config_by_metric,
+    get_best_model_by_metric,
+    get_configs,
+    get_job,
+    get_recent_models,
+    set_config_active,
+    set_model_active,
+)
 from deployment.app.models.api_models import (
+    ConfigCreateRequest,
     ConfigResponse,
-    ModelResponse,
     DeleteIdsRequest,
     DeleteResponse,
-    ConfigCreateRequest,
-    ModelCreateRequest
+    ModelResponse,
 )
+from deployment.app.services.auth import get_current_api_key_validated
 
 router = APIRouter(
     prefix="/api/v1/models-configs",
@@ -78,13 +85,14 @@ async def get_best_config(
     """
     # Use default metric from settings if none provided
     if not metric_name:
+        settings = get_settings()
         metric_name = settings.default_metric
         higher_is_better = settings.default_metric_higher_is_better
-        
+
     best_config = get_best_config_by_metric(metric_name, higher_is_better)
     if not best_config:
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail=f"No configs found with metric '{metric_name}'"
         )
     return best_config
@@ -92,7 +100,7 @@ async def get_best_config(
 
 # Endpoint to list and delete configs
 
-@router.get("/configs", response_model=List[ConfigResponse])
+@router.get("/configs", response_model=list[ConfigResponse])
 async def get_configs_endpoint(
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of configs to return"),
     api_key: bool = Depends(get_current_api_key_validated)
@@ -103,7 +111,7 @@ async def get_configs_endpoint(
     configs_list = get_configs(limit=limit)
     if not configs_list:
         return []
-        
+
     return configs_list
 
 
@@ -118,7 +126,7 @@ async def delete_configs(
     """
     if not request.ids:
         return DeleteResponse(successful=0, failed=0, errors=["No IDs provided"])
-        
+
     result = delete_configs_by_ids(request.ids)
     return DeleteResponse(
         successful=result["successful"],
@@ -157,19 +165,20 @@ async def get_best_model(
     """
     # Use default metric from settings if none provided
     if not metric_name:
+        settings = get_settings()
         metric_name = settings.default_metric
         higher_is_better = settings.default_metric_higher_is_better
-        
+
     best_model = get_best_model_by_metric(metric_name, higher_is_better)
     if not best_model:
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail=f"No models found with metric '{metric_name}'"
         )
     return best_model
 
 
-@router.get("/models/recent", response_model=List[ModelResponse])
+@router.get("/models/recent", response_model=list[ModelResponse])
 async def get_recent_models_endpoint(
     limit: int = Query(5, ge=1, le=100, description="Maximum number of models to return"),
     api_key: bool = Depends(get_current_api_key_validated)
@@ -178,7 +187,7 @@ async def get_recent_models_endpoint(
     models = get_recent_models(limit)
     if not models:
         return []
-        
+
     # Convert to response format
     result = []
     for model in models:
@@ -187,14 +196,14 @@ async def get_recent_models_endpoint(
         model_id, job_id, model_path, created_at, metadata_json = model
         import json
         metadata = json.loads(metadata_json) if metadata_json else {}
-        
+
         result.append(ModelResponse(
             model_id=model_id,
             model_path=model_path,
             is_active=False,  # We don't have this info from get_recent_models
             metadata=metadata
         ))
-    
+
     # Try to mark the active model
     active_model = get_active_model()
     if active_model:
@@ -202,14 +211,14 @@ async def get_recent_models_endpoint(
             if model.model_id == active_model["model_id"]:
                 model.is_active = True
                 break
-                
+
     return result
 
 
 # После @router.get("/models/recent", response_model=List[ModelResponse])
 # добавляем эндпоинты для списка моделей и удаления
 
-@router.get("/models", response_model=List[ModelResponse])
+@router.get("/models", response_model=list[ModelResponse])
 async def get_all_models_endpoint(
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of models to return"),
     api_key: bool = Depends(get_current_api_key_validated)
@@ -220,7 +229,7 @@ async def get_all_models_endpoint(
     models_list = get_all_models(limit=limit)
     if not models_list:
         return []
-        
+
     return models_list
 
 
@@ -235,7 +244,7 @@ async def delete_models(
     """
     if not request.ids:
         return DeleteResponse(successful=0, failed=0, errors=["No IDs provided"])
-        
+
     result = delete_models_by_ids(request.ids)
     return DeleteResponse(
         successful=result["successful"],
@@ -268,7 +277,7 @@ async def upload_config(
 async def upload_model(
     model_file: UploadFile = File(..., description="Model onnx file"),
     model_id: str = Form(..., description="Unique model identifier"),
-    job_id: Optional[str] = Form(None, description="Job ID that produced the model (optional)"),
+    job_id: str | None = Form(None, description="Job ID that produced the model (optional)"),
     is_active: bool = Form(False, description="Set as active after creation"),
     created_at: str = Form(None, description="Creation timestamp (ISO format)"),
     metadata: str = Form(None, description="Model metadata as JSON string"),
@@ -303,7 +312,7 @@ async def upload_model(
                 raise HTTPException(status_code=400, detail=f"Provided job_id '{job_id}' does not exist.")
         # --- Сохраняем файл ---
         file_ext = os.path.splitext(model_file.filename)[1]
-        save_path = os.path.join(settings.model_storage_dir, f"{model_id}{file_ext}")
+        save_path = os.path.join(get_settings().model_storage_dir, f"{model_id}{file_ext}")
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         with open(save_path, "wb") as f:
             content = await model_file.read()
@@ -356,4 +365,4 @@ async def upload_model(
                 os.remove(save_path)
         except Exception as cleanup_e:
             logger.error(f"Failed to clean up orphaned model file {save_path}: {cleanup_e}")
-        raise HTTPException(status_code=500, detail=f"Failed to upload model: {e}") 
+        raise HTTPException(status_code=500, detail=f"Failed to upload model: {e}")

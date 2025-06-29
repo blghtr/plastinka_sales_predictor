@@ -5,80 +5,98 @@
 ## Структура
 
 ```
-modules/                # Переиспользуемые модули
-  datasphere_community/ # YC DataSphere Community
-  datasphere_project/   # YC DataSphere Project
-  service_account/      # YC Service Account с IAM ролями
+modules/                    # Переиспользуемые модули
+  datasphere_community/     # YC DataSphere Community
+  datasphere_project/       # YC DataSphere Project  
+  service_account/          # YC Service Account с IAM ролями
 
 envs/
-  prod/                 # Конфигурация для prod (единственное окружение)
-    main.tf
-    variables.tf
-    terraform.tfvars
-    terraform.tfvars.example
-    config.yaml.tpl     # Шаблон конфигурации DataSphere
+  prod/                     # Конфигурация для prod (единственное окружение)
+    main.tf                 # Основная конфигурация ресурсов
+    variables.tf            # Определения переменных
+    outputs.tf              # Выходные значения
+    terraform.tfvars        # Значения переменных (не в VCS)
+    terraform.tfvars.example # Пример файла переменных
 
-versions.tf             # Глобальные ограничения версий Terraform и провайдеров
+
+versions.tf                 # Глобальные ограничения версий Terraform и провайдеров
 ```
 
 ## Что создаётся
 
-1. **DataSphere Service Account** - для работы с DataSphere:
-   - `datasphere.user` - базовый доступ к DataSphere
-   - `datasphere.communities.developer` - разработка и запуск проектов
-   - `storage.admin` - доступ к Object Storage
-   - `compute.admin` - управление вычислительными ресурсами
-   - `vpc.user` - доступ к сетевым ресурсам
+### 1. DataSphere Service Account (`datasphere-sa-prod`)
+Service account с необходимыми ролями для работы с DataSphere:
+- `datasphere.user` - базовый доступ к DataSphere
+- `datasphere.communities.developer` - разработка и запуск проектов
+- `storage.admin` - доступ к Object Storage
+- `compute.admin` - управление вычислительными ресурсами
+- `vpc.user` - доступ к сетевым ресурсам
 
-2. **DataSphere Community** - организационная единица для проектов
+### 2. DataSphere Community (`prod-ds-community`)
+Организационная единица для группировки проектов с метками:
+- `env = "prod"`
+- `project = "plastinka-sales-predictor"`
 
-3. **DataSphere Project** - привязанный к service account проект
+### 3. DataSphere Project (`prod-ds-project`)
+Проект DataSphere с конфигурацией:
+- Привязка к созданному service account
+- Ограничения ресурсов: 20 единиц/час, 200 единиц/выполнение
 
-4. **DataSphere Configuration** - автоматически генерируемый `config_standard.yaml`
+
+### 4. DataSphere Job Configuration
+Готовая конфигурация `config.yaml` с:
+- Manual Python 3.10.13 окружение
+- Зависимости из `requirements.txt`
+- Настроенные пути и индексы PyPI
+- Готовая команда выполнения
 
 ## Быстрый старт
 
-1. Установите Terraform >= 1.6.
-2. Перейдите в каталог окружения prod:
-   ```powershell
-   cd deployment\infrastructure\envs\prod
-   ```
-3. Скопируйте `terraform.tfvars.example` в `terraform.tfvars` и заполните значения.
-4. Инициализируйте рабочую директорию:
-   ```powershell
-   terraform init
-   ```
-5. Посмотрите план изменений:
-   ```powershell
-   terraform plan
-   ```
-6. Примените изменения:
-   ```powershell
-   terraform apply
-   ```
+### 1. Подготовка переменных
+```powershell
+cd deployment\infrastructure\envs\prod
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Отредактируйте `terraform.tfvars`:
+```hcl
+yc_token           = "your-oauth-token" (безопаснее: сохраните в переменную среды TF_yc_token)
+yc_cloud_id        = "your-cloud-id"
+yc_folder_id       = "your-folder-id"
+yc_organization_id = "your-organization-id"
+```
+
+### 2. Инициализация и применение
+```powershell
+terraform init
+terraform plan
+terraform apply
+```
 
 ## Получение данных после применения
 
-После применения конфигурации вы получите:
-
+### Основные выходные значения:
 ```powershell
-# DataSphere Service Account данные
+# Сводная информация о DataSphere
+terraform output datasphere_summary
+
+# ID проекта DataSphere
+terraform output datasphere_project_id
+
+# Service Account данные
 terraform output service_account_id
 terraform output service_account_name
+
+# Ключи доступа (sensitive)
 terraform output -raw static_access_key_id
 terraform output -raw static_secret_key
 
-# DataSphere проект и конфигурация
-terraform output datasphere_project_id
-terraform output datasphere_config_path
-terraform output datasphere_summary
+
 ```
 
 ## Использование Service Account
 
 ### В коде приложения
-Используйте полученные ключи для настройки DataSphere клиента:
-
 ```python
 from deployment.datasphere.client import DataSphereClient
 
@@ -90,50 +108,62 @@ client = DataSphereClient(
 ```
 
 ### В переменных окружения
-```bash
-export YC_SERVICE_ACCOUNT_KEY_ID="<static_access_key_id>"
-export YC_SERVICE_ACCOUNT_KEY="<static_secret_key>"
-export YC_FOLDER_ID="<folder_id>"
+```powershell
+$env:YC_SERVICE_ACCOUNT_KEY_ID = terraform output -raw static_access_key_id
+$env:YC_SERVICE_ACCOUNT_KEY = terraform output -raw static_secret_key
+$env:YC_FOLDER_ID = "your-folder-id"
 ```
 
 ## DataSphere Job Configuration
 
-Terraform автоматически генерирует конфигурацию DataSphere Job в файл `config_standard.yaml` со следующими возможностями:
+Проект содержит готовую конфигурацию `config.yaml`:
 
-- **Python 3.8** окружение
-- **Автоматическая установка зависимостей** из requirements списка
-- **Настроенные переменные окружения**
-- **Готовая команда выполнения**
+**Ресурсы:**
+- Compute instance: `c1.4`
+- Входные данные: `plastinka_sales_predictor/datasphere_job/input.zip`
+- Выходные данные: `output.zip`
 
-Конфигурация включает все необходимые Python пакеты:
-- pandas, numpy, scikit-learn
-- fastapi, uvicorn
-- onnx, onnxruntime
-- matplotlib, seaborn, plotly
-- И другие
+**Python окружение:**
+- Manual Python 3.10.13
+- Зависимости из `plastinka_sales_predictor/requirements.txt`
+- PyTorch index: `https://download.pytorch.org/whl/cu118`
+- Локальные пути: `plastinka_sales_predictor`
+
+**Команда выполнения:**
+```bash
+python -m plastinka_sales_predictor.datasphere_job.train_and_predict --input ${INPUT} --output ${OUTPUT}
+```
 
 ## Безопасность
 
-* `prevent_destroy = true` установлен для проекта, чтобы случайный `destroy` не стёр историю экспериментов.
-* OAuth-токен и ключи не должны попадать в VCS. Используйте переменные окружения или secrets-менеджер.
-* Static keys помечены как `sensitive` в outputs - используйте `-raw` флаг для получения значений.
-* Service Account создаётся с минимально необходимыми правами для работы DataSphere.
+### Защита чувствительных данных
+- ✅ `sensitive = true` для всех ключей в outputs
+- ✅ `prevent_destroy = true` для проекта (защита от случайного удаления)
+- ✅ OAuth-токен не сохраняется в state файле
+- ✅ Service Account создаётся с минимально необходимыми правами
+
+### Рекомендации
+- Не храните `terraform.tfvars` в VCS
+- Используйте `-raw` флаг для получения sensitive значений
+- Регулярно ротируйте static keys
+- Мониторьте использование ресурсов через метки
 
 ## State Management
 
-State хранится локально (файл `terraform.tfstate` в каталоге). При необходимости можно настроить удалённый backend.
+- State хранится локально в файле `terraform.tfstate`
+- Создаются автоматические backup файлы
+- При необходимости можно настроить удалённый backend
 
-## Расширение
+## Требования
 
-* Для дополнительных окружений создайте каталог `envs/<env_name>` с собственными параметрами.
-* Добавьте модуль `artifacts_bucket`, если потребуется управлять S3-хранилищем для моделей.
-* Настройте дополнительные роли в `folder_roles` или `cloud_roles` по необходимости.
+- **Terraform** >= 1.6.0
+- **Yandex Cloud Provider** ~> 0.109
+- Права доступа: `datasphere.user`, `resource-manager.editor`
+
 
 ## Запуск DataSphere Job
 
-После применения Terraform:
-
-1. Загрузите сгенерированный `config_standard.yaml` в DataSphere проект
-2. Подготовьте входные данные в формате `input.zip`
-3. Запустите Job через DataSphere UI или API
-4. Получите результаты в `output.zip` 
+1. **Подготовка данных**: создайте архив с входными данными
+2. **Загрузка конфигурации**: используйте готовый `config.yaml`
+3. **Запуск**: через DataSphere UI или API
+4. **Результаты**: получите `output.zip` с результатами предсказаний 

@@ -1,1 +1,1 @@
-# Database utilities for the Plastinka Sales Predictor 
+# Database utilities for the Plastinka Sales Predictor

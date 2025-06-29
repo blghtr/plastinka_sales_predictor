@@ -1,8 +1,6 @@
+import logging
 import sqlite3
 from pathlib import Path
-from datetime import datetime
-import json
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +250,7 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
     conn = None
     conn_created = False
     original_row_factory = None
-    
+
     try:
         if connection:
             conn = connection
@@ -265,14 +263,14 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
                 parsed_db_path = parsed_db_path[len("sqlite://"):]
             elif parsed_db_path.startswith("sqlite:"):
                 parsed_db_path = parsed_db_path[len("sqlite:"):]
-            
+
             if not parsed_db_path:
                 raise ValueError(f"Database path became empty after parsing scheme from: {db_path}")
 
             # Ensure directory exists
             actual_file_path = Path(parsed_db_path)
             actual_file_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Connect to database
             conn = sqlite3.connect(db_path)
             conn_created = True
@@ -281,15 +279,15 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
             # Store and reset row_factory for schema operations
             original_row_factory = conn.row_factory
             conn.row_factory = None
-            
+
             # Enable foreign keys and execute schema
             conn.execute("PRAGMA foreign_keys = ON;")
             cursor = conn.cursor()
             cursor.executescript(SCHEMA_SQL)
-            
+
             if conn_created:
                 conn.commit()
-            
+
             return True
         else:
             logger.error("No database connection established")
@@ -304,7 +302,7 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
         # Restore original row_factory
         if connection and original_row_factory is not None:
             connection.row_factory = original_row_factory
-            
+
         # Close connection if we created it
         if conn_created and conn:
             try:
@@ -327,7 +325,7 @@ def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connec
     conn = None
     conn_created = False
     original_row_factory = None
-    
+
     try:
         if connection:
             conn = connection
@@ -340,14 +338,14 @@ def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connec
                 parsed_db_path = parsed_db_path[len("sqlite://"):]
             elif parsed_db_path.startswith("sqlite:"):
                 parsed_db_path = parsed_db_path[len("sqlite:"):]
-            
+
             if not parsed_db_path:
                 raise ValueError(f"Database path became empty after parsing scheme from: {db_path}")
 
             # Ensure directory exists
             actual_file_path = Path(parsed_db_path)
             actual_file_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Connect to database
             conn = sqlite3.connect(db_path)
             conn_created = True
@@ -356,28 +354,28 @@ def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connec
             # Store and reset row_factory for schema operations
             original_row_factory = conn.row_factory
             conn.row_factory = None
-            
+
             # Enable foreign keys
             conn.execute("PRAGMA foreign_keys = ON;")
             cursor = conn.cursor()
-            
+
             # Check if column already exists
             cursor.execute("PRAGMA table_info(prediction_results)")
             columns = [row[1] for row in cursor.fetchall()]
-            
+
             if 'prediction_month' not in columns:
                 logger.info("Adding prediction_month column to prediction_results table")
                 cursor.execute("ALTER TABLE prediction_results ADD COLUMN prediction_month DATE")
-                
+
                 # Add the index
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_prediction_results_month ON prediction_results(prediction_month)")
-                
+
                 if conn_created:
                     conn.commit()
                 logger.info("Successfully added prediction_month column and index")
             else:
                 logger.info("prediction_month column already exists, skipping migration")
-            
+
             return True
         else:
             logger.error("No database connection established for migration")
@@ -392,7 +390,7 @@ def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connec
         # Restore original row_factory
         if connection and original_row_factory is not None:
             connection.row_factory = original_row_factory
-            
+
         # Close connection if we created it
         if conn_created and conn:
             try:
@@ -401,4 +399,4 @@ def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connec
                 logger.error(f"Error closing database connection: {close_e}")
 
 if __name__ == "__main__":
-    init_db() 
+    init_db()

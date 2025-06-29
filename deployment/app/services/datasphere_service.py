@@ -1,68 +1,40 @@
-from datetime import datetime
-import time
-import os
-import json
-import uuid
 import asyncio
+import json
 import logging
-import pandas as pd
+import os
 import shutil
-from pathlib import Path
-import yaml
-import subprocess
-import sys # Added to use sys.executable
 import tempfile
-from typing import Optional, Tuple, Dict, Any, List
-from pydantic import TypeAdapter
+import uuid
+import zipfile
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from deployment.app.config import get_settings
 from deployment.app.db.database import (
-    update_job_status, 
-    create_training_result,
-    create_or_get_config,
     create_model_record,
-    get_recent_models,
-    delete_model_record_and_file,
-    get_active_config,
-    get_best_config_by_metric,
-    set_config_active,
-    get_active_model,
-    get_best_model_by_metric,
-    set_model_active,
+    create_training_result,
     delete_models_by_ids,
-    get_all_models,
-    get_job,
-    create_prediction_result,
-    get_or_create_multiindex_id,
     execute_many,
+    get_all_models,
     get_db_connection,
-    get_effective_config
+    get_job,
+    get_or_create_multiindex_id,
+    get_recent_models,
+    update_job_status,
 )
 from deployment.app.models.api_models import JobStatus, TrainingConfig
-from deployment.app.config import AppSettings
 from deployment.datasphere.client import DataSphereClient
 from deployment.datasphere.prepare_datasets import get_datasets
 
-import zipfile
-
 # Initialize settings
-settings = AppSettings()
+# settings = AppSettings()
 
 # Constants from settings
-DATASPHERE_JOB_DIRECTORY = settings.datasphere_output_dir
-DATASPHERE_MODEL_FILE = "model.onnx"
-DATASPHERE_PREDICTIONS_FILE = "predictions.csv"
-DATASPHERE_PREDICTIONS_FORMAT = "csv"
-JOB_POLL_MAX = settings.datasphere.max_polls
-JOB_POLL_INTERVAL = settings.datasphere.poll_interval
-MAX_RETRIES = 3
-RETRY_DELAY = 2
-DATASPHERE_IMAGE_VARIABLES = ["PYTHONPATH", "PYTHONUNBUFFERED"]
-
-# Timeouts for DataSphere Client operations
-CLIENT_INIT_TIMEOUT_SECONDS = settings.datasphere.client_init_timeout_seconds # Default 1 minute
-CLIENT_SUBMIT_TIMEOUT_SECONDS = settings.datasphere.client_submit_timeout_seconds # Default 2 minutes
-CLIENT_STATUS_TIMEOUT_SECONDS = settings.datasphere.client_status_timeout_seconds # Default 30 seconds
-CLIENT_DOWNLOAD_TIMEOUT_SECONDS = settings.datasphere.client_download_timeout_seconds # Default 5 minutes
-CLIENT_CANCEL_TIMEOUT_SECONDS = settings.datasphere.client_cancel_timeout_seconds # Default 1 minute
+# The constants below are now fetched inside the functions where they are needed
+# to ensure they use the latest configuration, especially in test environments.
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -84,14 +56,14 @@ def create_project_input_link(archive_path: str, project_root: str) -> str:
         RuntimeError: If linking/copying fails
     """
     project_input_path = os.path.join(project_root, "input.zip")
-    
+
     # Remove existing file/link if present
     if os.path.exists(project_input_path):
         try:
             os.remove(project_input_path)
         except OSError as e:
             logger.warning(f"Failed to remove existing input.zip: {e}")
-    
+
     try:
         if os.name == 'posix':  # Linux/macOS - symlink
             os.symlink(archive_path, project_input_path)
@@ -108,7 +80,7 @@ def create_project_input_link(archive_path: str, project_root: str) -> str:
             error_msg = f"Failed to create link and copy fallback failed: {copy_e}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from copy_e
-    
+
     return project_input_path
 
 
@@ -152,23 +124,24 @@ async def _prepare_job_datasets(job_id: str, config: TrainingConfig, start_date_
 async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
     """Initializes and returns the DataSphere client."""
     logger.info(f"[{job_id}] Stage 3: Initializing DataSphere client...")
+    settings = get_settings()
     if not settings.datasphere or not settings.datasphere.client:
         update_job_status(job_id, JobStatus.FAILED.value, error_message="DataSphere client configuration is missing.")
         raise ValueError("DataSphere client configuration is missing in settings.")
-    
+
     client_config = settings.datasphere.client # Get config dict
 
     try:
         # DataSphereClient constructor is synchronous, run in a thread
         client = await asyncio.wait_for(
             asyncio.to_thread(DataSphereClient, **client_config),
-            timeout=CLIENT_INIT_TIMEOUT_SECONDS
+            timeout=settings.datasphere.client_init_timeout_seconds
         )
         logger.info(f"[{job_id}] DataSphere client initialized successfully.")
         update_job_status(job_id, JobStatus.RUNNING.value, progress=15, status_message="DataSphere client initialized.")
         return client
     except asyncio.TimeoutError:
-        error_msg = f"DataSphere client initialization timed out after {CLIENT_INIT_TIMEOUT_SECONDS} seconds."
+        error_msg = f"DataSphere client initialization timed out after {settings.datasphere.client_init_timeout_seconds} seconds."
         logger.error(f"[{job_id}] {error_msg}")
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg) from asyncio.TimeoutError # Keep original exception type for context
@@ -201,14 +174,14 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path) -> No
         RuntimeError: If the input directory is invalid or other general integrity issues.
     """
     logger.info(f"[{job_id}] Stage 4a.1: Verifying DataSphere job inputs in {input_dir_path}...")
-    
+
     # 1. Verify Input Directory Existence and Type
     if not input_dir_path.exists():
         error_msg = f"Input directory '{input_dir_path}' does not exist for job {job_id}."
         logger.error(f"[{job_id}] {error_msg}")
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg)
-    
+
     if not input_dir_path.is_dir():
         error_msg = f"Input path '{input_dir_path}' is not a directory for job {job_id}."
         logger.error(f"[{job_id}] {error_msg}")
@@ -222,8 +195,8 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path) -> No
         logger.error(f"[{job_id}] {error_msg}")
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
-    
-    # 3. Validate Dataset Files (e.g., train.dill, val.dill, full.dill) 
+
+    # 3. Validate Dataset Files (e.g., train.dill, val.dill, full.dill)
     # Based on prepare_datasets.py, it should produce 'train.dill' and 'val.dill'
     train_data_file = input_dir_path / "train.dill"
     val_data_file = input_dir_path / "val.dill"
@@ -239,7 +212,7 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path) -> No
         logger.error(f"[{job_id}] {error_msg}")
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
-    
+
     logger.info(f"[{job_id}] DataSphere job inputs verified successfully.")
     update_job_status(job_id, JobStatus.RUNNING.value, progress=20, status_message="DataSphere job inputs verified.")
 
@@ -257,9 +230,9 @@ async def _prepare_datasphere_job_submission(job_id: str, config: TrainingConfig
 
     logger.info(f"[{job_id}] DataSphere job submission inputs prepared.")
     update_job_status(job_id, JobStatus.RUNNING.value, progress=18, status_message="Job submission inputs prepared.")
-    
+
     # Return the path to the static template config file
-    return str(settings.datasphere_job_config_path)
+    return str(get_settings().datasphere_job_config_path)
 
 
 async def _archive_input_directory(job_id: str, input_dir: str, archive_dir: str = None) -> str:
@@ -279,11 +252,11 @@ async def _archive_input_directory(job_id: str, input_dir: str, archive_dir: str
         RuntimeError: If archiving fails
     """
     logger.info(f"[{job_id}] Stage 4b: Archiving input directory '{input_dir}'...")
-    
+
     # Choose where to create the archive
     input_dir_path = Path(input_dir)
     archive_name = f"{input_dir_path.name}.zip"
-    
+
     if archive_dir:
         archive_path = Path(archive_dir) / archive_name
         logger.info(f"[{job_id}] Creating archive in specified directory: {archive_path}")
@@ -291,10 +264,15 @@ async def _archive_input_directory(job_id: str, input_dir: str, archive_dir: str
         # Current behavior for backward compatibility
         archive_path = input_dir_path.parent / archive_name
         logger.info(f"[{job_id}] Creating archive in parent directory: {archive_path}")
-    
+
     try:
         with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for root, dirs, files in os.walk(input_dir):
+                # Skip the build artifacts directory
+                if '_build_artifacts' in dirs:
+                    dirs.remove('_build_artifacts')
+                    logger.info(f"[{job_id}] Excluding _build_artifacts directory from archive")
+                
                 for file in files:
                     file_path = os.path.join(root, file)
                     # Skip the archive file itself to avoid recursion
@@ -303,7 +281,7 @@ async def _archive_input_directory(job_id: str, input_dir: str, archive_dir: str
                     # Calculate relative path from input_dir
                     relative_path = os.path.relpath(file_path, input_dir)
                     zipf.write(file_path, relative_path)
-        
+
         logger.info(f"[{job_id}] Input directory archived to: {archive_path}")
         update_job_status(job_id, JobStatus.RUNNING.value, progress=23, status_message="Input directory archived.")
         return str(archive_path)
@@ -342,19 +320,19 @@ async def _create_new_datasphere_job(
         RuntimeError: If job creation fails or times out
     """
     logger.info(f"[{job_id}] Creating new DataSphere job")
-    
+
     try:
         # Use the existing submit_job method with timeout and work_dir
         ds_job_id = await asyncio.wait_for(
             asyncio.to_thread(client.submit_job, config_path=ready_config_path, work_dir=work_dir),
-            timeout=CLIENT_SUBMIT_TIMEOUT_SECONDS
+            timeout=get_settings().datasphere.client_submit_timeout_seconds
         )
-        
+
         logger.info(f"[{job_id}] Successfully created new job: {ds_job_id}")
         return ds_job_id
-        
+
     except asyncio.TimeoutError:
-        error_msg = f"DataSphere job creation timed out after {CLIENT_SUBMIT_TIMEOUT_SECONDS} seconds"
+        error_msg = f"DataSphere job creation timed out after {get_settings().datasphere.client_submit_timeout_seconds} seconds"
         logger.error(f"[{job_id}] {error_msg}")
         raise RuntimeError(error_msg) from asyncio.TimeoutError
     except Exception as e:
@@ -390,12 +368,12 @@ async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_co
         # Create new job
         logger.info(f"[{job_id}] Creating new DataSphere job")
         ds_job_id = await _create_new_datasphere_job(job_id, client, ready_config_path, work_dir)
-        
+
         # Update status
-        update_job_status(job_id, JobStatus.RUNNING.value, progress=25, 
+        update_job_status(job_id, JobStatus.RUNNING.value, progress=25,
                         status_message=f"DS Job {ds_job_id} submitted.")
         return ds_job_id
-        
+
     except Exception as e:
         if not isinstance(e, (FileNotFoundError, RuntimeError)):
             error_msg = f"DataSphere job creation failed: {str(e)}"
@@ -424,11 +402,11 @@ async def _check_datasphere_job_status(job_id: str, ds_job_id: str, client: Data
         # client.get_job_status is synchronous, run in a thread with timeout
         current_ds_status_str = await asyncio.wait_for(
             asyncio.to_thread(client.get_job_status, ds_job_id),
-            timeout=CLIENT_STATUS_TIMEOUT_SECONDS
+            timeout=get_settings().datasphere.client_status_timeout_seconds
         )
         return current_ds_status_str
     except asyncio.TimeoutError:
-        error_msg = f"DataSphere job status check timed out after {CLIENT_STATUS_TIMEOUT_SECONDS} seconds for DS Job ID: {ds_job_id}."
+        error_msg = f"DataSphere job status check timed out after {get_settings().datasphere.client_status_timeout_seconds} seconds for DS Job ID: {ds_job_id}."
         logger.warning(f"[{job_id}] {error_msg}") # Log as warning, as polling might retry
         # Do not update job status here, let the polling loop handle overall job timeout/failure
         raise RuntimeError(error_msg) from asyncio.TimeoutError # Propagate to polling loop
@@ -443,11 +421,11 @@ async def _check_datasphere_job_status(job_id: str, ds_job_id: str, client: Data
 
 
 async def _download_datasphere_job_results(
-    job_id: str, 
-    ds_job_id: str, 
-    client: DataSphereClient, 
+    job_id: str,
+    ds_job_id: str,
+    client: DataSphereClient,
     results_dir: str
-) -> Tuple[Dict[str, Any] | None, str | None, str | None]:
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
     """Downloads and processes the results from a DataSphere job."""
     logger.info(f"[{job_id}] Stage 5a: Downloading results for ds_job '{ds_job_id}' to '{results_dir}'...")
 
@@ -456,16 +434,16 @@ async def _download_datasphere_job_results(
     predictions_path = None
 
     os.makedirs(results_dir, exist_ok=True)
-    logger.info(f"[{job_id}] Downloading results for DS Job {ds_job_id} to {results_dir}. Timeout: {CLIENT_DOWNLOAD_TIMEOUT_SECONDS}s")
+    logger.info(f"[{job_id}] Downloading results for DS Job {ds_job_id} to {results_dir}. Timeout: {get_settings().datasphere.client_download_timeout_seconds}s")
 
     try:
         # client.download_job_results is synchronous, run in a thread with timeout
         await asyncio.wait_for(
             asyncio.to_thread(client.download_job_results, ds_job_id, results_dir),
-            timeout=CLIENT_DOWNLOAD_TIMEOUT_SECONDS
+            timeout=get_settings().datasphere.client_download_timeout_seconds
         )
         logger.info(f"[{job_id}] Results for DS Job {ds_job_id} downloaded to {results_dir}")
-        
+
         # Check if there's an output.zip archive that needs to be extracted
         output_zip_path = os.path.join(results_dir, "output.zip")
         if os.path.exists(output_zip_path):
@@ -474,7 +452,7 @@ async def _download_datasphere_job_results(
                 with zipfile.ZipFile(output_zip_path, 'r') as zip_ref:
                     zip_ref.extractall(results_dir)
                 logger.info(f"[{job_id}] Successfully extracted output.zip archive")
-                
+
                 # Optional: Remove the archive file after extraction
                 os.remove(output_zip_path)
             except zipfile.BadZipFile as e:
@@ -483,26 +461,26 @@ async def _download_datasphere_job_results(
             except Exception as e:
                 logger.error(f"[{job_id}] Error extracting output.zip: {e}", exc_info=True)
                 # Continue processing in case individual files exist
-        
+
         # Check for model, predictions, and metrics files
-        model_path = os.path.join(results_dir, DATASPHERE_MODEL_FILE)
-        predictions_path = os.path.join(results_dir, DATASPHERE_PREDICTIONS_FILE)
+        model_path = os.path.join(results_dir, "model.onnx")
+        predictions_path = os.path.join(results_dir, "predictions.csv")
         metrics_path = os.path.join(results_dir, "metrics.json")
 
         if not os.path.exists(model_path):
-            logger.warning(f"[{job_id}] Model file '{DATASPHERE_MODEL_FILE}' not found at {model_path}. Model will not be saved.")
+            logger.warning(f"[{job_id}] Model file 'model.onnx' not found at {model_path}. Model will not be saved.")
             model_path = None
-        
+
         if not os.path.exists(predictions_path):
-            logger.warning(f"[{job_id}] Predictions file '{DATASPHERE_PREDICTIONS_FILE}' not found at {predictions_path}. Predictions will not be saved.")
+            logger.warning(f"[{job_id}] Predictions file 'predictions.csv' not found at {predictions_path}. Predictions will not be saved.")
             predictions_path = None
-        
+
         if not os.path.exists(metrics_path):
             logger.warning(f"[{job_id}] Metrics file 'metrics.json' not found at {metrics_path}. Metrics will not be saved.")
             metrics_data = None
         else:
             try:
-                with open(metrics_path, 'r') as f:
+                with open(metrics_path) as f:
                     metrics_data = json.load(f)
                 logger.info(f"[{job_id}] Loaded metrics from {metrics_path}")
             except json.JSONDecodeError as e:
@@ -512,11 +490,11 @@ async def _download_datasphere_job_results(
 
         return metrics_data, predictions_path, model_path
     except asyncio.TimeoutError:
-        error_msg = f"DataSphere job results download timed out after {CLIENT_DOWNLOAD_TIMEOUT_SECONDS} seconds for DS Job ID: {ds_job_id}."
+        error_msg = f"DataSphere job results download timed out after {get_settings().datasphere.client_download_timeout_seconds} seconds for DS Job ID: {ds_job_id}."
         logger.error(f"[{job_id}] {error_msg}")
         # Update job status directly here if download failure is critical for the job outcome
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
-        raise RuntimeError(error_msg) from asyncio.TimeoutError       
+        raise RuntimeError(error_msg) from asyncio.TimeoutError
     except Exception as e:
         logger.error(f"[{job_id}] DataSphere job '{ds_job_id}' failed with an exception during result download: {e}", exc_info=True)
         # It's not a timeout, but it's a failure in the download process itself
@@ -531,10 +509,10 @@ async def _download_datasphere_job_results(
 
 
 async def _download_logs_diagnostics(
-    job_id: str, 
-    ds_job_id: str, 
-    client: DataSphereClient, 
-    logs_dir: str, 
+    job_id: str,
+    ds_job_id: str,
+    client: DataSphereClient,
+    logs_dir: str,
     is_success: bool = True
 ) -> None:
     """
@@ -552,7 +530,7 @@ async def _download_logs_diagnostics(
     """
     os.makedirs(logs_dir, exist_ok=True)
     status_str = "successful" if is_success else "failed"
-    logger.info(f"[{job_id}] Downloading logs/diagnostics for {status_str} DS Job {ds_job_id} to {logs_dir}. Timeout: {CLIENT_DOWNLOAD_TIMEOUT_SECONDS}s")
+    logger.info(f"[{job_id}] Downloading logs/diagnostics for {status_str} DS Job {ds_job_id} to {logs_dir}. Timeout: {get_settings().datasphere.client_download_timeout_seconds}s")
 
     try:
         # client.download_job_results is synchronous, run in a thread with timeout
@@ -564,12 +542,12 @@ async def _download_logs_diagnostics(
                 with_logs=True,
                 with_diagnostics=True
             ),
-            timeout=CLIENT_DOWNLOAD_TIMEOUT_SECONDS
+            timeout=get_settings().datasphere.client_download_timeout_seconds
         )
         logger.info(f"[{job_id}] Logs/diagnostics for {status_str} DS Job {ds_job_id} downloaded to {logs_dir}")
     except asyncio.TimeoutError:
         # This is generally a non-critical error for the job's main outcome, so log and continue.
-        error_msg = f"DataSphere logs/diagnostics download timed out after {CLIENT_DOWNLOAD_TIMEOUT_SECONDS} seconds for DS Job ID: {ds_job_id}."
+        error_msg = f"DataSphere logs/diagnostics download timed out after {get_settings().datasphere.client_download_timeout_seconds} seconds for DS Job ID: {ds_job_id}."
         logger.warning(f"[{job_id}] {error_msg}")
     except Exception as dl_exc:
         # This is generally a non-critical error for the job's main outcome, so log and continue.
@@ -582,7 +560,7 @@ async def _process_datasphere_job(
     ds_job_specific_output_base_dir: str,
     ready_config_path: str,
     work_dir: str
-) -> Tuple[str, str, Dict[str, Any] | None, str | None, str | None, int]:
+) -> tuple[str, str, dict[str, Any] | None, str | None, str | None, int]:
     """
     Coordinates the DataSphere job lifecycle including submission, monitoring, and result fetching.
     
@@ -597,11 +575,12 @@ async def _process_datasphere_job(
         Tuple of (ds_job_id, results_dir, metrics_data, model_path, predictions_path, polls)
     """
     logger.info(f"[{job_id}] Stage 5: Processing DataSphere job...")
-    
+
     # Submit the job
     ds_job_id = await _submit_datasphere_job(job_id, client, ready_config_path, work_dir)
 
     completed = False
+    settings = get_settings()
     max_polls = settings.datasphere.max_polls
     poll_interval = settings.datasphere.poll_interval
     polls = 0
@@ -648,11 +627,11 @@ async def _process_datasphere_job(
             )
 
             # Download logs and diagnostics if configured
-            download_diag_on_success = getattr(settings.datasphere, 'download_diagnostics_on_success', False)
+            download_diag_on_success = getattr(get_settings().datasphere, 'download_diagnostics_on_success', False)
             if download_diag_on_success:
                 logs_dir = os.path.join(ds_job_specific_output_base_dir, "logs_diagnostics_success")
                 await _download_logs_diagnostics(job_id, ds_job_id, client, logs_dir, is_success=True)
-            else: 
+            else:
                 logger.info(f"[{job_id}] Skipping optional download of logs/diagnostics for successful job based on settings.")
 
         elif current_ds_status in ["failed", "cancelled", "cancelling"]:
@@ -679,7 +658,7 @@ async def _process_datasphere_job(
 async def _perform_model_cleanup(job_id: str, current_model_id: str) -> None:
     """Prunes old, non-active models based on settings."""
     try:
-        num_models_to_keep = getattr(settings, "max_models_to_keep", 5)
+        num_models_to_keep = getattr(get_settings(), "max_models_to_keep", 5)
         if num_models_to_keep > 0:
             logger.info(f"[{job_id}] Checking for old models to prune (keeping last {num_models_to_keep})...")
 
@@ -723,7 +702,7 @@ async def _process_job_results(
     ds_job_id: str,
     results_dir: str, # Base directory where results were downloaded.
     config: TrainingConfig,
-    metrics_data: Dict[str, Any] | None,
+    metrics_data: dict[str, Any] | None,
     model_path: str | None,
     predictions_path: str | None,
     polls: int,
@@ -739,10 +718,10 @@ async def _process_job_results(
         # Save model and predictions if they exist
         if model_path:
             model_id_for_status = await save_model_file_and_db(
-                job_id=job_id, 
-                model_path=model_path, 
-                ds_job_id=ds_job_id, 
-                config=config, 
+                job_id=job_id,
+                model_path=model_path,
+                ds_job_id=ds_job_id,
+                config=config,
                 metrics_data=metrics_data
             )
             logger.info(f"[{job_id}] Model saved with ID: {model_id_for_status}")
@@ -806,7 +785,7 @@ async def _process_job_results(
 
 
 
-async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> List[str]:
+async def _cleanup_directories(job_id: str, dir_paths: list[str]) -> list[str]:
     """Attempts to recursively delete the specified directories."""
     logger.info(f"[{job_id}] Stage 7: Cleaning up specified directories: {dir_paths}")
     cleanup_errors = []
@@ -824,14 +803,14 @@ async def _cleanup_directories(job_id: str, dir_paths: List[str]) -> List[str]:
              logger.info(f"[{job_id}] Skipping cleanup for empty directory path.")
         else:
             logger.info(f"[{job_id}] Directory not found or not a directory, skipping cleanup: {dir_path}")
-    
+
     # Return any cleanup errors to be handled by caller
     return cleanup_errors
 
 
 def save_predictions_to_db(
-    predictions_path: str, 
-    job_id: str, 
+    predictions_path: str,
+    job_id: str,
     model_id: str,
     direct_db_connection=None
 ) -> dict:
@@ -854,24 +833,24 @@ def save_predictions_to_db(
     # Verify the file exists
     if not os.path.exists(predictions_path):
         raise FileNotFoundError(f"Predictions file not found: {predictions_path}")
-    
+
     try:
         # Load predictions from CSV
         df = pd.read_csv(predictions_path)
-                
+
         # Verify required columns exist
-        required_columns = ['barcode', 'artist', 'album', 'cover_type', 
-                           'price_category', 'release_type', 'recording_decade', 
+        required_columns = ['barcode', 'artist', 'album', 'cover_type',
+                           'price_category', 'release_type', 'recording_decade',
                            'release_decade', 'style', 'record_year',
                            '0.05', '0.25', '0.5', '0.75', '0.95']
-        
+
         missing_cols = [col for col in required_columns if col not in df.columns]
         if missing_cols:
             raise ValueError(f"Predictions file missing required columns: {missing_cols}")
-        
+
         # Generate a UUID for the prediction result
         result_id = str(uuid.uuid4())
-        
+
         # Calculate prediction month from job parameters
         prediction_month = None
         try:
@@ -879,7 +858,7 @@ def save_predictions_to_db(
             if job_details and job_details.get('parameters'):
                 params = json.loads(job_details['parameters'])
                 dataset_end_date_str = params.get('dataset_end_date')
-                
+
                 if dataset_end_date_str:
                     # Parse dataset_end_date and add 1 month
                     dataset_end_date = datetime.fromisoformat(dataset_end_date_str.replace('Z', '+00:00'))
@@ -887,20 +866,20 @@ def save_predictions_to_db(
                         prediction_month = dataset_end_date.replace(year=dataset_end_date.year + 1, month=1, day=1)
                     else:
                         prediction_month = dataset_end_date.replace(month=dataset_end_date.month + 1, day=1)
-                    
+
                     logger.info(f"Calculated prediction month: {prediction_month.strftime('%Y-%m')} for job {job_id}")
         except Exception as e:
             logger.warning(f"Could not calculate prediction month for job {job_id}: {e}")
-        
+
         # Create a connection to the database
         conn = direct_db_connection if direct_db_connection else get_db_connection()
-        
+
         try:
             conn.commit()
-            
+
             # Begin transaction
             conn.execute("BEGIN TRANSACTION")
-            
+
             # Create a record in prediction_results table
             timestamp = datetime.now().isoformat()
             conn.execute(
@@ -909,14 +888,14 @@ def save_predictions_to_db(
                 (result_id, job_id, model_id, prediction_date, prediction_month, output_path, summary_metrics) 
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (result_id, job_id, model_id, timestamp, 
+                (result_id, job_id, model_id, timestamp,
                  prediction_month.date().isoformat() if prediction_month else None,
                  predictions_path, "{}")
             )
-            
+
             # Prepare data for batch insert into fact_predictions
             predictions_data = []
-            
+
             for _, row in df.iterrows():
                 # Get or create multiindex_id
                 multiindex_id = get_or_create_multiindex_id(
@@ -932,7 +911,7 @@ def save_predictions_to_db(
                     record_year=int(row['record_year']),
                     connection=conn
                 )
-                
+
                 # Prepare prediction data
                 prediction_row = (
                     result_id,
@@ -947,7 +926,7 @@ def save_predictions_to_db(
                     timestamp   # created_at
                 )
                 predictions_data.append(prediction_row)
-            
+
             # Batch insert all predictions
             try:
                 # Проверка соединения и таблицы перед вставкой
@@ -956,7 +935,7 @@ def save_predictions_to_db(
                 table_exists = check_cursor.fetchone()
                 if not table_exists:
                     raise ValueError("Table fact_predictions does not exist in the database")
-                
+
                 # Попробуем прямой вызов вместо execute_many
                 cursor = conn.cursor()
                 cursor.executemany(
@@ -978,15 +957,15 @@ def save_predictions_to_db(
                     predictions_data,
                     conn
                 )
-            
+
             # Commit the transaction instead of execute("COMMIT")
             conn.commit()
-            
+
             return {
                 "result_id": result_id,
                 "predictions_count": len(df)
             }
-            
+
         except Exception as e:
             # Rollback on error
             try:
@@ -998,7 +977,7 @@ def save_predictions_to_db(
             # Не закрываем соединение, если это внешнее соединение
             if not direct_db_connection and conn:
                 conn.close()
-            
+
     except pd.errors.EmptyDataError:
         raise ValueError("Predictions file is empty")
     except pd.errors.ParserError:
@@ -1013,19 +992,20 @@ def save_predictions_to_db(
         raise ValueError(f"Error processing predictions: {str(e)}")
 
 
+
 # Main Orchestrator Function
-async def run_job(job_id: str, training_config: dict, config_id: str, dataset_start_date: str = None, dataset_end_date: str = None) -> Dict[str, Any] | None:
+async def run_job(job_id: str, training_config: dict, config_id: str, dataset_start_date: str = None, dataset_end_date: str = None) -> dict[str, Any] | None:
     """
     Runs a DataSphere training job pipeline: setup, execution, monitoring, result processing, cleanup.
     """
-    ds_job_id: Optional[str] = None
-    client: Optional[DataSphereClient] = None
-    project_input_link_path: Optional[str] = None
+    ds_job_id: str | None = None
+    client: DataSphereClient | None = None
+    project_input_link_path: str | None = None
     job_completed_successfully = False
 
     try:
-        with tempfile.TemporaryDirectory(dir=str(settings.datasphere_input_dir)) as temp_input_dir_str, \
-             tempfile.TemporaryDirectory(dir=str(settings.datasphere_output_dir)) as temp_output_dir_str:
+        with tempfile.TemporaryDirectory(dir=str(get_settings().datasphere_input_dir)) as temp_input_dir_str, \
+             tempfile.TemporaryDirectory(dir=str(get_settings().datasphere_output_dir)) as temp_output_dir_str:
             temp_input_dir = Path(temp_input_dir_str)
             temp_output_dir = Path(temp_output_dir_str)
 
@@ -1036,7 +1016,7 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                 # Stage 1: Get Parameters (already provided)
                 if training_config is None:
                     raise ValueError("No training configuration was provided or found.")
-                
+
                 config = TrainingConfig(**training_config)
 
                 # Stage 2: Prepare Datasets
@@ -1056,8 +1036,8 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
 
                 # Stage 4c: Create Project Link
                 project_input_link_path = create_project_input_link(
-                    archive_path, 
-                    str(settings.datasphere_job_dir)
+                    archive_path,
+                    str(get_settings().datasphere_job_dir)
                 )
                 logger.info(f"[{job_id}] Created project input link: {project_input_link_path}")
                 update_job_status(job_id, JobStatus.RUNNING.value, progress=24, status_message="Project input link created.")
@@ -1073,16 +1053,16 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
 
                 # Stage 6: Process Results
                 await _process_job_results(
-                    job_id, ds_job_id, results_dir_from_process, config, metrics_data, model_path, predictions_path, polls, settings.datasphere.poll_interval, config_id
+                    job_id, ds_job_id, results_dir_from_process, config, metrics_data, model_path, predictions_path, polls, get_settings().datasphere.poll_interval, config_id
                 )
                 job_completed_successfully = True
                 logger.info(f"[{job_id}] Job pipeline completed successfully.")
-                
+
                 return {
                     "job_id": job_id,
                     "status": JobStatus.COMPLETED.value,
                     "datasphere_job_id": ds_job_id,
-                    "model_id": model_path.split(os.sep)[-2] if model_path else None, 
+                    "model_id": model_path.split(os.sep)[-2] if model_path else None,
                     "message": "Job completed successfully"
                 }
             except asyncio.CancelledError:
@@ -1096,7 +1076,7 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                     try:
                         await asyncio.wait_for(
                             asyncio.to_thread(active_client.cancel_job, current_ds_job_id, graceful=True),
-                            timeout=CLIENT_CANCEL_TIMEOUT_SECONDS
+                            timeout=get_settings().datasphere.client_cancel_timeout_seconds
                         )
                         logger.info(f"[{job_id}] DataSphere job {current_ds_job_id} cancellation request submitted.")
                         cancel_message += f" DataSphere job {current_ds_job_id} cancellation attempted."
@@ -1106,9 +1086,9 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                     except Exception as cancel_e:
                         logger.error(f"[{job_id}] Error trying to cancel DataSphere job {current_ds_job_id}: {cancel_e}", exc_info=True)
                         cancel_message += f" Error attempting to cancel DataSphere job {current_ds_job_id}: {cancel_e}."
-                
+
                 update_job_status(job_id, JobStatus.FAILED.value, error_message=cancel_message, status_message=cancel_message)
-                
+
             except (ValueError, RuntimeError, TimeoutError, ImportError) as e:
                 error_msg = f"Job pipeline failed: {str(e)}"
                 logger.error(f"[{job_id}] {error_msg}", exc_info=isinstance(e, (RuntimeError, ImportError)))
@@ -1122,12 +1102,12 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
                 job_details = get_job(job_id)
                 if job_details and job_details.get('status') != JobStatus.FAILED.value:
                     update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg, status_message=error_msg)
-                raise 
+                raise
             finally:
                 # Cleanup project input link regardless of success/failure
                 if project_input_link_path:
-                    cleanup_project_input_link(str(settings.datasphere_job_dir))
-                
+                    cleanup_project_input_link(str(get_settings().datasphere_job_dir))
+
                 # The temporary directories are cleaned up automatically by the context manager.
                 # Final log message for job run completion.
                 current_ds_job_id_log = ds_job_id if 'ds_job_id' in locals() and ds_job_id is not None else "N/A"
@@ -1139,13 +1119,13 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg, status_message=error_msg)
         raise
-        
+
 async def save_model_file_and_db(
-    job_id: str, 
-    model_path: str, 
+    job_id: str,
+    model_path: str,
     ds_job_id: str,
     config: TrainingConfig,
-    metrics_data: Optional[Dict[str, Any]]
+    metrics_data: dict[str, Any] | None
 ) -> str:
     """
     Saves the model file to permanent storage and creates a database record.
@@ -1171,13 +1151,13 @@ async def save_model_file_and_db(
         # Verify source model file exists
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Source model file not found: {model_path}")
-        
+
         # Create permanent storage path
         permanent_model_filename = f"{model_id}.onnx"
-        permanent_model_path = os.path.join(settings.models_dir, permanent_model_filename)
-        
+        permanent_model_path = os.path.join(get_settings().models_dir, permanent_model_filename)
+
         logger.info(f"[{job_id}] Copying model from temporary location '{model_path}' to permanent storage '{permanent_model_path}'")
-        
+
         # Copy model file to permanent storage
         try:
             shutil.copy2(model_path, permanent_model_path)
@@ -1188,10 +1168,10 @@ async def save_model_file_and_db(
         # Verify the copy was successful
         if not os.path.exists(permanent_model_path):
             raise RuntimeError(f"Model file copy verification failed - file not found at destination: {permanent_model_path}")
-        
+
         # Get file size from the permanent location
         file_size = os.path.getsize(permanent_model_path)
-        
+
         # Construct metadata
         metadata = {
             "file_size_bytes": file_size,
@@ -1201,7 +1181,7 @@ async def save_model_file_and_db(
             "config_model_id_base": config.model_id, # Store the base name for tracking
             "metrics": metrics_data or {} # Store metrics with the model
         }
-        
+
         # Create a record in the database with the permanent path
         create_model_record(
             model_id=model_id,

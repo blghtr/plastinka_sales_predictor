@@ -1,31 +1,28 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 import logging
 import os
-import sys
-from pathlib import Path
-from datetime import datetime
 from contextlib import asynccontextmanager
-from deployment.app.api.health import ComponentHealth, check_environment
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from deployment.app.api.admin import router as admin_router
+from deployment.app.api.health import router as health_router
+
+# Import API routers
+from deployment.app.api.jobs import router as jobs_router
+from deployment.app.api.models_configs import router as models_params_router
 
 # Import configuration
-from deployment.app.config import settings
+from deployment.app.config import get_settings
 
 # Import database initializer
 from deployment.app.db.schema import init_db
 
-# Import API routers
-from deployment.app.api.jobs import router as jobs_router
-from deployment.app.api.health import router as health_router
-from deployment.app.api.models_configs import router as models_params_router
-from deployment.app.api.admin import router as admin_router
+# Apply centralised logging configuration before the rest of the app starts.
+from deployment.app.logger_config import configure_logging
 
 # Import utils
 from deployment.app.utils.error_handling import configure_error_handlers
-
-# Apply centralised logging configuration before the rest of the app starts.
-from deployment.app.logger_config import configure_logging
 
 # This sets up a single console handler that integrates with Uvicorn / FastAPI
 # and avoids spawning extra threads or writing to dataset-specific files.
@@ -45,12 +42,19 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Missing environment variables: {env_health.details.get('missing_variables')}")
         logger.warning("The application may not function correctly. See docs/environment_variables.md for details.")
     '''
+    settings = get_settings()
     # Initialize database
     db_initialized_successfully = init_db(db_path=settings.database_path)
     if not db_initialized_successfully:
         logger.error("Database initialization failed during startup. Check logs.")
         # Depending on policy, might raise an exception here to stop startup
-    
+
+    # Only start debugger if not running tests
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        import debugpy
+        debugpy.listen(5678)
+        debugpy.wait_for_client()
+
     yield
 
 # Create FastAPI application with lifespan
@@ -64,10 +68,10 @@ app = FastAPI(
 # Add CORS middleware with restricted origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.api.allowed_origins,
+    allow_origins=get_settings().api.allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 
 # Configure error handlers
@@ -91,9 +95,10 @@ async def root():
 # Run the application with uvicorn
 if __name__ == "__main__":
     import uvicorn
+    settings = get_settings()
     uvicorn.run(
-        "app.main:app", 
-        host=settings.api.host, 
-        port=settings.api.port, 
+        "app.main:app",
+        host=settings.api.host,
+        port=settings.api.port,
         reload=settings.api.debug
-    ) 
+    )

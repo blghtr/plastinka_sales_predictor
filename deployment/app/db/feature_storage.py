@@ -1,29 +1,33 @@
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Any, Optional, Tuple, Union
-from datetime import datetime
-import json
-from pathlib import Path
-import sqlite3 # Import sqlite3
 import logging
+import sqlite3  # Import sqlite3
+from datetime import datetime
+from typing import Any
+
+import numpy as np
+import pandas as pd
 
 from deployment.app.db.database import (
-    execute_query, execute_many, get_or_create_multiindex_id,
-    create_processing_run, update_processing_run
+    create_processing_run,
+    execute_many,
+    execute_query,
+    get_or_create_multiindex_id,
+    update_processing_run,
 )
 
 logger = logging.getLogger(__name__)
 
 class SQLFeatureStore:
     """Store for saving and loading pandas DataFrames to/from SQL database"""
-    
-    def __init__(self, run_id: Optional[int] = None, connection: sqlite3.Connection = None):
+
+    def __init__(self, run_id: int | None = None, connection: sqlite3.Connection = None):
         self.run_id = run_id
         self.db_conn = connection # Store the connection
         self._conn_created_internally = False
         if not self.db_conn:
             # If no connection provided, create one internally (for non-test use)
-            from deployment.app.db.database import get_db_connection # Import locally to avoid circular dependency issues
+            from deployment.app.db.database import (
+                get_db_connection,  # Import locally to avoid circular dependency issues
+            )
             self.db_conn = get_db_connection()
             self._conn_created_internally = True
 
@@ -55,7 +59,7 @@ class SQLFeatureStore:
             connection=self.db_conn # Pass connection
         )
         return self.run_id
-        
+
     def complete_run(self, status: str = "completed") -> None:
         """Mark the current run as completed"""
         if self.run_id:
@@ -65,13 +69,13 @@ class SQLFeatureStore:
                 end_time=datetime.now(),
                 connection=self.db_conn # Pass connection
             )
-    
-    def save_features(self, features: Dict[str, pd.DataFrame], append: bool = False) -> None:
+
+    def save_features(self, features: dict[str, pd.DataFrame], append: bool = False) -> None:
         """Save all feature DataFrames to SQL database"""
         for feature_type, df in features.items():
             if hasattr(df, 'shape'):  # Check if it's actually a DataFrame
                 self._save_feature(feature_type, df, append)
-                
+
         # Update run status
         if self.run_id:
             update_processing_run(
@@ -100,18 +104,18 @@ class SQLFeatureStore:
                 'is_date_in_index': True
             }
         }
-    
+
     def _save_feature(self, feature_type: str, df: pd.DataFrame, append: bool = False) -> None:
         """Save a feature DataFrame to the appropriate SQL table using configuration"""
         config = self._get_feature_config().get(feature_type)
         if not config:
             logger.warning(f"Unknown feature type '{feature_type}'")
             return
-        
+
         table = config['table']
         is_date_in_index = config['is_date_in_index']
         params_list = []
-        
+
         for idx, row in df.iterrows():
             try:
                 # Process data based on date position (in index or not)
@@ -124,7 +128,7 @@ class SQLFeatureStore:
                 else:
                     # Date not in index (stock/prices)
                     multiindex_id = self._get_multiindex_id(idx)
-                    
+
                     if feature_type == 'stock' and not row.empty:
                         date_str = self._convert_to_date_str(row.index[0])
                         value = row.iloc[0]
@@ -133,10 +137,10 @@ class SQLFeatureStore:
                         date_str = datetime.now().strftime('%Y-%m-%d')
                         # Try to get from column named like feature_type+'s'
                         value = row.get(feature_type, 0.0)  # e.g., "prices" column
-                
+
                 # Convert to float (all values are stored as REAL)
                 value_converted = self._convert_to_float(value)
-                
+
                 params_list.append((
                     multiindex_id,
                     date_str,
@@ -144,7 +148,7 @@ class SQLFeatureStore:
                 ))
             except Exception as e:
                 logger.error(f"Error processing {feature_type} data row: {e}", exc_info=True)
-        
+
         # Batch insert data
         if params_list:
             execute_many(
@@ -152,7 +156,7 @@ class SQLFeatureStore:
                 params_list,
                 connection=self.db_conn # Pass connection
             )
-    
+
     def _convert_to_date_str(self, date_value: Any) -> str:
         """Convert various date formats to a standard date string."""
         if hasattr(date_value, 'strftime'):
@@ -166,12 +170,12 @@ class SQLFeatureStore:
                 return str(date_value)
         else:
             return str(date_value)
-    
+
     def _convert_to_int(self, value: Any, default: int = 0) -> int:
         """Safely convert any value to integer with proper handling of np.float64."""
         if pd.isna(value):
             return default
-            
+
         if isinstance(value, (np.floating, float)):
             return int(np.round(value))
         elif isinstance(value, (np.integer, int)):
@@ -182,12 +186,12 @@ class SQLFeatureStore:
             except (ValueError, TypeError):
                 logger.warning(f"Could not convert {value} of type {type(value)} to int, using {default}")
                 return default
-    
+
     def _convert_to_float(self, value: Any, default: float = 0.0) -> float:
         """Safely convert any value to float."""
         if pd.isna(value):
             return default
-            
+
         if isinstance(value, (np.floating, float, np.integer, int)):
             return float(value)
         else:
@@ -196,7 +200,7 @@ class SQLFeatureStore:
             except (ValueError, TypeError):
                 logger.warning(f"Could not convert {value} of type {type(value)} to float, using {default}")
                 return default
-    
+
     def _get_multiindex_id(self, idx) -> int:
         """Retrieve or create multiindex_id based on index values"""
         # Ensure index is a tuple of the correct length (10 elements)
@@ -207,11 +211,11 @@ class SQLFeatureStore:
             idx = tuple(idx[:10]) # Take only the first 10 elements if longer
         else:
             idx = tuple(idx)
-            
+
         # Extract components, handling potential None values
         barcode, artist, album, cover_type, price_category, release_type, \
             recording_decade, release_decade, style, record_year = idx
-            
+
         return get_or_create_multiindex_id(
             barcode=str(barcode) if barcode is not None else 'UNKNOWN',
             artist=str(artist) if artist is not None else 'UNKNOWN',
@@ -227,11 +231,11 @@ class SQLFeatureStore:
         )
 
     def load_features(
-            self, 
-            start_date: Optional[str] = None, 
-            end_date: Optional[str] = None,
-            feature_types: Optional[List[str]] = None
-    ) -> Dict[str, pd.DataFrame]:
+            self,
+            start_date: str | None = None,
+            end_date: str | None = None,
+            feature_types: list[str] | None = None
+    ) -> dict[str, pd.DataFrame]:
         """
         Load features from SQL database with optional date range filtering and feature type selection
         
@@ -245,7 +249,7 @@ class SQLFeatureStore:
             Dictionary of loaded features
         """
         features = {}
-        
+
         # Determine which feature types to load
         if feature_types:
             # Filter to only the requested feature types that exist in config
@@ -257,22 +261,22 @@ class SQLFeatureStore:
         else:
             # Load all available feature types
             types_to_load = self._get_feature_config().keys()
-        
+
         for feature_type in types_to_load:
             df = self._load_feature(feature_type, start_date, end_date)
             if df is not None and not df.empty:
                 features[feature_type] = df
-        
+
         return features
 
-    def _build_multiindex_from_mapping(self, multiindex_ids: List[int]) -> pd.MultiIndex:
+    def _build_multiindex_from_mapping(self, multiindex_ids: list[int]) -> pd.MultiIndex:
         """Build a pandas MultiIndex from dim_multiindex_mapping using IDs."""
         if not multiindex_ids:
             return pd.MultiIndex(levels=[[]]*10, codes=[[]]*10, names=[
-                'barcode', 'artist', 'album', 'cover_type', 'price_category', 
+                'barcode', 'artist', 'album', 'cover_type', 'price_category',
                 'release_type', 'recording_decade', 'release_decade', 'style', 'record_year'
             ])
-            
+
         placeholders = ', '.join('?' * len(multiindex_ids))
         query = f"""
         SELECT barcode, artist, album, cover_type, price_category, release_type, 
@@ -281,112 +285,112 @@ class SQLFeatureStore:
         WHERE multiindex_id IN ({placeholders})
         ORDER BY multiindex_id -- Ensure consistent order for rebuilding index
         """
-        
+
         mapping_data = execute_query(query, tuple(multiindex_ids), fetchall=True, connection=self.db_conn)
-        
+
         if not mapping_data:
             return pd.MultiIndex(levels=[[]]*10, codes=[[]]*10, names=[
-                'barcode', 'artist', 'album', 'cover_type', 'price_category', 
+                'barcode', 'artist', 'album', 'cover_type', 'price_category',
                 'release_type', 'recording_decade', 'release_decade', 'style', 'record_year'
             ])
-            
+
         # Convert list of dicts to list of tuples for MultiIndex creation
         index_tuples = [tuple(row.values()) for row in mapping_data]
-        
+
         return pd.MultiIndex.from_tuples(index_tuples, names=[
-            'barcode', 'artist', 'album', 'cover_type', 'price_category', 
+            'barcode', 'artist', 'album', 'cover_type', 'price_category',
             'release_type', 'recording_decade', 'release_decade', 'style', 'record_year'
         ])
 
-    def _load_feature(self, feature_type: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
+    def _load_feature(self, feature_type: str, start_date: str | None = None, end_date: str | None = None) -> pd.DataFrame | None:
         """Load feature from database using configuration"""
         config = self._get_feature_config().get(feature_type)
         if not config:
             logger.warning(f"Unknown feature type '{feature_type}'")
             return None
-        
+
         table = config['table']
-        
+
         # Build query with standardized column names
         query = f"SELECT multiindex_id, data_date, value FROM {table}"
         params = []
-        
+
         # Add date filters
         if start_date:
             query += " WHERE data_date >= ?"
             params.append(start_date)
-            
+
         if end_date:
             query += f"{' AND' if start_date else ' WHERE'} data_date <= ?"
             params.append(end_date)
-        
+
         # For prices, sort by date to get latest price later
         if feature_type == 'prices':
             query += " ORDER BY multiindex_id, data_date DESC"
-        
+
         # Execute query
         data = execute_query(query, tuple(params), fetchall=True, connection=self.db_conn)
         if not data:
             return None
-        
+
         # Process results with standardized column names
         df = pd.DataFrame(data)
         df['data_date'] = pd.to_datetime(df['data_date'])
-        
+
         # Handle different processing for different feature types
         if feature_type == 'prices':
             # Get the latest price for each multiindex_id
             latest_prices = df.loc[df.groupby('multiindex_id')['data_date'].idxmax()]
-            
+
             # Rebuild the original MultiIndex
             original_index = self._build_multiindex_from_mapping(latest_prices['multiindex_id'].tolist())
-            
+
             # Create a DataFrame with the correct index and the price column
             result_df = pd.DataFrame({'prices': latest_prices['value'].values}, index=original_index)
-            
+
         elif feature_type == 'stock':
             # Pivot table to get dates as columns
             pivot_df = df.pivot_table(index='multiindex_id', columns='data_date', values='value')
-            
+
             # Rebuild the original MultiIndex
             original_index = self._build_multiindex_from_mapping(pivot_df.index.tolist())
             pivot_df.index = original_index
             result_df = pivot_df
-            
+
         else:  # 'sales' or 'change'
             # For features with date in index
             all_ids = df['multiindex_id'].unique().tolist()
             full_index = self._build_multiindex_from_mapping(all_ids)
-            
+
             # Map multiindex_id back to the full index tuple
-            id_to_tuple_map = {id_val: index_tuple for id_val, index_tuple in zip(all_ids, full_index)}
+            id_to_tuple_map = {id_val: index_tuple for id_val, index_tuple in zip(all_ids, full_index, strict=False)}
             df['full_index'] = df['multiindex_id'].map(id_to_tuple_map)
-            
+
             # Convert to the required structure with date in index
             # Pivot with full index information
             pivot_df = df.pivot_table(index='full_index', columns='data_date', values='value')
-            
+
             # Stack to get MultiIndex format
             stacked_df = pivot_df.stack().reset_index()
             column_name = feature_type  # 'sales' or 'change'
             stacked_df.rename(columns={0: column_name, 'data_date': '_date'}, inplace=True)
-            
+
             # Create the final MultiIndex (date, barcode, artist, ...)
             final_index = pd.MultiIndex.from_tuples(
                 [(row['_date'], *row['full_index']) for _, row in stacked_df.iterrows()],
                 names=['_date'] + list(full_index.names)
             )
-            
+
             result_df = pd.DataFrame({column_name: stacked_df[column_name].values}, index=final_index)
-        
+
         return result_df
 
 
 class FeatureStoreFactory:
     """Factory for creating feature store instances"""
-    
+
     @staticmethod
-    def get_store(store_type: str = 'sql', run_id: Optional[int] = None, **kwargs) -> Any:
+    def get_store(store_type: str = 'sql', run_id: int | None = None, **kwargs) -> Any:
         """Get a feature store instance based on type"""
         if store_type == 'sql':
             # Pass any additional kwargs (like connection) to the SQL store
@@ -397,12 +401,12 @@ class FeatureStoreFactory:
         else:
             raise ValueError(f"Unsupported feature store type: {store_type}")
 
-def save_features(features: Dict[str, pd.DataFrame],
+def save_features(features: dict[str, pd.DataFrame],
                  cutoff_date: str,
                  source_files: str,
                  store_type: str = 'sql', **kwargs) -> int:
     """Helper function to save features using a specific store type"""
-    
+
     # Use an existing connection if provided, otherwise use db_transaction
     if 'connection' in kwargs and kwargs['connection'] is not None:
         conn = kwargs.pop('connection')
@@ -414,7 +418,9 @@ def save_features(features: Dict[str, pd.DataFrame],
         return run_id
     else:
         # Use db_transaction context manager for automatic commit/rollback
-        from deployment.app.db.database import db_transaction # Import locally to avoid potential circular deps
+        from deployment.app.db.database import (
+            db_transaction,  # Import locally to avoid potential circular deps
+        )
         with db_transaction() as conn:
             store = FeatureStoreFactory.get_store(store_type=store_type, connection=conn, **kwargs)
             run_id = store.create_run(cutoff_date, source_files)
@@ -424,10 +430,10 @@ def save_features(features: Dict[str, pd.DataFrame],
         return run_id
 
 def load_features(store_type: str = 'sql',
-                  start_date: Optional[str] = None,
-                  end_date: Optional[str] = None,
-                  feature_types: Optional[List[str]] = None,
-                  **kwargs) -> Dict[str, pd.DataFrame]:
+                  start_date: str | None = None,
+                  end_date: str | None = None,
+                  feature_types: list[str] | None = None,
+                  **kwargs) -> dict[str, pd.DataFrame]:
     """
     Helper function to load features using a specific store type
     

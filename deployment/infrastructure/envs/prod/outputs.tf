@@ -50,7 +50,4 @@ output "datasphere_summary" {
   }
 }
 
-output "datasphere_config_path" {
-  description = "Path to generated DataSphere configuration file"
-  value       = "${path.root}/${var.project_root}/plastinka_sales_predictor/datasphere_job/config_standard.yaml"
-} 
+ 

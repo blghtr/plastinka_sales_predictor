@@ -2,10 +2,10 @@
 """
 Script to check environment variables and generate a template .env file if needed.
 """
+import logging
 import os
 import sys
 from pathlib import Path
-import logging
 
 # Configure logging
 logging.basicConfig(
@@ -23,12 +23,12 @@ REQUIRED_VARS = {
     # Cloud Storage
     "YANDEX_CLOUD_ACCESS_KEY": "Access key for Yandex Cloud storage",
     "YANDEX_CLOUD_SECRET_KEY": "Secret key for Yandex Cloud storage",
-    
+
     # Cloud Functions
     "YANDEX_CLOUD_FOLDER_ID": "Yandex Cloud folder ID",
     "YANDEX_CLOUD_SERVICE_ACCOUNT_ID": "Yandex Cloud service account ID",
     "YANDEX_CLOUD_API_KEY": "API key for Yandex Cloud",
-    
+
     # Callbacks
     "CLOUD_CALLBACK_AUTH_TOKEN": "Authentication token for cloud function callbacks"
 }
@@ -56,7 +56,7 @@ def check_environment():
     for var in REQUIRED_VARS:
         if not os.environ.get(var):
             missing.append(var)
-    
+
     return missing
 
 
@@ -67,27 +67,27 @@ def generate_env_template(output_path=None): # Changed default to None
         output_path = PROJECT_ROOT / ".env.template"
     else:
         output_path = Path(output_path) # Convert provided path string to Path object
-        
+
     if output_path.exists():
         logger.warning(f"File {output_path} already exists. Will not overwrite.")
         return False
-    
+
     logger.info(f"Generating environment template at {output_path}")
-    
+
     with open(output_path, "w") as f:
         f.write("# Plastinka Sales Predictor API - Environment Variables\n")
         f.write("# Generated template - fill with your values\n\n")
-        
+
         # Required variables
         f.write("# Required Variables\n")
         for var, desc in REQUIRED_VARS.items():
             f.write(f"# {desc}\n{var}=\n\n")
-        
+
         # Optional variables
         f.write("# Optional Variables (with defaults)\n")
         for var, (desc, default) in OPTIONAL_VARS.items():
             f.write(f"# {desc}\n{var}={default}\n\n")
-    
+
     logger.info("Template generated. Please fill it with appropriate values.")
     return True
 
@@ -95,15 +95,15 @@ def generate_env_template(output_path=None): # Changed default to None
 def main():
     """Main function."""
     logger.info("Checking environment variables...")
-    
+
     # Check for required environment variables
     missing = check_environment()
-    
+
     if missing:
         logger.warning(f"Missing {len(missing)} required environment variables:")
         for var in missing:
             logger.warning(f"  - {var}: {REQUIRED_VARS[var]}")
-        
+
         # Create .env.template file in project root if .env or .env.template doesn't exist there
         env_file_path = PROJECT_ROOT / ".env"
         env_template_file_path = PROJECT_ROOT / ".env.template"
@@ -112,7 +112,7 @@ def main():
             logger.info(f"No {env_file_path.name} or {env_template_file_path.name} found in project root ({PROJECT_ROOT}). Generating template...")
             generate_env_template() # This will default to PROJECT_ROOT / ".env.template"
             logger.info(f"Please fill {env_template_file_path} with your values and rename it to {env_file_path.name} in the project root.")
-            
+
         return 1
     else:
         logger.info("All required environment variables are set.")
@@ -124,4 +124,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         generate_env_template(sys.argv[1])
     else:
-        sys.exit(main()) 
+        sys.exit(main())

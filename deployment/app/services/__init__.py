@@ -1,1 +1,1 @@
-# Service modules for the Plastinka Sales Predictor 
+# Service modules for the Plastinka Sales Predictor

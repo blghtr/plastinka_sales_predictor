@@ -1,14 +1,13 @@
 """
 Authentication service for API security.
 """
-from fastapi import Depends, HTTPException, status, Security
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
-from typing import Dict, Any, Annotated
-
-from ..config import settings
-
 import logging
-import os
+from typing import Annotated, Any
+
+from fastapi import Depends, HTTPException, Security, status
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+
+from ..config import get_settings, AppSettings
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +18,9 @@ bearer_scheme = HTTPBearer()
 api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False) # auto_error=False to handle empty config case
 
 async def get_admin_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)]
-) -> Dict[str, Any]:
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
+    settings: AppSettings = Depends(get_settings)
+) -> dict[str, Any]:
     """
     Validate admin token and return user information.
     
@@ -33,20 +33,20 @@ async def get_admin_user(
     Raises:
         HTTPException: If the token is missing or invalid
     """
-    
+
     if not settings.api.api_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Admin API key not configured on server"
         )
-    
+
     if credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication scheme. Bearer token required",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     if credentials.credentials != settings.api.api_key:
         logger.warning(f"[get_admin_user] Invalid Bearer token provided. Expected: {settings.api.api_key}, Got: {credentials.credentials}")
         raise HTTPException(
@@ -54,7 +54,7 @@ async def get_admin_user(
             detail="Invalid API key",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # Return some basic admin user information
     return {
         "user_type": "admin",
@@ -62,7 +62,10 @@ async def get_admin_user(
         "permissions": ["manage_data_retention", "manage_models", "manage_jobs"]
     }
 
-async def get_current_api_key_validated(api_key: str = Security(api_key_header_scheme)) -> bool:
+async def get_current_api_key_validated(
+    api_key: str = Security(api_key_header_scheme),
+    settings: AppSettings = Depends(get_settings)
+) -> bool:
     """
     Validate X-API-Key header.
     
@@ -90,7 +93,7 @@ async def get_current_api_key_validated(api_key: str = Security(api_key_header_s
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated: X-API-Key header is missing."
         )
-        
+
     if api_key != settings.api.x_api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

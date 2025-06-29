@@ -1,1 +1,1 @@
-# API routes for the Plastinka Sales Predictor 
+# API routes for the Plastinka Sales Predictor

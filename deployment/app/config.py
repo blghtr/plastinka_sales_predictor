@@ -2,22 +2,24 @@
 Central configuration module for the Plastinka Sales Predictor API.
 Loads configuration from environment variables or config files.
 """
-import os
 import json
-import yaml
-import logging # Added
-import tempfile # Added for test environment fallback
-from pathlib import Path # Added
-from typing import List, Dict, Any, Optional, Callable, Type, Tuple # Modified
-from pydantic import Field, field_validator, ValidationError
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic_settings.sources import ( # Added
-    InitSettingsSource,
-    EnvSettingsSource,
-    DotEnvSettingsSource,
-    SecretsSettingsSource,
-) # PydanticSettingsSource removed as it's likely internal
+import logging  # Added
+import os
+import tempfile  # Added for test environment fallback
+from collections.abc import Callable  # Modified
 from functools import lru_cache
+from pathlib import Path  # Added
+from typing import Any
+
+import yaml
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import (  # Added
+    DotEnvSettingsSource,
+    EnvSettingsSource,
+    InitSettingsSource,
+    SecretsSettingsSource,
+)  # PydanticSettingsSource removed as it's likely internal
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
@@ -50,7 +52,7 @@ def _get_default_data_root_dir() -> str:
             logger.warning(f"Temp directory fallback failed ({fallback_error}), using current directory: {fallback_path}")
             return fallback_path
 
-def load_config_file(file_path: str) -> Dict[str, Any]:
+def load_config_file(file_path: str) -> dict[str, Any]:
     """
     Load configuration from a JSON or YAML file.
     
@@ -62,8 +64,8 @@ def load_config_file(file_path: str) -> Dict[str, Any]:
     """
     if not os.path.exists(file_path):
         return {}
-        
-    with open(file_path, 'r') as f:
+
+    with open(file_path) as f:
         if file_path.endswith('.json'):
             return json.load(f)
         elif file_path.endswith(('.yaml', '.yml')):
@@ -73,13 +75,13 @@ def load_config_file(file_path: str) -> Dict[str, Any]:
 
 
 # Load config file once and cache it
-@lru_cache()
-def get_config_values() -> Dict[str, Any]:
+@lru_cache
+def get_config_values() -> dict[str, Any]:
     """Load values from the config file if specified."""
     config_file_path = os.environ.get("CONFIG_FILE_PATH")
     if not config_file_path:
         return {}
-    
+
     try:
         return load_config_file(config_file_path)
     except Exception as e:
@@ -88,27 +90,27 @@ def get_config_values() -> Dict[str, Any]:
 
 
 # Get config for specific sections
-def get_api_config() -> Dict[str, Any]:
+def get_api_config() -> dict[str, Any]:
     """Get API specific configuration."""
     return get_config_values().get("api", {})
 
 
-def get_db_config() -> Dict[str, Any]:
+def get_db_config() -> dict[str, Any]:
     """Get database specific configuration."""
     return get_config_values().get("db", {})
 
 
-def get_datasphere_config() -> Dict[str, Any]:
+def get_datasphere_config() -> dict[str, Any]:
     """Get DataSphere specific configuration."""
     return get_config_values().get("datasphere", {})
 
 
-def get_data_retention_config() -> Dict[str, Any]:
+def get_data_retention_config() -> dict[str, Any]:
     """Get data retention specific configuration."""
     return get_config_values().get("data_retention", {})
 
 
-def get_app_config() -> Dict[str, Any]:
+def get_app_config() -> dict[str, Any]:
     """Get application-level configuration."""
     config = get_config_values()
     return {k: v for k, v in config.items() if k not in ("api", "db", "datasphere", "data_retention")}
@@ -127,7 +129,7 @@ def ensure_directory_exists(path_value: str) -> str:
     """
     if not path_value:
         return path_value
-        
+
     # Если это путь к файлу, создаем родительскую директорию
     path = Path(path_value)
     if '.' in path.name and not path.name.endswith(('/', '\\')):
@@ -136,7 +138,7 @@ def ensure_directory_exists(path_value: str) -> str:
     else:
         # Это директория - создаем её
         path.mkdir(parents=True, exist_ok=True)
-        
+
     return path_value
 
 
@@ -154,7 +156,7 @@ class APISettings(BaseSettings):
         default=False,
         description="Run in debug mode"
     )
-    allowed_origins: List[str] = Field(
+    allowed_origins: list[str] = Field(
         default=["http://localhost:3000"],
         description="List of allowed origins for CORS"
     )
@@ -170,7 +172,7 @@ class APISettings(BaseSettings):
         default="INFO",
         description="Log level"
     )
-    
+
     @field_validator('allowed_origins', mode='before')
     @classmethod
     def validate_allowed_origins(cls, v):
@@ -178,30 +180,30 @@ class APISettings(BaseSettings):
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
-    
-    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_api_config
+
+    _config_loader_func: Callable[[], dict[str, Any]] | None = get_api_config
 
     @classmethod
     def settings_customise_sources(
-        cls: Type[BaseSettings],  # Changed from settings_cls to cls
-        settings_cls_arg: Type[BaseSettings], # Added settings_cls_arg
+        cls: type[BaseSettings],  # Changed from settings_cls to cls
+        settings_cls_arg: type[BaseSettings], # Added settings_cls_arg
         init_settings: InitSettingsSource,
         env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
         file_secret_settings: SecretsSettingsSource,
-    ) -> Tuple[Any, ...]:
+    ) -> tuple[Any, ...]:
         """
         Customise the sources for loading settings.
         Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
         """
-        config_file_data: Dict[str, Any] = {}
+        config_file_data: dict[str, Any] = {}
         # Use cls consistently
         if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
             loaded_data = loader_func()
             if isinstance(loaded_data, dict):
                 config_file_data = loaded_data
-        
+
         custom_dict_source = lambda: config_file_data
 
         return (
@@ -231,25 +233,25 @@ class DatabaseSettings(BaseSettings):
         default="plastinka.db",
         description="SQLite database filename (path will be computed from data_root_dir)"
     )
-    
+
     # Database directory creation is handled in AppSettings computed properties
 
-    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_db_config
+    _config_loader_func: Callable[[], dict[str, Any]] | None = get_db_config
 
     @classmethod
     def settings_customise_sources(
-        cls: Type[BaseSettings],
-        settings_cls_arg: Type[BaseSettings],
+        cls: type[BaseSettings],
+        settings_cls_arg: type[BaseSettings],
         init_settings: InitSettingsSource,
         env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
         file_secret_settings: SecretsSettingsSource,
-    ) -> Tuple[Any, ...]:
+    ) -> tuple[Any, ...]:
         """
         Customise the sources for loading settings.
         Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
         """
-        config_file_data: Dict[str, Any] = {}
+        config_file_data: dict[str, Any] = {}
         if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
             loaded_data = loader_func()
@@ -257,7 +259,7 @@ class DatabaseSettings(BaseSettings):
                 config_file_data = loaded_data
 
         custom_dict_source = lambda: config_file_data
-        
+
         return (
             init_settings,
             custom_dict_source,
@@ -265,7 +267,7 @@ class DatabaseSettings(BaseSettings):
             dotenv_settings,
             file_secret_settings,
         )
-    
+
     # Use SettingsConfigDict for Pydantic v2 settings configuration
     model_config = SettingsConfigDict(
         env_prefix="DB_",
@@ -283,7 +285,7 @@ class TrainJobSettings(BaseSettings):
     # Removed input_dir, output_dir, job_config_path - these are now computed properties in AppSettings
     # Keeping only job-specific timeouts
     wheel_build_timeout_seconds: int = Field(
-        default=300, # Default 5 minutes  
+        default=300, # Default 5 minutes
         description="Timeout for building the project wheel in seconds"
     )
 
@@ -291,13 +293,13 @@ class TrainJobSettings(BaseSettings):
 
     @classmethod
     def settings_customise_sources(
-        cls: Type[BaseSettings],
-        settings_cls_arg: Type[BaseSettings], # Parameter to accept Pydantic's settings_cls kwarg
+        cls: type[BaseSettings],
+        settings_cls_arg: type[BaseSettings], # Parameter to accept Pydantic's settings_cls kwarg
         init_settings: InitSettingsSource,
         env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
         file_secret_settings: SecretsSettingsSource,
-    ) -> Tuple[Any, ...]:
+    ) -> tuple[Any, ...]:
         # For TrainJobSettings, we don't have a dedicated file section,
         # so we just return the standard sources in default order.
         # Environment variables should be picked up by env_settings.
@@ -328,18 +330,18 @@ class DataSphereSettings(BaseSettings):
         default="",
         description="Yandex Cloud folder ID"
     )
-    oauth_token: Optional[str] = Field(
+    oauth_token: str | None = Field(
         default=None,
         description="Yandex Cloud OAuth token (optional, uses profile/env if None)",
     )
-    yc_profile: Optional[str] = Field(
+    yc_profile: str | None = Field(
         default=None,
         description="Yandex Cloud CLI profile name (optional)"
     )
-    
+
     # Nested Train Job Settings
     train_job: TrainJobSettings = Field(default_factory=TrainJobSettings)
-    
+
     # Polling configuration
     max_polls: int = Field(
         default=72,
@@ -378,7 +380,7 @@ class DataSphereSettings(BaseSettings):
     )
 
     @property
-    def client(self) -> Dict[str, Any]:
+    def client(self) -> dict[str, Any]:
         """Get client configuration as a dictionary."""
         return {
             "project_id": self.project_id,
@@ -386,23 +388,23 @@ class DataSphereSettings(BaseSettings):
             "oauth_token": self.oauth_token,
             "yc_profile": self.yc_profile
         }
-    
-    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_datasphere_config
+
+    _config_loader_func: Callable[[], dict[str, Any]] | None = get_datasphere_config
 
     @classmethod
     def settings_customise_sources(
-        cls: Type[BaseSettings],
-        settings_cls_arg: Type[BaseSettings],
+        cls: type[BaseSettings],
+        settings_cls_arg: type[BaseSettings],
         init_settings: InitSettingsSource,
         env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
         file_secret_settings: SecretsSettingsSource,
-    ) -> Tuple[Any, ...]:
+    ) -> tuple[Any, ...]:
         """
         Customise the sources for loading settings.
         Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
         """
-        config_file_data: Dict[str, Any] = {}
+        config_file_data: dict[str, Any] = {}
         if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
             loaded_data = loader_func()
@@ -444,7 +446,7 @@ class DataRetentionSettings(BaseSettings):
         default=365,  # ~1 year
         description="Retention period for prediction data in days"
     )
-    
+
     # Model management
     models_to_keep: int = Field(
         default=5,
@@ -454,7 +456,7 @@ class DataRetentionSettings(BaseSettings):
         default=90,  # ~3 months
         description="Retention period for inactive models in days"
     )
-    
+
     # Execution settings
     cleanup_enabled: bool = Field(
         default=True,
@@ -464,36 +466,36 @@ class DataRetentionSettings(BaseSettings):
         default="0 3 * * 0",  # 3:00 AM every Sunday
         description="Cleanup schedule in cron format"
     )
-    
+
     model_config = SettingsConfigDict(
         env_prefix="RETENTION_",
         env_file=".env",
         extra="ignore",
         env_nested_delimiter="__"
     )
-    
-    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_data_retention_config
+
+    _config_loader_func: Callable[[], dict[str, Any]] | None = get_data_retention_config
 
     @classmethod
     def settings_customise_sources(
-        cls: Type[BaseSettings],
-        settings_cls_arg: Type[BaseSettings],
+        cls: type[BaseSettings],
+        settings_cls_arg: type[BaseSettings],
         init_settings: InitSettingsSource,
         env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
         file_secret_settings: SecretsSettingsSource,
-    ) -> Tuple[Any, ...]:
+    ) -> tuple[Any, ...]:
         """
         Customise the sources for loading settings.
         Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
         """
-        config_file_data: Dict[str, Any] = {}
+        config_file_data: dict[str, Any] = {}
         if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
             loaded_data = loader_func()
             if isinstance(loaded_data, dict):
                 config_file_data = loaded_data
-        
+
         custom_dict_source = lambda: config_file_data
 
         return (
@@ -503,7 +505,7 @@ class DataRetentionSettings(BaseSettings):
             dotenv_settings,
             file_secret_settings,
         )
-    
+
     # model_config is inherited or defined in DataRetentionSettings if needed
     # For this example, assuming it's similar to others if specific env_prefix is used.
     # If DataRetentionSettings needs its own customize_sources, it should be defined here.
@@ -524,7 +526,7 @@ class AppSettings(BaseSettings):
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
     datasphere: DataSphereSettings = Field(default_factory=DataSphereSettings)
     data_retention: DataRetentionSettings = Field(default_factory=DataRetentionSettings)
-    
+
     env: str = Field(
         default="development",
         description="Application environment (development, testing, production)"
@@ -550,14 +552,14 @@ class AppSettings(BaseSettings):
         description="Directory for temporary file uploads"
     )
     max_models_to_keep: int = Field(
-        default=5, 
+        default=5,
         description="Maximum number of trained model artifacts to keep locally"
     )
     file_storage_dir: str = Field(
         default="./uploads",
         description="Base directory for storing uploaded files (models, reports, etc.)"
     )
-    
+
     # Model and parameters selection settings
     default_metric: str = Field(
         default="val_MIC",
@@ -579,13 +581,13 @@ class AppSettings(BaseSettings):
         default=str(Path(__file__).resolve().parents[2]),
         description="Absolute path to the project root directory."
     )
-    
+
     # New smart data directory configuration
     data_root_dir: str = Field(
         default=_get_default_data_root_dir(),
         description="Root directory for all application data, models, logs, etc."
     )
-    
+
     # Smart computed properties for all data paths
     @property
     def database_path(self) -> str:
@@ -593,64 +595,64 @@ class AppSettings(BaseSettings):
         path = os.path.join(self.data_root_dir, "database", self.db.filename)
         ensure_directory_exists(path)  # Create parent directory
         return path
-    
+
     @property
     def database_url(self) -> str:
         """Compute database URL from database_path."""
         return f"sqlite:///{self.database_path}"
-    
+
     @property
     def models_dir(self) -> str:
         """Directory for storing model files."""
         path = os.path.join(self.data_root_dir, "models")
         ensure_directory_exists(path)
         return path
-    
+
     @property
     def datasphere_input_dir(self) -> str:
         """Directory for DataSphere job inputs."""
         path = os.path.join(self.data_root_dir, "datasphere_input")
         ensure_directory_exists(path)
         return path
-    
+
     @property
     def datasphere_output_dir(self) -> str:
         """Directory for DataSphere job outputs."""
         path = os.path.join(self.data_root_dir, "datasphere_output")
         ensure_directory_exists(path)
         return path
-    
+
     @property
     def predictions_dir(self) -> str:
         """Directory for prediction outputs."""
         path = os.path.join(self.data_root_dir, "predictions")
         ensure_directory_exists(path)
         return path
-    
+
     @property
     def reports_dir(self) -> str:
         """Directory for generated reports."""
         path = os.path.join(self.data_root_dir, "reports")
         ensure_directory_exists(path)
         return path
-    
+
     @property
     def logs_dir(self) -> str:
         """Directory for application logs."""
         path = os.path.join(self.data_root_dir, "logs")
         ensure_directory_exists(path)
         return path
-        
+
     @property
     def datasphere_job_dir(self) -> str:
         """Directory containing DataSphere job scripts."""
         return os.path.join(self.project_root_dir, "plastinka_sales_predictor", "datasphere_job")
-    
+
     @property
     def datasphere_job_config_path(self) -> str:
         """Path to DataSphere job configuration file."""
         return os.path.join(self.datasphere_job_dir, "config.yaml")
-    
+
     # Legacy compatibility properties (updated paths)
     @property
     def temp_upload_dir_computed(self) -> str:
@@ -658,8 +660,8 @@ class AppSettings(BaseSettings):
         path = os.path.join(self.data_root_dir, "temp_uploads")
         ensure_directory_exists(path)
         return path
-        
-    @property 
+
+    @property
     def file_storage_dir_computed(self) -> str:
         """Computed file storage directory."""
         path = os.path.join(self.data_root_dir, "uploads")
@@ -672,38 +674,38 @@ class AppSettings(BaseSettings):
     def ensure_data_root_exists(cls, v: str) -> str:
         """Проверяет существование корневой директории данных и создает её при необходимости."""
         return ensure_directory_exists(v)
-    
+
     # Use SettingsConfigDict for Pydantic v2 settings configuration
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",
         env_nested_delimiter="__"
     )
-    
-    _config_loader_func: Optional[Callable[[], Dict[str, Any]]] = get_app_config
+
+    _config_loader_func: Callable[[], dict[str, Any]] | None = get_app_config
 
     @classmethod
     def settings_customise_sources(
-        cls: Type[BaseSettings],
-        settings_cls_arg: Type[BaseSettings],
+        cls: type[BaseSettings],
+        settings_cls_arg: type[BaseSettings],
         init_settings: InitSettingsSource,
         env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
         file_secret_settings: SecretsSettingsSource,
-    ) -> Tuple[Any, ...]:
+    ) -> tuple[Any, ...]:
         """
         Customise the sources for loading settings.
         Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
         """
-        config_file_data: Dict[str, Any] = {}
+        config_file_data: dict[str, Any] = {}
         if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
             loaded_data = loader_func() # For AppSettings, this loads its direct fields
             if isinstance(loaded_data, dict):
                 config_file_data = loaded_data
-        
+
         custom_dict_source = lambda: config_file_data
-        
+
         # Nested settings (api, db, etc.) will handle their own sources
         # when Pydantic initializes them.
         return (
@@ -730,22 +732,22 @@ class AppSettings(BaseSettings):
             return str(Path(v).resolve())
         # Fallback if environment variable is empty or not set, re-apply default logic
         return str(Path(__file__).resolve().parents[2])
-    
+
     @property
     def callback_url(self) -> str:
         """Get the full callback URL."""
         return f"{self.callback_base_url}{self.callback_route}"
-    
+
     @property
     def is_development(self) -> bool:
         """Check if the application is running in development mode."""
         return self.env.lower() == "development"
-    
+
     @property
     def is_production(self) -> bool:
         """Check if the application is running in production mode."""
         return self.env.lower() == "production"
-    
+
     @property
     def is_testing(self) -> bool:
         """Check if the application is running in testing mode."""
@@ -758,5 +760,13 @@ class AppSettings(BaseSettings):
 
 
 # Create a global instance of the settings
-settings = AppSettings() 
+# settings = AppSettings()
+
+@lru_cache
+def get_settings() -> AppSettings:
+    """
+    Get the application settings.
+    The settings are loaded once and cached.
+    """
+    return AppSettings()
 

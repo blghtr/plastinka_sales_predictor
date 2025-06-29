@@ -1,27 +1,28 @@
 import logging
 import os
-import yaml
+import shutil
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, List, Dict
-from datasphere.client import Client as DatasphereClient
+
+import yaml
 from datasphere.api import jobs_pb2 as jobs
-from datasphere.config import Config, parse_config, check_limits, Environment
+from datasphere.client import Client as DatasphereClient
+from datasphere.config import check_limits, parse_config
+from datasphere.files import prepare_inputs, prepare_local_modules
 from datasphere.pyenv import define_py_env
-from datasphere.files import prepare_local_modules, prepare_inputs, upload_files
-from io import StringIO
 
 logger = logging.getLogger(__name__)
 
 # Mapping of numeric JobStatus codes (as defined in DataSphere gRPC API) to canonical
 # lowercase status strings that the rest of the service expects.
 # Based on Yandex DataSphere JobStatus enum documentation:
-# 0=JOB_STATUS_UNSPECIFIED, 1=CREATING, 2=EXECUTING, 3=UPLOADING_OUTPUT, 
+# 0=JOB_STATUS_UNSPECIFIED, 1=CREATING, 2=EXECUTING, 3=UPLOADING_OUTPUT,
 # 4=SUCCESS, 5=ERROR, 6=CANCELLED, 7=CANCELLING, 8=PREPARING
 # Confirmed by actual observations: 2=running, 5=failed, 6=cancelled
 # If DataSphere extends the enum, add the new values here – keeping mapping logic
 # isolated in this module avoids scattering magic numbers across the codebase.
-JOB_STATUS_MAP: Dict[int, str] = {
+JOB_STATUS_MAP: dict[int, str] = {
     0: "unspecified",     # JOB_STATUS_UNSPECIFIED
     1: "pending",         # CREATING
     2: "running",         # EXECUTING ✓ confirmed
@@ -75,7 +76,7 @@ class DataSphereClient:
             oauth_token: Yandex Cloud OAuth token (optional, uses profile/env if None).
             yc_profile: Yandex Cloud CLI profile name (optional).
         """
-        
+
         if not project_id:
             raise ValueError("DataSphere project_id is required")
         if not folder_id:
@@ -83,7 +84,7 @@ class DataSphereClient:
 
         self.project_id = project_id
         self.folder_id = folder_id
-        
+
         try:
             self._client = DatasphereClient(oauth_token=oauth_token, yc_profile=yc_profile)
             logger.info("DataSphere client initialized successfully.")
@@ -111,15 +112,15 @@ class DataSphereClient:
         """
         logger.info(f"Preparing job with local modules support from config: {config_path}")
         logger.info(f"Using work directory: {work_dir}")
-        
+
         try:
             # Parse the config using datasphere's parser directly
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 cfg = parse_config(f)
         except Exception as e:
             logger.error(f"Failed to parse configuration using DataSphere parser: {e}")
             raise DataSphereClientError(f"Invalid job configuration format: {e}") from e
-        
+
         # Determine python environment if specified in config
         py_env = None
         if cfg.env.python:
@@ -128,33 +129,36 @@ class DataSphereClient:
             except Exception as e:
                 logger.error(f"Failed to define python environment: {e}")
                 raise DataSphereClientError(f"Failed to define python environment: {e}") from e
-        
+
         try:
-            # Prepare inputs (archives directories if needed)
-            cfg.inputs = prepare_inputs(cfg.inputs, work_dir)
-            
-            # Prepare local modules if python environment is defined
-            local_modules = []
-            sha256_to_display_path = {}
-            
-            if py_env:
-                local_module_paths = prepare_local_modules(py_env, work_dir)
-                local_modules = [f.get_file() for f in local_module_paths]
-                
-                # Create mapping for display paths
-                sha256_to_display_path = {
-                    f.sha256: p for f, p in zip(local_modules, py_env.local_modules_paths)
-                }
-            
-            # Check limits
-            check_limits(cfg, local_modules)
-            
-            # Generate job parameters
-            job_params = cfg.get_job_params(py_env, local_modules)
-            
+            # Use build environment context to control temporary file locations
+            with _build_environment_context(work_dir):
+                # Prepare inputs (archives directories if needed)
+                cfg.inputs = prepare_inputs(cfg.inputs, work_dir)
+
+                # Prepare local modules if python environment is defined
+                local_modules = []
+                sha256_to_display_path = {}
+
+                if py_env:
+                    logger.info("Preparing local modules with build artifact cleanup...")
+                    local_module_paths = prepare_local_modules(py_env, work_dir)
+                    local_modules = [f.get_file() for f in local_module_paths]
+
+                    # Create mapping for display paths
+                    sha256_to_display_path = {
+                        f.sha256: p for f, p in zip(local_modules, py_env.local_modules_paths, strict=False)
+                    }
+
+                # Check limits
+                check_limits(cfg, local_modules)
+
+                # Generate job parameters
+                job_params = cfg.get_job_params(py_env, local_modules)
+
             logger.info("Job parameters prepared successfully with local modules support")
             return job_params, cfg, sha256_to_display_path
-            
+
         except Exception as e:
             logger.error(f"Failed to prepare job parameters: {e}")
             raise DataSphereClientError(f"Failed to prepare job parameters: {e}") from e
@@ -176,46 +180,42 @@ class DataSphereClient:
             DataSphereClientError: If parsing fails or if the job submission fails.
         """
         logger.info(f"Submitting job with configuration file: {config_path}")
-        
+
         try:
             # Prepare job parameters with local modules support
             job_params, cfg, sha256_to_display_path = self._prepare_job_with_local_modules(
                 config_path, work_dir
             )
-            
+
             # Create the job
             try:
                 job_id = self._client.create(
-                    job_params, 
-                    cfg, 
-                    self.project_id, 
+                    job_params,
+                    cfg,
+                    self.project_id,
                     sha256_to_display_path
                 )
                 logger.info(f"Successfully created job with ID: {job_id}")
-                
+
                 # Execute the job
                 op, _ = self._client.execute(job_id)
                 logger.info(f"Successfully started job execution. Operation ID: {op.id}")
-                
+
                 return job_id
             except Exception as e:
                 logger.error(f"Failed to create or execute job: {e}")
                 raise DataSphereClientError(f"Failed to submit job: {e}") from e
-                
+
         except Exception as e:
             if not isinstance(e, DataSphereClientError):
                 logger.error(f"Unexpected error during job submission: {e}")
                 raise DataSphereClientError(f"Failed to submit job: {e}") from e
             raise
 
-
-
-
-
     def _read_yaml_config(self, config_path: str) -> dict:
         """Read and parse a YAML configuration file."""
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 return yaml.safe_load(f)
         except FileNotFoundError:
             logger.error(f"Configuration file not found: {config_path}")
@@ -265,18 +265,18 @@ class DataSphereClient:
         """
         logger.info(f"Downloading files for Job ID: {job_id} to {output_dir}")
         logger.info(f"Download options: logs={with_logs}, diagnostics={with_diagnostics}")
-        
+
         try:
             # Get job to determine file lists
             job = self._client.get(job_id)
-            
+
             # Collect appropriate files based on options
             files_to_download = list(job.output_files)
             if with_logs:
                 files_to_download.extend(job.log_files)
             if with_diagnostics:
                 files_to_download.extend(job.diagnostic_files)
-            
+
             # Download the files
             logger.info(f"Downloading {len(files_to_download)} files")
             self._client.download_files(job_id, files_to_download, output_dir)
@@ -296,15 +296,15 @@ class DataSphereClient:
             DataSphereClientError: If the cancel operation fails.
         """
         logger.info(f"Canceling DataSphere Job ID: {job_id} (graceful={graceful})")
-        
+
         try:
             self._client.cancel(job_id, graceful=graceful)
             logger.info(f"Successfully canceled Job ID: {job_id}")
         except Exception as e:
             logger.error(f"Failed to cancel Job ID {job_id}: {e}")
             raise DataSphereClientError(f"Failed to cancel job: {e}") from e
-            
-    def list_jobs(self) -> List[jobs.Job]:
+
+    def list_jobs(self) -> list[jobs.Job]:
         """Lists all jobs in the project.
         
         Returns:
@@ -314,7 +314,7 @@ class DataSphereClient:
             DataSphereClientError: If listing jobs fails.
         """
         logger.info(f"Listing jobs for project: {self.project_id}")
-        
+
         try:
             jobs_list = self._client.list(self.project_id)
             logger.info(f"Found {len(jobs_list)} jobs")
@@ -322,7 +322,7 @@ class DataSphereClient:
         except Exception as e:
             logger.error(f"Failed to list jobs: {e}")
             raise DataSphereClientError(f"Failed to list jobs: {e}") from e
-            
+
     def get_job(self, job_id: str) -> jobs.Job:
         """Gets detailed information about a job.
         
@@ -336,10 +336,157 @@ class DataSphereClient:
             DataSphereClientError: If getting job details fails.
         """
         logger.info(f"Getting details for job: {job_id}")
-        
+
         try:
             job = self._client.get(job_id)
             return job
         except Exception as e:
             logger.error(f"Failed to get job details: {e}")
-            raise DataSphereClientError(f"Failed to get job details: {e}") from e 
+            raise DataSphereClientError(f"Failed to get job details: {e}") from e
+
+def _cleanup_build_artifacts(base_dir: str) -> None:
+    """
+    Removes common Python build artifacts from the specified directory.
+    
+    Args:
+        base_dir: Base directory to clean up
+    """
+    base_path = Path(base_dir)
+    
+    # Common build artifact patterns
+    patterns_to_remove = [
+        "build",
+        "dist", 
+        "*.egg-info",
+        "*.egg",
+        "__pycache__",
+        "*.pyc",
+        "*.pyo",
+        ".pytest_cache"
+    ]
+    
+    removed_items = []
+    
+    for pattern in patterns_to_remove:
+        if "*" in pattern:
+            # Handle glob patterns
+            for item in base_path.glob(f"**/{pattern}"):
+                try:
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                        removed_items.append(str(item))
+                    elif item.is_file():
+                        item.unlink()
+                        removed_items.append(str(item))
+                except (OSError, PermissionError) as e:
+                    logger.warning(f"Failed to remove {item}: {e}")
+        else:
+            # Handle exact directory names
+            for item in base_path.rglob(pattern):
+                try:
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                        removed_items.append(str(item))
+                    elif item.is_file():
+                        item.unlink() 
+                        removed_items.append(str(item))
+                except (OSError, PermissionError) as e:
+                    logger.warning(f"Failed to remove {item}: {e}")
+    
+    if removed_items:
+        logger.info(f"Cleaned up {len(removed_items)} build artifacts: {removed_items[:5]}{'...' if len(removed_items) > 5 else ''}")
+
+
+def cleanup_all_build_artifacts(base_dirs: list[str] = None) -> None:
+    """
+    Performs comprehensive cleanup of build artifacts across multiple directories.
+    
+    Args:
+        base_dirs: List of base directories to clean. If None, cleans current directory.
+    """
+    if base_dirs is None:
+        base_dirs = [os.getcwd()]
+    
+    total_cleaned = 0
+    for base_dir in base_dirs:
+        if os.path.exists(base_dir):
+            try:
+                initial_count = len(list(Path(base_dir).rglob("*")))
+                _cleanup_build_artifacts(base_dir)
+                final_count = len(list(Path(base_dir).rglob("*")))
+                cleaned_count = initial_count - final_count
+                total_cleaned += cleaned_count
+                logger.info(f"Cleaned {cleaned_count} items from {base_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to clean directory {base_dir}: {e}")
+    
+    logger.info(f"Total build artifacts cleaned: {total_cleaned}")
+
+
+@contextmanager
+def _build_environment_context(work_dir: str):
+    """
+    Context manager that sets up environment variables to control build artifact locations.
+    Creates a separate subdirectory for build artifacts that won't be included in the archive.
+    
+    Args:
+        work_dir: Working directory for temporary files
+    """
+    # Store original environment variables
+    original_env = {}
+    
+    # Create a separate subdirectory for build artifacts
+    build_artifacts_dir = os.path.join(work_dir, "_build_artifacts")
+    os.makedirs(build_artifacts_dir, exist_ok=True)
+    
+    # Create subdirectories for different types of temporary files
+    build_temp_dir = os.path.join(build_artifacts_dir, "build_temp")
+    pip_temp_dir = os.path.join(build_artifacts_dir, "pip_temp")
+    egg_cache_dir = os.path.join(build_artifacts_dir, "egg_cache")
+    pip_cache_dir = os.path.join(build_artifacts_dir, "pip_cache")
+    build_lib_dir = os.path.join(build_artifacts_dir, "build_lib")
+    wheel_build_dir = os.path.join(build_artifacts_dir, "wheel_build")
+    
+    # Create all directories
+    for dir_path in [build_temp_dir, pip_temp_dir, egg_cache_dir, pip_cache_dir, build_lib_dir, wheel_build_dir]:
+        os.makedirs(dir_path, exist_ok=True)
+    
+    temp_vars = {
+        # Standard temp directories - point to build artifacts dir
+        'TMPDIR': build_artifacts_dir,
+        'TMP': build_artifacts_dir, 
+        'TEMP': build_artifacts_dir,
+        'PYTHONDONTWRITEBYTECODE': '1',
+        
+        # Python build-specific directories
+        'PYTHON_EGG_CACHE': egg_cache_dir,
+        
+        # Pip configuration
+        'PIP_BUILD_DIR': pip_temp_dir,
+        'PIP_CACHE_DIR': pip_cache_dir,
+        
+        # Setuptools/distutils configuration
+        'DISTUTILS_BUILD_DIR': build_temp_dir,
+        'BUILD_TEMP': build_temp_dir,
+        'BUILD_LIB': build_lib_dir,
+        
+        # Wheel build directory
+        'WHEEL_BUILD_DIR': wheel_build_dir,
+    }
+    
+    # Set temporary environment variables
+    for key, value in temp_vars.items():
+        original_env[key] = os.environ.get(key)
+        os.environ[key] = value
+    
+    logger.info(f"Build environment configured to use build artifacts dir: {build_artifacts_dir}")
+    
+    try:
+        yield
+    finally:
+        # Restore original environment variables
+        for key, original_value in original_env.items():
+            if original_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original_value

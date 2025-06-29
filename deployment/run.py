@@ -1,8 +1,9 @@
 #!/usr/bin/env python
-import uvicorn
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
+
+import uvicorn
 
 # Find the project root directory (one level up from deployment)
 script_dir = Path(__file__).resolve().parent
@@ -14,7 +15,8 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # Import settings after adding project root to path
-from deployment.app.config import settings
+from deployment.app.config import get_settings
+
 
 # Parse command line arguments
 def parse_args():
@@ -23,17 +25,18 @@ def parse_args():
     parser.add_argument("--port", type=int, default=None, help="Port to bind to (overrides config)")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
     parser.add_argument("--workers", type=int, default=1, help="Number of worker processes")
-    
+
     return parser.parse_args()
 
 # Main function
 def main():
     args = parse_args()
-    
+    settings = get_settings()
+
     # Use configuration values with command line overrides
     host = args.host if args.host is not None else settings.api.host
     port = args.port if args.port is not None else settings.api.port
-    
+
     # Run the application
     uvicorn.run(
         "deployment.app.main:app",
@@ -45,4 +48,4 @@ def main():
     )
 
 if __name__ == "__main__":
-    main() 
+    main()

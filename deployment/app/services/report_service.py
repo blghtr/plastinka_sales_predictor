@@ -1,20 +1,16 @@
-from datetime import datetime, timedelta
-import time
-import os
-import json
-import uuid
-import pandas as pd
-from pathlib import Path
-from typing import List, Dict, Any, Optional
 import logging
 import sqlite3
 from collections import defaultdict
+from datetime import datetime
+from typing import Any
+from pathlib import Path
 
-from deployment.app.db.database import (
-    execute_query, get_db_connection, get_active_model
-)
+import pandas as pd
+
+from deployment.app.db.database import execute_query, get_active_model, create_job, get_data_upload_result, get_effective_config, get_job, get_prediction_result, get_report_result, get_training_result, list_jobs, update_job_status, create_report_result
 from deployment.app.db.feature_storage import load_features
-from deployment.app.models.api_models import ReportParams, ReportType
+from deployment.app.models.api_models import ReportParams, ReportType, JobStatus
+from deployment.app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +28,9 @@ def generate_report(params: ReportParams) -> pd.DataFrame:
     # Validate report type
     if params.report_type != ReportType.PREDICTION_REPORT:
         raise ValueError(f"Unsupported report type: {params.report_type}")
-    
+
     # Determine model_id: explicit in params or fallback to active model
-    model_id: Optional[str] = params.model_id
+    model_id: str | None = params.model_id
     if model_id is None:
         try:
             active_model_info = get_active_model()
@@ -48,9 +44,9 @@ def generate_report(params: ReportParams) -> pd.DataFrame:
     # Prepare report parameters
     prediction_month = params.prediction_month
     filters = params.filters or {}
-    
+
     logger.info(f"Generating prediction report for {prediction_month.strftime('%Y-%m')}")
-    
+
     # Generate report
     return _generate_prediction_report(
         prediction_month=prediction_month,
@@ -62,7 +58,7 @@ def generate_report(params: ReportParams) -> pd.DataFrame:
 def _generate_prediction_report(
     prediction_month: datetime,
     filters: dict,
-    model_id: Optional[str] = None
+    model_id: str | None = None
 ) -> pd.DataFrame:
     """
     Generate an enhanced prediction report for a specific month with enriched metrics.
@@ -76,41 +72,41 @@ def _generate_prediction_report(
         DataFrame with prediction data
     """
     logger.info(f"Generating enhanced prediction report for month: {prediction_month.strftime('%Y-%m')}")
-    
+
     # Find training jobs that would have predictions for this month and model (if specified)
     training_jobs = _find_training_jobs_for_prediction_month(prediction_month, model_id)
-    
+
     if not training_jobs:
         logger.warning(f"No training jobs found for prediction month {prediction_month.strftime('%Y-%m')}")
         # Return empty DataFrame with message
         return pd.DataFrame({
             'message': [f'No predictions found for month {prediction_month.strftime("%Y-%m")}']
         })
-    
+
     logger.info(f"Found {len(training_jobs)} training jobs for prediction month")
-    
+
     # Extract predictions for these jobs
     predictions_data = _extract_predictions_for_jobs(training_jobs, filters, model_id)
-    
+
     if predictions_data.empty:
         logger.warning("No prediction data found for training jobs")
         # Return empty DataFrame with message
         return pd.DataFrame({
             'message': [f'No prediction data found for month {prediction_month.strftime("%Y-%m")}']
         })
-    
+
     # Try to load raw features and process them for enrichment
     try:
         raw_features = _load_raw_features_for_report(prediction_month)
-        
+
         if raw_features:
             # Process features to get enriched metrics
             processed_features = _process_features_for_report(raw_features, prediction_month)
-            
+
             if processed_features:
                 # Extract enriched columns for the target month
                 enriched_columns = _extract_features_for_month(processed_features, prediction_month)
-                
+
                 if not enriched_columns.empty:
                     # Join prediction data with enriched metrics
                     predictions_data = _join_predictions_with_enriched_metrics(
@@ -123,30 +119,30 @@ def _generate_prediction_report(
                 logger.warning("No processed features available for enrichment")
         else:
             logger.warning("No raw features available for enrichment")
-            
+
     except Exception as e:
         logger.warning(f"Could not load/process enriched features: {e}")
         # Continue with basic report if enrichment fails
-    
+
     logger.info(f"Enhanced prediction report generated with {len(predictions_data)} records")
-    
+
     # Log column summary
     enriched_cols = ['Средние продажи (шт)', 'Средние продажи (руб)', 'Потерянные продажи (руб)']
     present_enriched_cols = [col for col in enriched_cols if col in predictions_data.columns]
-    
+
     if present_enriched_cols:
         logger.info(f"Report includes enriched columns: {present_enriched_cols}")
     else:
         logger.info("Report generated with basic prediction data only")
-    
+
     return predictions_data
 
 
 def _find_training_jobs_for_prediction_month(
     prediction_month: datetime,
-    model_id: Optional[str] = None,
+    model_id: str | None = None,
     connection: sqlite3.Connection = None
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Find training jobs that have predictions for the specified month and model.
     
@@ -162,9 +158,9 @@ def _find_training_jobs_for_prediction_month(
     """
     # Format prediction month as YYYY-MM-01 for database comparison
     target_month_str = prediction_month.strftime('%Y-%m-01')
-    
+
     logger.info(f"Looking for training jobs with predictions for month: {prediction_month.strftime('%Y-%m')}")
-    
+
     base_query = """
         SELECT DISTINCT j.job_id, j.parameters, j.created_at, j.status
         FROM jobs j
@@ -174,7 +170,7 @@ def _find_training_jobs_for_prediction_month(
         AND pr.prediction_month = ?
     """
 
-    params: List[Any] = [target_month_str]
+    params: list[Any] = [target_month_str]
 
     if model_id:
         base_query += " AND pr.model_id = ?"
@@ -188,18 +184,18 @@ def _find_training_jobs_for_prediction_month(
                 logger.info(f"Found job: {job['job_id']}")
         else:
             logger.info(f"No training jobs found with predictions for {prediction_month.strftime('%Y-%m')}")
-        
+
         return jobs or []
-        
+
     except Exception as e:
         logger.error(f"Error finding training jobs with predictions: {e}")
         return []
 
 
 def _extract_predictions_for_jobs(
-    training_jobs: List[Dict[str, Any]],
-    filters: Dict[str, Any],
-    model_id: Optional[str] = None
+    training_jobs: list[dict[str, Any]],
+    filters: dict[str, Any],
+    model_id: str | None = None
 ) -> pd.DataFrame:
     """
     Extract prediction data for the given training jobs.
@@ -214,10 +210,10 @@ def _extract_predictions_for_jobs(
     """
     if not training_jobs:
         return pd.DataFrame()
-    
+
     job_ids = [job['job_id'] for job in training_jobs]
     job_ids_placeholder = ','.join(['?' for _ in job_ids])
-    
+
     # Get prediction results for these jobs
     base_query = f"""
         SELECT DISTINCT pr.result_id, pr.job_id, pr.model_id
@@ -225,7 +221,7 @@ def _extract_predictions_for_jobs(
         WHERE pr.job_id IN ({job_ids_placeholder})
     """
 
-    params_list: List[Any] = job_ids.copy()
+    params_list: list[Any] = job_ids.copy()
 
     if model_id:
         base_query += " AND pr.model_id = ?"
@@ -233,14 +229,14 @@ def _extract_predictions_for_jobs(
 
     try:
         prediction_results = execute_query(base_query, tuple(params_list), fetchall=True)
-        
+
         if not prediction_results:
             logger.warning("No prediction results found for training jobs")
             return pd.DataFrame()
-        
+
         result_ids = [pr['result_id'] for pr in prediction_results]
         result_ids_placeholder = ','.join(['?' for _ in result_ids])
-        
+
         # Get actual prediction data
         predictions_query = f"""
             SELECT 
@@ -276,27 +272,27 @@ def _extract_predictions_for_jobs(
             query_params.append(model_id)
 
         predictions_data = execute_query(predictions_query, tuple(query_params), fetchall=True)
-        
+
         if not predictions_data:
             logger.warning("No prediction data found in fact_predictions")
             return pd.DataFrame()
-        
+
         # Convert to DataFrame
         df = pd.DataFrame(predictions_data)
-        
+
         # Apply filters if any
         if filters:
             df = _apply_filters_to_dataframe(df, filters)
-        
+
         logger.info(f"Extracted {len(df)} prediction records")
         return df
-        
+
     except Exception as e:
         logger.error(f"Error extracting predictions: {e}")
         return pd.DataFrame()
 
 
-def _apply_filters_to_dataframe(df: pd.DataFrame, filters: Dict[str, Any]) -> pd.DataFrame:
+def _apply_filters_to_dataframe(df: pd.DataFrame, filters: dict[str, Any]) -> pd.DataFrame:
     """
     Apply filters to the predictions DataFrame.
     
@@ -308,19 +304,19 @@ def _apply_filters_to_dataframe(df: pd.DataFrame, filters: Dict[str, Any]) -> pd
         Filtered DataFrame
     """
     filtered_df = df.copy()
-    
+
     for filter_key, filter_value in filters.items():
         if filter_key in filtered_df.columns:
             if isinstance(filter_value, list):
                 filtered_df = filtered_df[filtered_df[filter_key].isin(filter_value)]
             else:
                 filtered_df = filtered_df[filtered_df[filter_key] == filter_value]
-    
+
     return filtered_df
 
 
 # Enrichment functions for enhanced prediction reports
-def _load_raw_features_for_report(prediction_month: datetime) -> Dict[str, pd.DataFrame]:
+def _load_raw_features_for_report(prediction_month: datetime) -> dict[str, pd.DataFrame]:
     """
     Load raw features needed for enriched report generation.
     
@@ -332,27 +328,27 @@ def _load_raw_features_for_report(prediction_month: datetime) -> Dict[str, pd.Da
     """
     try:
         logger.info(f"Loading raw features for enriched report generation for {prediction_month.strftime('%Y-%m')}")
-        
+
         raw_features = load_features(
             store_type='sql',
             feature_types=['sales', 'change', 'stock', 'prices']
         )
-        
+
         # Log what we loaded
         for feature_type, df in raw_features.items():
             if hasattr(df, 'shape'):
                 logger.info(f"Loaded {feature_type}: {df.shape}")
             else:
                 logger.info(f"Loaded {feature_type}: {type(df)}")
-        
+
         return raw_features
-        
+
     except Exception as e:
         logger.error(f"Error loading raw features for report: {e}", exc_info=True)
         return {}
 
 
-def _adapt_features_schema(raw_features: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+def _adapt_features_schema(raw_features: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     """
     Adapt features loaded from database to match notebook expectations.
     
@@ -367,22 +363,22 @@ def _adapt_features_schema(raw_features: Dict[str, pd.DataFrame]) -> Dict[str, p
         Adapted features with proper schema
     """
     adapted_features = {}
-    
+
     for feature_type, df in raw_features.items():
         if df.empty:
             adapted_features[feature_type] = df
             continue
-            
+
         try:
             if feature_type in ['sales', 'change']:
                 # These have dates in the columns (from pivot), restructure for notebook compatibility
                 adapted_df = df.copy()
-                
+
                 # Ensure we have the right structure - MultiIndex rows, date columns
                 if isinstance(adapted_df.index, pd.MultiIndex):
                     # The database system should already have the correct MultiIndex
                     # We need to reshape to have dates in index for notebook compatibility
-                    
+
                     # Melt the DataFrame to get dates as index level
                     # Get index column names (these become columns after reset_index)
                     index_column_names = list(adapted_df.index.names)
@@ -391,30 +387,30 @@ def _adapt_features_schema(raw_features: Dict[str, pd.DataFrame]) -> Dict[str, p
                         var_name='_date',
                         value_name=f"{feature_type}_value"
                     )
-                    
+
                     # Rename the new value column back to its original intended name
                     melted.rename(columns={f"{feature_type}_value": feature_type}, inplace=True)
-                    
+
                     # Set MultiIndex with _date as the last level
                     index_cols = [col for col in melted.columns if col not in ['_date', feature_type]]
                     melted = melted.set_index(index_cols + ['_date'])
-                    
+
                     adapted_features[feature_type] = melted
                 else:
                     adapted_features[feature_type] = adapted_df
-                    
+
             else:
                 # stock and prices can be used as-is
                 adapted_features[feature_type] = df
-                
+
         except Exception as e:
             logger.error(f"Error adapting {feature_type} schema: {e}", exc_info=True)
             adapted_features[feature_type] = df
-    
+
     return adapted_features
 
 
-def _process_features_for_report(raw_features: Dict[str, pd.DataFrame], prediction_month: datetime) -> Dict[str, pd.DataFrame]:
+def _process_features_for_report(raw_features: dict[str, pd.DataFrame], prediction_month: datetime) -> dict[str, pd.DataFrame]:
     """
     Simplified version of notebook's process_features adapted for database system.
     
@@ -433,43 +429,43 @@ def _process_features_for_report(raw_features: Dict[str, pd.DataFrame], predicti
     """
     try:
         logger.info(f"Processing features for report generation for {prediction_month.strftime('%Y-%m')}")
-        
+
         # Adapt schema to match notebook expectations
         adapted_features = raw_features # _adapt_features_schema(raw_features)
-        
+
         # Check if we have required features
         required_features = ['sales', 'change', 'stock', 'prices']
         missing_features = [f for f in required_features if f not in adapted_features or adapted_features[f].empty]
-        
+
         if missing_features:
             logger.warning(f"Missing required features for processing: {missing_features}")
             return {}
-        
+
         # Apply the core processing logic (adapted from notebook)
         new_features = defaultdict(list)
-        
+
         sales = adapted_features['sales']
         daily_movements = adapted_features['change']
         stock = adapted_features['stock']
         prices = adapted_features['prices']
-        
+
         # Get index structure (non-date columns)
         idx = [i for i in daily_movements.index.names if not i.startswith('_')]
-        
+
         # Group by month periods
         change_groups = daily_movements.groupby(
             pd.to_datetime(daily_movements.index.get_level_values('_date')).to_period('M')
         )
-        
+
         sales_groups = sales.abs().groupby(
             pd.to_datetime(sales.index.get_level_values('_date')).to_period('M')
         )
-        
+
         # Process each month (core algorithm from notebook)
         for month, daily_change in change_groups:
             try:
                 logger.debug(f"Processing month: {month}")
-                
+
                 daily_change = daily_change.reset_index()
                 change_pivot = daily_change.pivot_table(
                     index=idx,
@@ -495,15 +491,15 @@ def _process_features_for_report(raw_features: Dict[str, pd.DataFrame], predicti
 
                 # Update stock with changes
                 stock = stock.join(change_pivot, how='outer').fillna(0).cumsum(axis=1)
-                
+
                 try:
                     stock = stock.sort_index(axis=1)
                 except TypeError:
                     # Mixed-type columns, keep current order
                     pass
-                
+
                 last_stock, stock = stock.iloc[:, -1:], stock.iloc[:, :-1]
-                
+
                 # Calculate confidence and availability
                 conf = stock.clip(0, 5) / 5
                 month_conf = conf.mean(1).rename(month)
@@ -548,7 +544,7 @@ def _process_features_for_report(raw_features: Dict[str, pd.DataFrame], predicti
                 new_features['masked_mean_sales_items'].append(masked_mean_sales_items)
                 new_features['masked_mean_sales_rub'].append(masked_mean_sales_rub)
                 new_features['lost_sales'].append(lost_sales)
-                
+
             except Exception as e:
                 logger.error(f'Error processing month {month}: {e}', exc_info=True)
                 continue
@@ -564,16 +560,16 @@ def _process_features_for_report(raw_features: Dict[str, pd.DataFrame], predicti
                 except Exception as e:
                     logger.error(f"Error consolidating feature {k}: {e}")
                     continue
-        
+
         logger.info(f"Successfully processed {len(processed_features)} feature types")
         return processed_features
-        
+
     except Exception as e:
         logger.error(f"Error in process_features_for_report: {e}", exc_info=True)
         return {}
 
 
-def _extract_features_for_month(processed_features: Dict[str, pd.DataFrame], target_month: datetime) -> pd.DataFrame:
+def _extract_features_for_month(processed_features: dict[str, pd.DataFrame], target_month: datetime) -> pd.DataFrame:
     """
     Extract features for specific prediction month with Russian business names.
     
@@ -587,20 +583,20 @@ def _extract_features_for_month(processed_features: Dict[str, pd.DataFrame], tar
     try:
         target_date = pd.to_datetime(target_month.strftime('%Y-%m-01'))
         logger.info(f"Extracting features for target date: {target_date}")
-        
+
         columns_data = []
         feature_mapping = [
             ('masked_mean_sales_items', 'Средние продажи (шт)'),
             ('masked_mean_sales_rub', 'Средние продажи (руб)'),
             ('lost_sales', 'Потерянные продажи (руб)')
         ]
-        
+
         for feature_key, display_name in feature_mapping:
             if feature_key in processed_features:
                 feature_df = processed_features[feature_key]
                 logger.debug(f"Processing feature {feature_key}, shape: {feature_df.shape}")
                 logger.debug(f"Available dates: {feature_df.index.tolist()}")
-                
+
                 # Find the closest date to our target
                 available_dates = pd.to_datetime(feature_df.index)
                 logger.debug(f"Available dates: {available_dates}")
@@ -611,22 +607,22 @@ def _extract_features_for_month(processed_features: Dict[str, pd.DataFrame], tar
                 else:
                     # Find closest date in the same month
                     same_month_dates = available_dates[
-                        (available_dates.year == target_date.year) & 
+                        (available_dates.year == target_date.year) &
                         (available_dates.month == target_date.month)
                     ]
-                    
+
                     if len(same_month_dates) > 0:
                         selected_date = same_month_dates[0]
                     else:
                         # Use the latest available date
                         selected_date = available_dates.max()
                         logger.warning(f"No data for target month {target_month.strftime('%Y-%m')}, using {selected_date}")
-                
+
                 if selected_date in feature_df.index:
                     column_data = pd.DataFrame({display_name: feature_df.loc[selected_date]})
                     columns_data.append(column_data)
                     logger.debug(f"Added column {display_name} with {len(column_data)} rows")
-        
+
         if columns_data:
             result = pd.concat(columns_data, axis=1)
             logger.info(f"Successfully extracted features: {result.shape}")
@@ -634,7 +630,7 @@ def _extract_features_for_month(processed_features: Dict[str, pd.DataFrame], tar
         else:
             logger.warning("No feature columns could be extracted")
             return pd.DataFrame()
-            
+
     except Exception as e:
         logger.error(f"Error extracting features for month: {e}", exc_info=True)
         return pd.DataFrame()
@@ -655,26 +651,26 @@ def _join_predictions_with_enriched_metrics(predictions_df: pd.DataFrame, enrich
         if enriched_columns.empty:
             logger.warning("No enriched columns to join")
             return predictions_df
-        
+
         logger.info(f"Joining predictions ({predictions_df.shape}) with enriched metrics ({enriched_columns.shape})")
-        
+
         # Create a mapping key for predictions using product attributes
-        prediction_key_cols = ['barcode', 'artist', 'album', 'cover_type', 'price_category', 
+        prediction_key_cols = ['barcode', 'artist', 'album', 'cover_type', 'price_category',
                              'release_type', 'recording_decade', 'release_decade', 'style', 'record_year']
-        
+
         # Ensure all key columns exist in predictions
         available_key_cols = [col for col in prediction_key_cols if col in predictions_df.columns]
-        
+
         if not available_key_cols:
             logger.error("No matching key columns found for joining")
             return predictions_df
-        
+
         # Create composite key for predictions
         predictions_with_key = predictions_df.copy()
         predictions_with_key['_join_key'] = predictions_with_key[available_key_cols].apply(
             lambda x: tuple(x.values), axis=1
         )
-        
+
         # Create composite key for enriched data
         enriched_with_key = enriched_columns.copy()
         if isinstance(enriched_columns.index, pd.MultiIndex):
@@ -687,31 +683,62 @@ def _join_predictions_with_enriched_metrics(predictions_df: pd.DataFrame, enrich
             enriched_with_key['_join_key'] = enriched_columns.index.to_series().apply(
                 lambda x: (x,)
             )
-        
+
         # Reset index for joining
         enriched_with_key = enriched_with_key.reset_index(drop=True)
-        
+
         # Perform the join
         result = predictions_with_key.merge(
             enriched_with_key[['_join_key'] + list(enriched_columns.columns)],
             on='_join_key',
             how='left'
         )
-        
+
         # Clean up
         result = result.drop('_join_key', axis=1)
-        
+
         logger.info(f"Successfully joined data, result shape: {result.shape}")
-        
+
         # Log summary of enriched data
         for col in enriched_columns.columns:
             if col in result.columns:
                 non_null_count = result[col].notna().sum()
                 logger.info(f"Column '{col}': {non_null_count}/{len(result)} rows have data")
-        
+
         return result
-        
+
     except Exception as e:
         logger.error(f"Error joining predictions with enriched metrics: {e}", exc_info=True)
         return predictions_df
-    
+
+
+def run_report_job(job_id: str, params: ReportParams):
+    """
+    Background task to generate a report, save it, and update the job status.
+    """
+    try:
+        update_job_status(job_id, JobStatus.RUNNING, progress=10, status_message="Generating report...")
+        
+        report_df = generate_report(params)
+        
+        # Save the report to a file
+        reports_dir = Path(get_settings().reports_dir)
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        report_path = reports_dir / f"report_{job_id}.csv"
+        report_df.to_csv(report_path, index=False)
+        
+        update_job_status(job_id, JobStatus.RUNNING, progress=80, status_message="Report generated, saving results...")
+        
+        # Save result to database
+        result_id = create_report_result(
+            job_id=job_id,
+            report_type=params.report_type.value,
+            parameters=params.model_dump_json(),
+            output_path=str(report_path),
+        )
+        
+        update_job_status(job_id, JobStatus.COMPLETED, progress=100, status_message="Report job completed.", result_id=result_id)
+        
+    except Exception as e:
+        logger.error(f"Report job {job_id} failed: {e}", exc_info=True)
+        update_job_status(job_id, JobStatus.FAILED, error_message=str(e))
