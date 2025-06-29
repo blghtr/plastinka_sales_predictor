@@ -1,0 +1,12 @@
+# Example variable values for prod environment
+
+# Yandex Cloud Authentication
+yc_token           = "your-oauth-token-here"
+yc_cloud_id        = "your-cloud-id-here"
+yc_folder_id       = "your-folder-id-here"
+yc_organization_id = "your-organization-id-here"
+
+# DataSphere configuration is generated automatically by Terraform
+# After applying, use these commands to get information:
+# terraform output datasphere_summary
+# terraform output datasphere_config_path
