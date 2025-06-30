@@ -431,7 +431,7 @@ def _process_features_for_report(raw_features: dict[str, pd.DataFrame], predicti
         logger.info(f"Processing features for report generation for {prediction_month.strftime('%Y-%m')}")
 
         # Adapt schema to match notebook expectations
-        adapted_features = raw_features # _adapt_features_schema(raw_features)
+        adapted_features = _adapt_features_schema(raw_features)
 
         # Check if we have required features
         required_features = ['sales', 'change', 'stock', 'prices']
