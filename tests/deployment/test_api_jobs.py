@@ -522,7 +522,8 @@ class TestAuthenticationScenarios:
 class TestValidationScenarios:
     """Test suite for request validation."""
 
-    def test_invalid_job_id_format(self, client):
+    @patch("deployment.app.api.jobs.get_job", return_value=None)
+    def test_invalid_job_id_format(self, mock_get_job, client):
         """Test endpoints handle invalid job ID formats gracefully."""
         # Act
         response = client.get(

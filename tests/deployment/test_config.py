@@ -604,7 +604,8 @@ class TestAppSettings:
         {"DATA_ROOT_DIR": "/default/data/root", "PROJECT_ROOT_DIR": "/project/root"},
         clear=True,
     )
-    def test_app_settings_defaults(self):
+    @patch("deployment.app.config.ensure_directory_exists", side_effect=lambda x: x)
+    def test_app_settings_defaults(self, mock_ensure_dir):
         """Test AppSettings uses correct default values."""
         # Act
         settings = AppSettings()
@@ -624,7 +625,8 @@ class TestAppSettings:
         assert settings.auto_select_best_model is True
         assert settings.data_root_dir == "/default/data/root"
 
-    def test_app_settings_from_environment(self):
+    @patch("deployment.app.config.ensure_directory_exists", side_effect=lambda x: x)
+    def test_app_settings_from_environment(self, mock_ensure_dir):
         """Test AppSettings loads values from environment variables."""
         # Use patch.dict with clear=True
         with (
