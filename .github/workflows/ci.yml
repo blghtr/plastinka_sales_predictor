@@ -27,6 +27,7 @@ jobs:
       run: |
         uv venv
         uv sync --all-extras
+        uv pip install -e .
     
     - name: Run linting
       run: |
