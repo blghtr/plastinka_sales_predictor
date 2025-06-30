@@ -30,15 +30,15 @@ jobs:
     
     - name: Run linting
       run: |
-        uv run ruff check . --exit-zero --all-extras
-        uv run ruff format --check . --all-extras
+        uv run --all-extras ruff check . --exit-zero
+        uv run --all-extras ruff format --check .
     
     - name: Run type checking (allow failures for now)
-      run: uv run mypy . --all-extras || true
+      run: uv run --all-extras mypy . || true
     
     - name: Run tests with coverage
       run: |
-        uv run pytest --cov=plastinka_sales_predictor --cov=deployment --cov-report=term-missing --cov-fail-under=60 --maxfail=10 --all-extras
+        uv run --all-extras pytest --cov=plastinka_sales_predictor --cov=deployment --cov-report=term-missing --cov-fail-under=60 --maxfail=10
     
     - name: Upload coverage reports
       uses: codecov/codecov-action@v4
