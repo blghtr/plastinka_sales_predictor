@@ -1,7 +1,13 @@
-import pytest
 import sqlite3
-from deployment.app.db.database import execute_query, dict_factory, DatabaseError # Added DatabaseError import
-from deployment.app.db.schema import SCHEMA_SQL, init_db # Import init_db
+
+import pytest
+
+from deployment.app.db.database import (  # Added DatabaseError import
+    DatabaseError,
+    dict_factory,
+    execute_query,
+)
+from deployment.app.db.schema import SCHEMA_SQL, init_db  # Import init_db
 
 # Use a dedicated in-memory database for these tests to avoid interference
 TEST_DB_PATH = ":memory:"
@@ -11,20 +17,20 @@ def db_conn():
     """Fixture to set up and tear down the in-memory database for each test."""
     # Directly connect to the in-memory database for the test
     conn = sqlite3.connect(TEST_DB_PATH)
-    
+
     # Enable Foreign Key support
     conn.execute("PRAGMA foreign_keys = ON;")
-    
+
     # Set dict_factory for this connection
     conn.row_factory = dict_factory # Use dict_factory
 
     # Initialize schema using init_db
     init_db(connection=conn)
-    
+
     # Removed: cursor = conn.cursor() # No longer needed here as init_db handles it
     # Removed: cursor.executescript(SCHEMA_SQL) # Redundant call as init_db already does this
     conn.commit() # Commit changes made by init_db for this connection
-    
+
     # Diagnostic print
     original_row_factory = conn.row_factory
     conn.row_factory = None # Temporarily set to None for PRAGMA queries
@@ -34,7 +40,7 @@ def db_conn():
         columns_info = debug_cursor.fetchall()
         column_names = [info[1] for info in columns_info] # Extract just the names
         print(f"DEBUG: test_foreign_key_constraints.py: db_conn fixture: training_results column names: {column_names}")
-        
+
         schema_sql_snippet_start = SCHEMA_SQL.find('CREATE TABLE IF NOT EXISTS training_results')
         if schema_sql_snippet_start != -1:
             schema_sql_snippet = SCHEMA_SQL[schema_sql_snippet_start:schema_sql_snippet_start + 300]
@@ -49,9 +55,9 @@ def db_conn():
     cursor.execute("PRAGMA foreign_keys;")
     fk_status = cursor.fetchone()
     assert fk_status['foreign_keys'] == 1, "Foreign keys should be ON for the test connection"
-    
+
     yield conn
-    
+
     conn.close()
 
 
@@ -78,7 +84,7 @@ def test_foreign_key_enforcement_on_insert_training_results_model(db_conn):
         (job_id, "training", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
         connection=db_conn
     )
-    
+
     config_id = "test_config_fk_model"
     execute_query(
         "INSERT INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
@@ -105,7 +111,7 @@ def test_foreign_key_enforcement_on_insert_training_results_config(db_conn):
         (job_id, "training", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
         connection=db_conn
     )
-    
+
     model_id = "test_model_fk_config"
     execute_query(
         "INSERT INTO models (model_id, job_id, model_path, created_at) VALUES (?, ?, ?, ?)",
@@ -131,14 +137,14 @@ def test_foreign_key_cascade_delete_jobs(db_conn):
     So, this test should verify that deleting a job with history entries is RESTRICTED.
     """
     job_id = "job_to_delete"
-    
+
     # Create a job
     execute_query(
         "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
         (job_id, "test_type", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
         connection=db_conn
     )
-    
+
     # Create a history entry for this job
     execute_query(
         "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -158,7 +164,7 @@ def test_foreign_key_cascade_delete_jobs(db_conn):
     # Verify job and history entry still exist
     job_entry = execute_query("SELECT * FROM jobs WHERE job_id = ?", (job_id,), connection=db_conn)
     history_entry = execute_query("SELECT * FROM job_status_history WHERE job_id = ?", (job_id,), connection=db_conn, fetchall=True)
-    
+
     assert job_entry is not None
     assert len(history_entry) == 1
 
@@ -172,14 +178,14 @@ def test_successful_insert_with_valid_foreign_keys(db_conn):
         (job_id, "test_type", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
         connection=db_conn
     )
-    
+
     # This should succeed
     execute_query(
         "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES (?, ?, ?, ?, ?)",
         (job_id, "completed", 100.0, "Done", "2023-01-01T13:00:00"),
         connection=db_conn
     )
-    
+
     history_entry = execute_query("SELECT * FROM job_status_history WHERE job_id = ?", (job_id,), connection=db_conn, fetchall=True)
     assert len(history_entry) == 1
     assert history_entry[0]['status'] == "completed"

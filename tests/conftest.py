@@ -1,71 +1,68 @@
-import os
-import pytest
-import json
-import sqlite3
-import tempfile
-import pandas as pd
-from datetime import datetime
-import uuid
-from pathlib import Path
 import sys
-from unittest.mock import MagicMock, PropertyMock
-import numpy as np
+from pathlib import Path
+from unittest.mock import MagicMock
 
-# This is a more robust way to handle global mocks.
-# It's a fixture that can be explicitly used by tests that need it,
-# and it automatically handles setup and teardown, preventing contamination.
-@pytest.fixture(scope="function")
-def mock_global_utils(monkeypatch):
-    """
-    Mocks global utility modules (misc, retry_monitor) for a single test function.
-    This prevents test contamination that can occur with module-level sys.modules patching.
-    """
-    # --- Mock for deployment.app.utils.misc ---
-    mock_misc = MagicMock()
-    mock_misc.camel_to_snake.side_effect = lambda s: s.lower()
-    monkeypatch.setitem(sys.modules, 'deployment.app.utils.misc', mock_misc)
+import pytest
 
-    # --- Mock for deployment.app.utils.retry_monitor ---
-    mock_retry_monitor_module = MagicMock()
-    mock_retry_monitor_class = MagicMock()
-    mock_retry_monitor_instance = MagicMock()
-    mock_retry_monitor_instance.get_statistics.return_value = {
-        "total_retries": 0, "successful_retries": 0, "exhausted_retries": 0,
-        "successful_after_retry": 0, "high_failure_operations": [],
-        "alerted_operations": [], "alert_thresholds": {}, "operation_stats": {},
-        "exception_stats": {}, "timestamp": "2021-01-01T00:00:00"
-    }
-    mock_retry_monitor_class.return_value = mock_retry_monitor_instance
-    mock_retry_monitor_module.RetryMonitor = mock_retry_monitor_class
-    mock_retry_monitor_module.retry_monitor = mock_retry_monitor_instance
-    mock_retry_monitor_module.DEFAULT_PERSISTENCE_PATH = None
-    mock_retry_monitor_module.record_retry = MagicMock()
-    mock_retry_monitor_module.get_retry_statistics = MagicMock(return_value=mock_retry_monitor_instance.get_statistics.return_value)
-    mock_retry_monitor_module.reset_retry_statistics = MagicMock()
-    mock_retry_monitor_module.get_high_failure_operations = MagicMock(return_value=set())
-    mock_retry_monitor_module.set_alert_threshold = MagicMock()
-    mock_retry_monitor_module.register_alert_handler = MagicMock()
-    mock_retry_monitor_module.get_alerted_operations = MagicMock(return_value=set())
-    mock_retry_monitor_module.log_alert_handler = MagicMock()
-    monkeypatch.setitem(sys.modules, 'deployment.app.utils.retry_monitor', mock_retry_monitor_module)
-    
-    # Yield the mocks in a dictionary in case any test needs to access them
-    yield {
-        "misc": mock_misc,
-        "retry_monitor": mock_retry_monitor_module
-    }
-    
-    # monkeypatch automatically handles teardown, restoring original modules
+
+# This fixture is removed to prevent global state pollution.
+# Mocks should be defined closer to the tests that need them,
+# typically in a conftest.py in the same directory or a parent directory.
+# @pytest.fixture(scope="function")
+# def mock_global_utils(monkeypatch):
+#     """
+#     Mocks global utility modules (misc, retry_monitor) for a single test function.
+#     This prevents test contamination that can occur with module-level sys.modules patching.
+#     """
+#     # --- Mock for deployment.app.utils.misc ---
+#     mock_misc = MagicMock()
+#     mock_misc.camel_to_snake.side_effect = lambda s: s.lower()
+#     monkeypatch.setitem(sys.modules, 'deployment.app.utils.misc', mock_misc)
+#
+#     # --- Mock for deployment.app.utils.retry_monitor ---
+#     mock_retry_monitor_module = MagicMock()
+#     mock_retry_monitor_class = MagicMock()
+#     mock_retry_monitor_instance = MagicMock()
+#     mock_retry_monitor_instance.get_statistics.return_value = {
+#         "total_retries": 0, "successful_retries": 0, "exhausted_retries": 0,
+#         "successful_after_retry": 0, "high_failure_operations": [],
+#         "alerted_operations": [], "alert_thresholds": {}, "operation_stats": {},
+#         "exception_stats": {}, "timestamp": "2021-01-01T00:00:00"
+#     }
+#     mock_retry_monitor_class.return_value = mock_retry_monitor_instance
+#     mock_retry_monitor_module.RetryMonitor = mock_retry_monitor_class
+#     mock_retry_monitor_module.retry_monitor = mock_retry_monitor_instance
+#     mock_retry_monitor_module.DEFAULT_PERSISTENCE_PATH = None
+#     mock_retry_monitor_module.record_retry = MagicMock()
+#     mock_retry_monitor_module.get_retry_statistics = MagicMock(return_value=mock_retry_monitor_instance.get_statistics.return_value)
+#     mock_retry_monitor_module.reset_retry_statistics = MagicMock()
+#     mock_retry_monitor_module.get_high_failure_operations = MagicMock(return_value=set())
+#     mock_retry_monitor_module.set_alert_threshold = MagicMock()
+#     mock_retry_monitor_module.register_alert_handler = MagicMock()
+#     mock_retry_monitor_module.get_alerted_operations = MagicMock(return_value=set())
+#     mock_retry_monitor_module.log_alert_handler = MagicMock()
+#     monkeypatch.setitem(sys.modules, 'deployment.app.utils.retry_monitor', mock_retry_monitor_module)
+#
+#     # Yield the mocks in a dictionary in case any test needs to access them
+#     yield {
+#         "misc": mock_misc,
+#         "retry_monitor": mock_retry_monitor_module
+#     }
+#
+#     # monkeypatch automatically handles teardown, restoring original modules
 
 # Add the project root to sys.path to fix imports
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from deployment.app.models.api_models import (
-    JobStatus, JobType, TrainingConfig,
-    ModelConfig, OptimizerConfig, LRSchedulerConfig,
-    TrainingDatasetConfig
+    LRSchedulerConfig,
+    ModelConfig,
+    OptimizerConfig,
+    TrainingConfig,
+    TrainingDatasetConfig,
 )
+
 
 # Common test data fixtures
 @pytest.fixture
@@ -98,7 +95,7 @@ def create_training_params_fn():
     """
     def _create_training_params(base_params=None):
         base_params = base_params or {}
-        
+
         model_config = ModelConfig(
             num_encoder_layers=3,
             num_decoder_layers=2,
@@ -113,22 +110,22 @@ def create_training_params_fn():
             use_reversible_instance_norm=True,
             use_layer_norm=True
         )
-        
+
         optimizer_config = OptimizerConfig(
             lr=base_params.get('learning_rate', 0.001),
             weight_decay=0.0001
         )
-        
+
         lr_shed_config = LRSchedulerConfig(
             T_0=10,
             T_mult=2
         )
-        
+
         train_ds_config = TrainingDatasetConfig(
             alpha=0.05,
             span=12
         )
-        
+
         return TrainingConfig(
             model_config=model_config,
             optimizer_config=optimizer_config,
@@ -137,6 +134,6 @@ def create_training_params_fn():
             lags=12,
             quantiles=[0.05, 0.25, 0.5, 0.75, 0.95]
         )
-    
+
     return _create_training_params
 

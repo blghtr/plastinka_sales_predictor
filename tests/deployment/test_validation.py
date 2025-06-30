@@ -1,14 +1,12 @@
 import io
-import pytest
-import pandas as pd
 from datetime import datetime
 
+import pandas as pd
+
 from deployment.app.utils.validation import (
-    validate_excel_file, 
-    validate_date_format, 
-    validate_stock_file, 
-    validate_sales_file,
-    validate_pagination_params
+    validate_date_format,
+    validate_excel_file,
+    validate_pagination_params,
 )
 
 
@@ -22,7 +20,7 @@ def test_validate_excel_file_valid():
     buffer = io.BytesIO()
     df.to_excel(buffer, index=False)
     buffer.seek(0)
-    
+
     is_valid, error = validate_excel_file(buffer.read())
     assert is_valid
     assert error == ""
@@ -32,7 +30,7 @@ def test_validate_excel_file_invalid():
     """Test validation of an invalid Excel file."""
     # Create an invalid file (just some random bytes)
     invalid_data = b"This is not an Excel file"
-    
+
     is_valid, error = validate_excel_file(invalid_data)
     assert not is_valid
     assert "Invalid Excel file" in error
@@ -48,12 +46,12 @@ def test_validate_excel_file_with_columns():
     buffer = io.BytesIO()
     df.to_excel(buffer, index=False)
     buffer.seek(0)
-    
+
     # Test with correct expected columns
     is_valid, error = validate_excel_file(buffer.read(), expected_columns=["Column1", "Column2"])
     assert is_valid
     assert error == ""
-    
+
     # Test with incorrect expected columns
     buffer.seek(0)
     is_valid, error = validate_excel_file(buffer.read(), expected_columns=["Column1", "Column3"])
@@ -70,12 +68,12 @@ def test_validate_date_format():
     assert parsed_date.day == 1
     assert parsed_date.month == 1
     assert parsed_date.year == 2022
-    
+
     # Invalid date
     is_valid, parsed_date = validate_date_format("not-a-date")
     assert not is_valid
     assert parsed_date is None
-    
+
     # Invalid format
     is_valid, parsed_date = validate_date_format("2022-01-01")
     assert not is_valid
@@ -88,18 +86,18 @@ def test_validate_pagination_params():
     offset, limit = validate_pagination_params(10, 50)
     assert offset == 10
     assert limit == 50
-    
+
     # Negative offset
     offset, limit = validate_pagination_params(-10, 50)
     assert offset == 0
     assert limit == 50
-    
+
     # Limit too large
     offset, limit = validate_pagination_params(10, 2000)
     assert offset == 10
     assert limit == 1000
-    
+
     # Limit too small
     offset, limit = validate_pagination_params(10, 0)
     assert offset == 10
-    assert limit == 1 
+    assert limit == 1

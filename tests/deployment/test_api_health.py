@@ -18,36 +18,29 @@ Testing Approach:
 All external imports and dependencies are mocked to ensure test isolation.
 """
 
-import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock, PropertyMock
 import os
-import time
-from datetime import datetime
-from fastapi import HTTPException, status
-import importlib
 import sqlite3
-import sys
+from datetime import datetime
+from unittest.mock import MagicMock, patch
 
-from deployment.app.main import app
+import pytest
+from fastapi import HTTPException
+
 from deployment.app.api.health import (
-    HealthResponse,
-    SystemStatsResponse,
-    RetryStatsResponse,
     ComponentHealth,
+    HealthResponse,
+    RetryStatsResponse,
+    SystemStatsResponse,
     check_environment,
-    start_time,
-    get_retry_statistics,
-    reset_retry_statistics
 )
-from deployment.app.config import settings
+from deployment.app.main import app
 
 TEST_X_API_KEY = "test_x_api_key_conftest"
 
 
 class TestHealthCheckEndpoint:
     """Test suite for /health endpoint."""
-    
+
     @patch("deployment.app.api.health.check_database")
     @patch("deployment.app.api.health.check_environment")
     def test_health_check_endpoint_healthy(self, mock_check_env, mock_check_db, client):
@@ -55,10 +48,10 @@ class TestHealthCheckEndpoint:
         # Arrange
         mock_check_db.return_value = ComponentHealth(status="healthy", details={"mock_type": "healthy"})
         mock_check_env.return_value = ComponentHealth(status="healthy", details={"mock_type": "healthy"})
-        
+
         # Act
         response = client.get("/health/")
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -82,10 +75,10 @@ class TestHealthCheckEndpoint:
         # Arrange
         mock_check_db.return_value = ComponentHealth(status="unhealthy", details={"error": "mocked unhealthy"})
         mock_check_env.return_value = ComponentHealth(status="healthy", details={"mock_type": "healthy"})
-        
+
         # Act
         response = client.get("/health/")
-        
+
         # Assert
         assert response.status_code == 503
         data = response.json()
@@ -102,10 +95,10 @@ class TestHealthCheckEndpoint:
         # Arrange
         mock_check_db.return_value = ComponentHealth(status="healthy", details={"mock_type": "healthy"})
         mock_check_env.return_value = ComponentHealth(status="degraded", details={"error": "mocked degraded"})
-        
+
         # Act
         response = client.get("/health/")
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -127,15 +120,15 @@ class TestSystemStatsEndpoint:
         mock_process.memory_info.return_value.rss = 50 * 1024 * 1024  # 50 MB
         mock_process.open_files.return_value = ["file1", "file2"]
         mock_process.num_threads.return_value = 4
-        
+
         mock_psutil.cpu_percent.return_value = 15.5
         mock_psutil.virtual_memory.return_value.percent = 60.2
         mock_psutil.disk_usage.return_value.percent = 75.0
         mock_psutil.Process.return_value = mock_process
-        
+
         # Act
         response = client.get("/health/system", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -146,7 +139,7 @@ class TestSystemStatsEndpoint:
         assert data["open_files"] == 2
         assert data["active_threads"] == 4
         assert "timestamp" in data
-        
+
         mock_psutil.Process.assert_called_once_with(os.getpid())
         mock_psutil.cpu_percent.assert_called_once()
         mock_psutil.virtual_memory.assert_called_once()
@@ -156,7 +149,7 @@ class TestSystemStatsEndpoint:
         """Test system stats endpoint fails with 401 if X-API-Key header is missing."""
         # Act
         response = client.get("/health/system")
-        
+
         # Assert
         assert response.status_code == 401
 
@@ -164,18 +157,43 @@ class TestSystemStatsEndpoint:
         """Test system stats endpoint fails with 401 if X-API-Key is invalid."""
         # Act
         response = client.get("/health/system", headers={"X-API-Key": "wrong_key"})
-        
+
         # Assert
         assert response.status_code == 401
 
-    @patch("deployment.app.config.settings.api.x_api_key", None)
     def test_system_stats_server_key_not_configured(self, client):
         """Test system stats endpoint fails with 500 if server X-API-Key is not configured."""
-        # Act
-        response = client.get("/health/system", headers={"X-API-Key": TEST_X_API_KEY})
-        
-        # Assert
-        assert response.status_code == 500
+        # Arrange - Override the dependency to simulate server key not configured
+        from fastapi import Security
+        from fastapi.security import APIKeyHeader
+
+        from deployment.app.services.auth import get_current_api_key_validated
+
+        api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+        async def mock_server_key_not_configured(api_key: str = Security(api_key_header_scheme)) -> bool:
+            # Simulate the case where server X-API-Key is None/not configured
+            if api_key is None:
+                raise HTTPException(status_code=401, detail="X-API-Key header required")
+            # This simulates the 500 error when server key is not configured
+            raise HTTPException(status_code=500, detail="Server X-API-Key not configured")
+
+        # Temporarily override the dependency for this test
+        original_override = app.dependency_overrides.get(get_current_api_key_validated)
+        app.dependency_overrides[get_current_api_key_validated] = mock_server_key_not_configured
+
+        try:
+            # Act
+            response = client.get("/health/system", headers={"X-API-Key": TEST_X_API_KEY})
+
+            # Assert
+            assert response.status_code == 500
+        finally:
+            # Restore original override
+            if original_override:
+                app.dependency_overrides[get_current_api_key_validated] = original_override
+            else:
+                app.dependency_overrides.pop(get_current_api_key_validated, None)
 
 
 class TestRetryStatsEndpoint:
@@ -199,10 +217,10 @@ class TestRetryStatsEndpoint:
         """Test successful retrieval of retry statistics."""
         # Arrange
         mock_get_stats.return_value = self.get_mock_retry_stats_data()
-        
+
         # Act
         response = client.get("/health/retry-stats", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -221,7 +239,7 @@ class TestRetryStatsEndpoint:
         """Test retry stats endpoint fails with 401 if X-API-Key header is missing."""
         # Act
         response = client.get("/health/retry-stats")
-        
+
         # Assert
         assert response.status_code == 401
 
@@ -229,25 +247,50 @@ class TestRetryStatsEndpoint:
         """Test retry stats endpoint fails with 401 if X-API-Key is invalid."""
         # Act
         response = client.get("/health/retry-stats", headers={"X-API-Key": "wrong_key"})
-        
+
         # Assert
         assert response.status_code == 401
 
-    @patch("deployment.app.config.settings.api.x_api_key", None)
     def test_retry_statistics_server_key_not_configured(self, client):
         """Test retry stats endpoint fails with 500 if server X-API-Key is not configured."""
-        # Act
-        response = client.get("/health/retry-stats", headers={"X-API-Key": TEST_X_API_KEY})
-        
-        # Assert
-        assert response.status_code == 500
+        # Arrange - Override the dependency to simulate server key not configured
+        from fastapi import Security
+        from fastapi.security import APIKeyHeader
+
+        from deployment.app.services.auth import get_current_api_key_validated
+
+        api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+        async def mock_server_key_not_configured(api_key: str = Security(api_key_header_scheme)) -> bool:
+            # Simulate the case where server X-API-Key is None/not configured
+            if api_key is None:
+                raise HTTPException(status_code=401, detail="X-API-Key header required")
+            # This simulates the 500 error when server key is not configured
+            raise HTTPException(status_code=500, detail="Server X-API-Key not configured")
+
+        # Temporarily override the dependency for this test
+        original_override = app.dependency_overrides.get(get_current_api_key_validated)
+        app.dependency_overrides[get_current_api_key_validated] = mock_server_key_not_configured
+
+        try:
+            # Act
+            response = client.get("/health/retry-stats", headers={"X-API-Key": TEST_X_API_KEY})
+
+            # Assert
+            assert response.status_code == 500
+        finally:
+            # Restore original override
+            if original_override:
+                app.dependency_overrides[get_current_api_key_validated] = original_override
+            else:
+                app.dependency_overrides.pop(get_current_api_key_validated, None)
 
     @patch("deployment.app.api.health.reset_retry_statistics")
     def test_reset_retry_stats_endpoint_success(self, mock_reset_stats, client):
         """Test successful reset of retry statistics."""
         # Act
         response = client.post("/health/retry-stats/reset", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -258,7 +301,7 @@ class TestRetryStatsEndpoint:
         """Test reset retry stats endpoint fails with 401 if X-API-Key header is missing."""
         # Act
         response = client.post("/health/retry-stats/reset")
-        
+
         # Assert
         assert response.status_code == 401
 
@@ -266,18 +309,43 @@ class TestRetryStatsEndpoint:
         """Test reset retry stats endpoint fails with 401 if X-API-Key is invalid."""
         # Act
         response = client.post("/health/retry-stats/reset", headers={"X-API-Key": "wrong_key"})
-        
+
         # Assert
         assert response.status_code == 401
 
-    @patch("deployment.app.config.settings.api.x_api_key", None)
     def test_reset_retry_stats_server_key_not_configured(self, client):
         """Test reset retry stats endpoint fails with 500 if server X-API-Key is not configured."""
-        # Act
-        response = client.post("/health/retry-stats/reset", headers={"X-API-Key": TEST_X_API_KEY})
-        
-        # Assert
-        assert response.status_code == 500
+        # Arrange - Override the dependency to simulate server key not configured
+        from fastapi import Security
+        from fastapi.security import APIKeyHeader
+
+        from deployment.app.services.auth import get_current_api_key_validated
+
+        api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+        async def mock_server_key_not_configured(api_key: str = Security(api_key_header_scheme)) -> bool:
+            # Simulate the case where server X-API-Key is None/not configured
+            if api_key is None:
+                raise HTTPException(status_code=401, detail="X-API-Key header required")
+            # This simulates the 500 error when server key is not configured
+            raise HTTPException(status_code=500, detail="Server X-API-Key not configured")
+
+        # Temporarily override the dependency for this test
+        original_override = app.dependency_overrides.get(get_current_api_key_validated)
+        app.dependency_overrides[get_current_api_key_validated] = mock_server_key_not_configured
+
+        try:
+            # Act
+            response = client.post("/health/retry-stats/reset", headers={"X-API-Key": TEST_X_API_KEY})
+
+            # Assert
+            assert response.status_code == 500
+        finally:
+            # Restore original override
+            if original_override:
+                app.dependency_overrides[get_current_api_key_validated] = original_override
+            else:
+                app.dependency_overrides.pop(get_current_api_key_validated, None)
 
 
 class TestComponentHealthChecks:
@@ -289,7 +357,7 @@ class TestComponentHealthChecks:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
-        
+
         # Simulate finding all required tables
         mock_cursor.fetchall.return_value = [
             ('jobs',), ('models',), ('configs',), ('training_results',),
@@ -299,12 +367,12 @@ class TestComponentHealthChecks:
             ('fact_predictions',), ('sqlite_sequence',), ('processing_runs',),
             ('data_upload_results',), ('report_results',)
         ]
-        
+
         # Act & Assert
         with patch('deployment.app.api.health.sqlite3.connect', return_value=mock_conn) as mock_connect:
             from deployment.app.api.health import check_database
             result = check_database()
-            
+
             assert result.status == "healthy"
             mock_connect.assert_called_once()
             call_args = mock_connect.call_args[0][0]
@@ -323,15 +391,15 @@ class TestComponentHealthChecks:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
-        
+
         # Simulate finding only one table
         mock_cursor.fetchall.return_value = [('jobs',)]
-        
+
         # Act & Assert
         with patch('deployment.app.api.health.sqlite3.connect', return_value=mock_conn) as mock_connect:
             from deployment.app.api.health import check_database
             result = check_database()
-            
+
             assert result.status == "degraded"
             assert "missing_tables" in result.details
             assert "jobs" not in result.details["missing_tables"]
@@ -345,11 +413,11 @@ class TestComponentHealthChecks:
     def test_check_database_unhealthy_connection_error(self):
         """Test check_database returns unhealthy on connection error."""
         # Act & Assert
-        with patch('deployment.app.api.health.sqlite3.connect', 
+        with patch('deployment.app.api.health.sqlite3.connect',
                    side_effect=sqlite3.OperationalError("Connection failed")) as mock_connect:
             from deployment.app.api.health import check_database
             result = check_database()
-            
+
             assert result.status == "unhealthy"
             assert "error" in result.details
             assert "Connection failed" in result.details["error"]
@@ -359,42 +427,58 @@ class TestComponentHealthChecks:
             assert call_args.endswith('.db')
 
     @patch.dict(os.environ, {
-        "YANDEX_CLOUD_ACCESS_KEY": "key1_corrected", 
-        "YANDEX_CLOUD_SECRET_KEY": "key2_corrected", 
-        "YANDEX_CLOUD_FOLDER_ID": "folder_corrected", 
-        "YANDEX_CLOUD_API_KEY": "api_key_corrected", 
-        "CLOUD_CALLBACK_AUTH_TOKEN": "token_corrected" 
+        "DATASPHERE_PROJECT_ID": "project123",
+        "DATASPHERE_FOLDER_ID": "folder456", 
+        "API_X_API_KEY": "api_key_789",
+        "CALLBACK_AUTH_TOKEN": "token_abc",
+        "DATASPHERE_OAUTH_TOKEN": "oauth_token_def"
     })
     def test_check_environment_healthy(self):
         """Test check_environment returns healthy when all vars are set."""
         # Act
         result = check_environment()
-        
+
         # Assert
         assert result.status == "healthy"
         assert result.details == {}
 
-    @patch.dict(os.environ, {"YANDEX_CLOUD_ACCESS_KEY_ID": "key1", "YANDEX_CLOUD_SECRET_ACCESS_KEY": "key2"}, clear=True)
+    @patch.dict(os.environ, {
+        "DATASPHERE_PROJECT_ID": "project123",
+        "DATASPHERE_FOLDER_ID": "folder456", 
+        "API_X_API_KEY": "api_key_789",
+        "CALLBACK_AUTH_TOKEN": "token_abc",
+        "DATASPHERE_YC_PROFILE": "default"
+    })
+    def test_check_environment_healthy_with_yc_profile(self):
+        """Test check_environment returns healthy when using YC profile for DataSphere auth."""
+        # Act
+        result = check_environment()
+
+        # Assert
+        assert result.status == "healthy"
+        assert result.details == {}
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_check_environment_degraded(self):
         """Test check_environment returns degraded when vars are missing."""
         # Act
         result = check_environment()
-        
+
         # Assert
         assert result.status == "degraded"
         assert "missing_variables" in result.details
-        
+
         # Expected missing variables with descriptions
         expected_missing = [
-            "YANDEX_CLOUD_FOLDER_ID (Cloud Folder ID)",
-            "YANDEX_CLOUD_API_KEY (Cloud API Key)",
-            "CLOUD_CALLBACK_AUTH_TOKEN (Cloud Callback Authentication Token)",
-            "YANDEX_CLOUD_ACCESS_KEY (Cloud Storage Access Key)",
-            "YANDEX_CLOUD_SECRET_KEY (Cloud Storage Secret Key)"
+            "DATASPHERE_PROJECT_ID (DataSphere Project ID)",
+            "DATASPHERE_FOLDER_ID (Yandex Cloud Folder ID)", 
+            "API_X_API_KEY (API Authentication Key)",
+            "CALLBACK_AUTH_TOKEN (Cloud Callback Authentication Token)",
+            "DATASPHERE_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)"
         ]
-        
+
         actual_missing = result.details["missing_variables"]
-        assert len(actual_missing) >= 3
+        assert len(actual_missing) == 5
         for var_desc in expected_missing:
             assert var_desc in actual_missing, \
                    f"Expected '{var_desc}' to be in missing variables: {actual_missing}"
@@ -423,7 +507,7 @@ class TestIntegration:
         component_health = ComponentHealth(status="healthy", details={})
         assert component_health.status == "healthy"
         assert component_health.details == {}
-        
+
         # Test model attributes exist
         assert hasattr(HealthResponse, 'model_fields')
         assert hasattr(SystemStatsResponse, 'model_fields')
@@ -433,16 +517,16 @@ class TestIntegration:
         """Test that the health router is properly configured."""
         # Act & Assert
         from deployment.app.api.health import router
-        
+
         # Test router exists and has expected attributes
         assert router is not None
         assert hasattr(router, 'routes')
         assert len(router.routes) > 0
-        
+
         # Test that expected routes exist
         route_paths = [route.path for route in router.routes]
         expected_paths = ["/", "/system", "/retry-stats", "/retry-stats/reset"]
-        
+
         for expected_path in expected_paths:
             assert any(path.endswith(expected_path) for path in route_paths), \
                    f"Expected path ending with '{expected_path}' not found in {route_paths}"

@@ -11,27 +11,21 @@ in the database module, ensuring that:
 5. Complex transaction chains maintain data integrity
 """
 
-import pytest
-import sqlite3
 import os
-import json
-import uuid
-from datetime import datetime
-from unittest.mock import patch, MagicMock
+import sqlite3
 import threading
-import time
+from datetime import datetime
+
+import pytest
 
 from deployment.app.db.database import (
-    get_db_connection,
-    execute_query,
-    execute_many,
-    create_job,
-    update_job_status,
-    create_model_record,
-    create_training_result,
-    create_prediction_result,
     DatabaseError,
-    get_job
+    create_job,
+    execute_many,
+    execute_query,
+    get_db_connection,
+    get_job,
+    update_job_status,
 )
 from deployment.app.db.schema import SCHEMA_SQL
 
@@ -46,34 +40,34 @@ from deployment.app.db.schema import SCHEMA_SQL
 #     temp_dir = os.path.join(os.path.dirname(__file__), "temp_transactions")
 #     os.makedirs(temp_dir, exist_ok=True)
 #     db_path = os.path.join(temp_dir, "test_transactions.db")
-#     
+#
 #     # Initialize schema
 #     conn = sqlite3.connect(db_path)
 #     conn.executescript(SCHEMA_SQL)
 #     conn.commit()
 #     conn.close()
-#     
+#
 #     # Save original DB_PATH
 #     original_db_path = os.environ.get('DATABASE_PATH')
-#     
+#
 #     # Set environment variable to point to test DB
 #     os.environ['DATABASE_PATH'] = db_path
-#     
+#
 #     # Yield the database path
 #     yield {"db_path": db_path, "temp_dir": temp_dir}
-#     
+#
 #     # Restore original DB_PATH
 #     if original_db_path:
 #         os.environ['DATABASE_PATH'] = original_db_path
 #     else:
 #         os.environ.pop('DATABASE_PATH', None)
-#     
+#
 #     # Close and remove the temporary file
 #     try:
 #         os.unlink(db_path)
 #     except:
 #         pass
-#     
+#
 #     # Remove temp directory
 #     try:
 #         os.rmdir(temp_dir)
@@ -90,27 +84,27 @@ def test_execute_query_transaction(isolated_db_session):
     # Get a direct connection for verification
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
+
     # Create a test table
     cursor.execute("CREATE TABLE test_transactions (id INTEGER PRIMARY KEY, value TEXT)")
     conn.commit()
-    
+
     # Test commit behavior
     execute_query(
         "INSERT INTO test_transactions (value) VALUES (?)",
         ("test_value",),
         connection=conn
     )
-    
+
     # Verify data was committed
     cursor.execute("SELECT value FROM test_transactions WHERE id = 1")
     result = cursor.fetchone()
     assert result is not None
-    
+
     # Handle both dictionary and tuple result formats
     value = result[0] if isinstance(result, tuple) else result['value']
     assert value == "test_value"
-    
+
     # Test rollback on error
     try:
         # This should fail (missing a required parameter)
@@ -121,15 +115,15 @@ def test_execute_query_transaction(isolated_db_session):
         )
     except DatabaseError:
         pass  # Expected error
-    
+
     # Verify nothing was inserted
     cursor.execute("SELECT COUNT(*) FROM test_transactions WHERE id = 2")
     result = cursor.fetchone()
-    
+
     # Handle both dictionary and tuple result formats
     count = result[0] if isinstance(result, tuple) else result['COUNT(*)']
     assert count == 0
-    
+
     # Close the connection
     conn.close()
 
@@ -139,39 +133,39 @@ def test_execute_many_transaction(isolated_db_session):
     # Debug information
     print(f"DEBUG: temp_db path: {db_path}")
     print(f"DEBUG: DB file exists: {os.path.exists(db_path)}")
-    
+
     # Get a direct connection for verification
     conn = sqlite3.connect(db_path)
     print(f"DEBUG: SQLite isolation level: {conn.isolation_level}")
-    
+
     # Set to None first to ensure no active transaction (auto-commit mode)
     conn.isolation_level = None
     print(f"DEBUG: SQLite isolation level after setting to None: {conn.isolation_level}")
-    
+
     # Check database tables
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
     tables = cursor.fetchall()
     print(f"DEBUG: Database tables: {[table[0] if isinstance(table, tuple) else table['name'] for table in tables]}")
-    
+
     # Create a test table
     cursor.execute("CREATE TABLE test_batch (id INTEGER PRIMARY KEY, value TEXT)")
     conn.commit()
-    
+
     # Prepare data for batch insert
     params_list = [
         ("value1",),
         ("value2",),
         ("value3",)
     ]
-    
+
     # Test batch insert with commit
     execute_many(
         "INSERT INTO test_batch (value) VALUES (?)",
         params_list,
         connection=conn
     )
-    
+
     # Verify all data was committed
     cursor.execute("SELECT COUNT(*) FROM test_batch")
     count_result = cursor.fetchone()
@@ -179,7 +173,7 @@ def test_execute_many_transaction(isolated_db_session):
     # Handle row as dictionary or tuple
     count = count_result[0] if isinstance(count_result, tuple) else count_result['COUNT(*)']
     assert count == 3
-    
+
     # Now set isolation level and start transaction for error test
     conn.isolation_level = 'DEFERRED'
     print(f"DEBUG: SQLite isolation level set to DEFERRED: {conn.isolation_level}")
@@ -187,7 +181,7 @@ def test_execute_many_transaction(isolated_db_session):
     # Start transaction by executing a statement (SQLite auto-starts transaction)
     cursor.execute("SELECT 1")
     print("DEBUG: Transaction implicitly started by first SQL statement")
-    
+
     # Test rollback on error with batch insert
     # Create an invalid parameter list (missing values)
     invalid_params = [
@@ -195,7 +189,7 @@ def test_execute_many_transaction(isolated_db_session):
         (),  # Invalid - missing value
         ("value5",)
     ]
-    
+
     try:
         execute_many(
             "INSERT INTO test_batch (value) VALUES (?)",
@@ -208,7 +202,7 @@ def test_execute_many_transaction(isolated_db_session):
         if conn:
             print("DEBUG: Rolling back transaction on external connection in test_execute_many_transaction")
             conn.rollback()
-    
+
     # Verify no new data was inserted (rollback)
     cursor.execute("SELECT COUNT(*) FROM test_batch")
     count_result = cursor.fetchone()
@@ -217,7 +211,7 @@ def test_execute_many_transaction(isolated_db_session):
     count = count_result[0] if isinstance(count_result, tuple) else count_result['COUNT(*)']
     print(f"DEBUG: Count value: {count}")
     assert count == 3  # Still only the original 3 rows
-    
+
     # Close the connection
     conn.close()
 
@@ -226,31 +220,31 @@ def test_nested_transactions(isolated_db_session):
     db_path = isolated_db_session
     # Get a direct connection
     conn = sqlite3.connect(db_path)
-    
+
     # Start an outer transaction
     cursor = conn.cursor()
     cursor.execute("BEGIN TRANSACTION")
-    
+
     # Insert a record
     cursor.execute("CREATE TABLE nested_test (id INTEGER PRIMARY KEY, value TEXT)")
     cursor.execute("INSERT INTO nested_test (value) VALUES (?)", ("outer",))
-    
+
     # Start a nested transaction (savepoint in SQLite)
     cursor.execute("SAVEPOINT nested_savepoint")
-    
+
     # Insert another record in the nested transaction
     cursor.execute("INSERT INTO nested_test (value) VALUES (?)", ("inner",))
-    
+
     # Rollback the nested transaction
     cursor.execute("ROLLBACK TO SAVEPOINT nested_savepoint")
-    
+
     # Commit the outer transaction
     conn.commit()
-    
+
     # Verify only the outer insert was committed
     cursor.execute("SELECT COUNT(*) FROM nested_test")
     result = cursor.fetchone()
-    
+
     # Handle both dictionary and tuple result formats
     count = result[0] if isinstance(result, tuple) else result['COUNT(*)']
     assert count == 1
@@ -259,7 +253,7 @@ def test_nested_transactions(isolated_db_session):
     result = cursor.fetchone()
     value = result[0] if isinstance(result, tuple) else result['value']
     assert value == "outer"
-    
+
     # Close the connection
     conn.close()
 
@@ -278,7 +272,7 @@ def test_create_job_transaction_safety(isolated_db_session):
     # Test case: Create job inside a successful transaction
     with get_db_connection(db_path) as conn_success:
         job_id_success = create_job("success_test", {"param": "value"}, connection=conn_success)
-    
+
     # Verify the job was created
     with get_db_connection(db_path) as conn_verify:
         job = get_job(job_id_success, connection=conn_verify)
@@ -339,7 +333,7 @@ def test_update_job_transaction_safety(isolated_db_session):
         except sqlite3.OperationalError:
             # Manually rollback when an error occurs
             conn_fail.rollback()
-        
+
     # Verify the update was rolled back
     with get_db_connection(db_path) as conn_verify:
         job = get_job(job_id, connection=conn_verify)
@@ -359,9 +353,9 @@ def test_complex_transaction_chain(isolated_db_session):
             # Chain of operations
             job_id_1 = create_job("chain_job_1", {"step": 1}, connection=conn)
             update_job_status(job_id_1, "step_1_done", connection=conn)
-            
+
             job_id_2 = create_job("chain_job_2", {"step": 2}, connection=conn)
-            
+
             # Simulate failure - BUT WITH CORRECT EXCEPTION HANDLING
             with pytest.raises(sqlite3.OperationalError):
                 conn.execute("SELECT * FROM non_existent_table")
@@ -394,7 +388,7 @@ def test_concurrent_reads(isolated_db_session):
     # Prepare data - first create the schema
     with get_db_connection(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
-        
+
     # Now create test jobs
     with get_db_connection(db_path) as conn:
         for i in range(10):
@@ -403,7 +397,7 @@ def test_concurrent_reads(isolated_db_session):
                 (f"read_test_{i}", "test", "pending", datetime.now().isoformat(), datetime.now().isoformat()),
                 connection=conn
             )
-    
+
     # Verify jobs were created
     with get_db_connection(db_path) as conn:
         count_result = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()
@@ -463,14 +457,14 @@ def test_concurrent_writes(isolated_db_session):
         thread = threading.Thread(target=worker, args=(db_path, i, success_list))
         threads.append(thread)
         thread.start()
-        
+
     for thread in threads:
         thread.join()
-        
+
     assert all(success_list)
     with get_db_connection(db_path) as conn:
         result = conn.execute("SELECT COUNT(*) FROM concurrent_test").fetchone()
-        
+
         # Handle both dictionary and tuple result formats
         count = result[0] if isinstance(result, tuple) else result['COUNT(*)']
         assert count > 0, "At least some writes should succeed"
@@ -487,18 +481,18 @@ def test_connection_isolation(isolated_db_session):
         conn1.execute("BEGIN")
         conn1.execute("CREATE TABLE iso_test (id int)")
         conn1.execute("INSERT INTO iso_test VALUES (1)")
-        
+
         # conn2 should not see the uncommitted change from conn1
         res2 = conn2.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='iso_test'").fetchone()
         assert res2 is None
-        
+
         # Commit on conn1
         conn1.commit()
-        
+
         # Now conn2 should see the change
         res2_after_commit = conn2.execute("SELECT * FROM iso_test").fetchone()
         assert res2_after_commit is not None
-        
+
         # Handle both dictionary and tuple result formats
         value = res2_after_commit[0] if isinstance(res2_after_commit, tuple) else res2_after_commit['id']
         assert value == 1
@@ -519,7 +513,7 @@ def test_transaction_with_direct_conn_and_db_functions(isolated_db_session):
     # Use explicit transaction control instead of context manager
     conn = get_db_connection(db_path)
     conn.execute("BEGIN TRANSACTION")
-    
+
     try:
         # 1. Direct execute
         conn.execute("CREATE TABLE complex_trans (id TEXT)")
@@ -532,7 +526,7 @@ def test_transaction_with_direct_conn_and_db_functions(isolated_db_session):
 
         # 4. Simulate an error
         conn.execute("SELECT * FROM non_existent_table")
-        
+
         # Should not reach here
         conn.commit()
     except sqlite3.OperationalError:
@@ -546,15 +540,15 @@ def test_transaction_with_direct_conn_and_db_functions(isolated_db_session):
         # Check if the table exists
         res = conn_verify.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='complex_trans'").fetchone()
         assert res is None, "Table should not exist after rollback"
-        
+
         # Check if the job exists
         try:
             cursor = conn_verify.execute("SELECT COUNT(*) FROM jobs")
             result = cursor.fetchone()
-            
+
             # Handle both dictionary and tuple result formats
             count = result[0] if isinstance(result, tuple) else result['COUNT(*)']
             assert count == 0, "No jobs should exist after rollback"
         except sqlite3.OperationalError as e:
             # If the jobs table doesn't exist, that's also fine for this test
-            assert "no such table: jobs" in str(e) 
+            assert "no such table: jobs" in str(e)

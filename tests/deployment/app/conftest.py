@@ -1,20 +1,25 @@
 """
 Основные фикстуры для тестирования на уровне deployment/app.
 """
-import pytest
-import os
-import sys
-from unittest.mock import patch, MagicMock, AsyncMock
-import sqlite3
 import json
-from datetime import datetime, date
-from deployment.app.db.schema import init_db, SCHEMA_SQL
+import os
+import sqlite3
 import tempfile
 import uuid
-import pandas as pd
-import traceback
+from datetime import date, datetime
+
+import pytest
+
 from deployment.app.db.database import dict_factory
-from deployment.app.models.api_models import TrainingConfig, ModelConfig, OptimizerConfig, LRSchedulerConfig, TrainingDatasetConfig
+from deployment.app.db.schema import init_db
+from deployment.app.models.api_models import (
+    LRSchedulerConfig,
+    ModelConfig,
+    OptimizerConfig,
+    TrainingConfig,
+    TrainingDatasetConfig,
+)
+
 
 def json_default_serializer(obj):
     """
@@ -184,7 +189,7 @@ def file_based_db():
             """INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics) VALUES (?, ?, ?, ?, ?)""",
             (result_id_2, job_id, model_id_2, config_id_2, json.dumps(metrics_data_2, default=json_default_serializer))
         )
-        
+
         # --- Запись о job ---
         cursor.execute(
             """INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)""",
@@ -203,7 +208,7 @@ def file_based_db():
             "config_id_1": config_id_1,
             "config_id_2": config_id_2,
         }
-        
+
         yield setup_data
 
     finally:

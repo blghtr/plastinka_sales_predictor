@@ -17,18 +17,11 @@ Testing Approach:
 All external imports and dependencies are mocked to ensure test isolation.
 """
 
-import pytest
-from fastapi.testclient import TestClient
-from fastapi import HTTPException
-from unittest.mock import patch, MagicMock, PropertyMock
-import json
 import uuid
-from pathlib import Path
-import io
-from fastapi import status
+from unittest.mock import patch
 
-from deployment.app.main import app
-from deployment.app.db.database import DatabaseError
+import pytest
+from fastapi import HTTPException
 
 TEST_X_API_KEY = "test_x_api_key_conftest"
 
@@ -50,10 +43,10 @@ class TestActiveConfigEndpoint:
             },
             "is_active": True
         }
-        
+
         # Act
         response = client.get("/api/v1/models-configs/configs/active", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -69,7 +62,7 @@ class TestActiveConfigEndpoint:
         """Test 404 response when no active configuration exists."""
         # Act
         response = client.get("/api/v1/models-configs/configs/active", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 404
         assert "No active config found" in response.text
@@ -79,7 +72,7 @@ class TestActiveConfigEndpoint:
         """Test active config endpoint fails with 401 if X-API-Key header is missing."""
         # Act
         response = client.get("/api/v1/models-configs/configs/active")
-        
+
         # Assert
         assert response.status_code == 401
 
@@ -87,16 +80,18 @@ class TestActiveConfigEndpoint:
         """Test active config endpoint fails with 401 if X-API-Key is invalid."""
         # Act
         response = client.get("/api/v1/models-configs/configs/active", headers={"X-API-Key": "wrong_key"})
-        
+
         # Assert
         assert response.status_code == 401
 
-    @patch("deployment.app.config.settings.api.x_api_key", None)
-    def test_get_active_config_server_key_not_configured(self, client):
+    def test_get_active_config_server_key_not_configured(self, client, mock_x_api_key):
         """Test active config endpoint fails with 500 if server X-API-Key is not configured."""
+        # Arrange
+        mock_x_api_key(None)
+        
         # Act
         response = client.get("/api/v1/models-configs/configs/active", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 500
 
@@ -109,10 +104,10 @@ class TestActivateConfigEndpoint:
         """Test successful activation of a configuration."""
         # Arrange
         config_id = str(uuid.uuid4())
-        
+
         # Act
         response = client.post(f"/api/v1/models-configs/configs/{config_id}/set-active", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -125,10 +120,10 @@ class TestActivateConfigEndpoint:
         """Test 404 response when configuration to activate doesn't exist."""
         # Arrange
         config_id = str(uuid.uuid4())
-        
+
         # Act
         response = client.post(f"/api/v1/models-configs/configs/{config_id}/set-active", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 404
         assert f"Config {config_id} not found" in response.text
@@ -138,10 +133,10 @@ class TestActivateConfigEndpoint:
         """Test activate config endpoint fails with 401 if X-API-Key header is missing."""
         # Arrange
         config_id = str(uuid.uuid4())
-        
+
         # Act
         response = client.post(f"/api/v1/models-configs/configs/{config_id}/set-active")
-        
+
         # Assert
         assert response.status_code == 401
 
@@ -149,22 +144,22 @@ class TestActivateConfigEndpoint:
         """Test activate config endpoint fails with 401 if X-API-Key is invalid."""
         # Arrange
         config_id = str(uuid.uuid4())
-        
+
         # Act
         response = client.post(f"/api/v1/models-configs/configs/{config_id}/set-active", headers={"X-API-Key": "wrong_key"})
-        
+
         # Assert
         assert response.status_code == 401
 
-    @patch("deployment.app.config.settings.api.x_api_key", None)
-    def test_activate_config_server_key_not_configured(self, client):
+    def test_activate_config_server_key_not_configured(self, client, mock_x_api_key):
         """Test activate config endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
         config_id = str(uuid.uuid4())
-        
+        mock_x_api_key(None)
+
         # Act
         response = client.post(f"/api/v1/models-configs/configs/{config_id}/set-active", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 500
 
@@ -173,8 +168,8 @@ class TestBestConfigEndpoint:
     """Test suite for /api/v1/models-configs/configs/best endpoint."""
 
     @patch("deployment.app.api.models_configs.get_best_config_by_metric")
-    @patch("deployment.app.api.models_configs.settings")
-    def test_get_best_config_custom_metric(self, mock_settings, mock_get_best, client):
+    @patch("deployment.app.api.models_configs.get_settings")
+    def test_get_best_config_custom_metric(self, mock_get_settings, mock_get_best, client):
         """Test retrieval of best configuration with custom metric parameters."""
         # Arrange
         config_id = str(uuid.uuid4())
@@ -186,10 +181,10 @@ class TestBestConfigEndpoint:
             },
             "is_active": False
         }
-        
+
         # Act
         response = client.get("/api/v1/models-configs/configs/best?metric_name=mae&higher_is_better=false", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -198,25 +193,24 @@ class TestBestConfigEndpoint:
         assert data["configs"]["output_chunk_length"] == 12
         assert data["is_active"] is False
         mock_get_best.assert_called_once_with("mae", False)
-        mock_settings.default_metric.assert_not_called()
 
     @patch("deployment.app.api.models_configs.get_best_config_by_metric")
-    @patch("deployment.app.api.models_configs.settings")
-    def test_get_best_config_default_metric(self, mock_settings, mock_get_best, client):
+    @patch("deployment.app.api.models_configs.get_settings")
+    def test_get_best_config_default_metric(self, mock_get_settings, mock_get_best, client):
         """Test retrieval of best configuration with default metric from settings."""
         # Arrange
         config_id = str(uuid.uuid4())
-        mock_settings.default_metric = "mape"
-        mock_settings.default_metric_higher_is_better = False
+        mock_get_settings.return_value.default_metric = "mape"
+        mock_get_settings.return_value.default_metric_higher_is_better = False
         mock_get_best.return_value = {
             "config_id": config_id,
             "configs": {"batch_size": 32},
             "is_active": False
         }
-        
+
         # Act
         response = client.get("/api/v1/models-configs/configs/best", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -225,16 +219,16 @@ class TestBestConfigEndpoint:
         mock_get_best.assert_called_once_with("mape", False)
 
     @patch("deployment.app.api.models_configs.get_best_config_by_metric", return_value=None)
-    @patch("deployment.app.api.models_configs.settings")
-    def test_get_best_config_not_found(self, mock_settings, mock_get_best, client):
+    @patch("deployment.app.api.models_configs.get_settings")
+    def test_get_best_config_not_found(self, mock_get_settings, mock_get_best, client):
         """Test 404 response when no configurations with the metric exist."""
         # Arrange
-        mock_settings.default_metric = "rmse"
-        mock_settings.default_metric_higher_is_better = False
-        
+        mock_get_settings.return_value.default_metric = "rmse"
+        mock_get_settings.return_value.default_metric_higher_is_better = False
+
         # Act
         response = client.get("/api/v1/models-configs/configs/best", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 404
         assert "No configs found with metric" in response.text
@@ -244,7 +238,7 @@ class TestBestConfigEndpoint:
         """Test best config endpoint fails with 401 if X-API-Key header is missing."""
         # Act
         response = client.get("/api/v1/models-configs/configs/best")
-        
+
         # Assert
         assert response.status_code == 401
 
@@ -252,16 +246,18 @@ class TestBestConfigEndpoint:
         """Test best config endpoint fails with 401 if X-API-Key is invalid."""
         # Act
         response = client.get("/api/v1/models-configs/configs/best", headers={"X-API-Key": "wrong_key"})
-        
+
         # Assert
         assert response.status_code == 401
 
-    @patch("deployment.app.config.settings.api.x_api_key", None)
-    def test_get_best_config_server_key_not_configured(self, client):
+    def test_get_best_config_server_key_not_configured(self, client, mock_x_api_key):
         """Test best config endpoint fails with 500 if server X-API-Key is not configured."""
+        # Arrange
+        mock_x_api_key(None)
+        
         # Act
         response = client.get("/api/v1/models-configs/configs/best", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 500
 
@@ -289,10 +285,10 @@ class TestConfigListEndpoint:
                 "created_at": "2023-01-02T00:00:00Z"
             }
         ]
-        
+
         # Act
         response = client.get("/api/v1/models-configs/configs", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -308,7 +304,7 @@ class TestConfigListEndpoint:
         """Test retrieval when no configurations exist."""
         # Act
         response = client.get("/api/v1/models-configs/configs", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -319,7 +315,7 @@ class TestConfigListEndpoint:
         """Test config list endpoint fails with 401 if X-API-Key header is missing."""
         # Act
         response = client.get("/api/v1/models-configs/configs")
-        
+
         # Assert
         assert response.status_code == 401
 
@@ -327,16 +323,18 @@ class TestConfigListEndpoint:
         """Test config list endpoint fails with 401 if X-API-Key is invalid."""
         # Act
         response = client.get("/api/v1/models-configs/configs", headers={"X-API-Key": "wrong_key"})
-        
+
         # Assert
         assert response.status_code == 401
 
-    @patch("deployment.app.config.settings.api.x_api_key", None)
-    def test_get_configs_server_key_not_configured(self, client):
+    def test_get_configs_server_key_not_configured(self, client, mock_x_api_key):
         """Test config list endpoint fails with 500 if server X-API-Key is not configured."""
+        # Arrange
+        mock_x_api_key(None)
+        
         # Act
         response = client.get("/api/v1/models-configs/configs", headers={"X-API-Key": TEST_X_API_KEY})
-        
+
         # Assert
         assert response.status_code == 500
 
@@ -351,14 +349,14 @@ class TestConfigDeleteEndpoint:
         config_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
         mock_delete_configs.return_value = {"successful": 2, "failed": 0, "errors": []}
         request_data = {"ids": config_ids}
-        
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/delete",
             headers={"X-API-Key": TEST_X_API_KEY},
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -371,14 +369,14 @@ class TestConfigDeleteEndpoint:
         """Test deletion with empty config IDs list."""
         # Arrange
         request_data = {"ids": []}
-        
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/delete",
             headers={"X-API-Key": TEST_X_API_KEY},
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -390,13 +388,13 @@ class TestConfigDeleteEndpoint:
         """Test delete configs endpoint fails with 401 if X-API-Key header is missing."""
         # Arrange
         request_data = {"ids": [str(uuid.uuid4())]}
-        
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/delete",
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 401
 
@@ -404,30 +402,30 @@ class TestConfigDeleteEndpoint:
         """Test delete configs endpoint fails with 401 if X-API-Key is invalid."""
         # Arrange
         request_data = {"ids": [str(uuid.uuid4())]}
-        
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/delete",
             headers={"X-API-Key": "wrong_key"},
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 401
 
-    @patch("deployment.app.config.settings.api.x_api_key", None)
-    def test_delete_configs_server_key_not_configured(self, client):
+    def test_delete_configs_server_key_not_configured(self, client, mock_x_api_key):
         """Test delete configs endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
         request_data = {"ids": [str(uuid.uuid4())]}
-        
+        mock_x_api_key(None)
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/delete",
             headers={"X-API-Key": TEST_X_API_KEY},
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 500
 
@@ -437,14 +435,14 @@ class TestConfigDeleteEndpoint:
         # Arrange
         config_ids = [str(uuid.uuid4())]
         request_data = {"ids": config_ids}
-        
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/delete",
             headers={"X-API-Key": TEST_X_API_KEY},
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 500
         mock_delete_configs.assert_called_once_with(config_ids)
@@ -463,14 +461,14 @@ class TestConfigUploadEndpoint:
             "json_payload": {"input_chunk_length": 18, "output_chunk_length": 9, "batch_size": 64},
             "is_active": False
         }
-        
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/upload",
             headers={"X-API-Key": TEST_X_API_KEY},
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 200
         data = response.json()
@@ -487,14 +485,14 @@ class TestConfigUploadEndpoint:
             "json_payload": {"input_chunk_length": 18, "output_chunk_length": 9},
             "is_active": False
         }
-        
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/upload",
             headers={"X-API-Key": TEST_X_API_KEY},
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 500
         mock_create_or_get_config.assert_called_once_with(request_data["json_payload"], is_active=False)
@@ -503,13 +501,13 @@ class TestConfigUploadEndpoint:
         """Test upload config endpoint fails with 401 if X-API-Key header is missing."""
         # Arrange
         request_data = {"json_payload": {"input_chunk_length": 18}, "is_active": False}
-        
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/upload",
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 401
 
@@ -517,30 +515,30 @@ class TestConfigUploadEndpoint:
         """Test upload config endpoint fails with 401 if X-API-Key is invalid."""
         # Arrange
         request_data = {"json_payload": {"input_chunk_length": 18}, "is_active": False}
-        
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/upload",
             headers={"X-API-Key": "wrong_key"},
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 401
 
-    @patch("deployment.app.config.settings.api.x_api_key", None)
-    def test_upload_config_server_key_not_configured(self, client):
+    def test_upload_config_server_key_not_configured(self, client, mock_x_api_key):
         """Test upload config endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
         request_data = {"json_payload": {"input_chunk_length": 18}, "is_active": False}
-        
+        mock_x_api_key(None)
+
         # Act
         response = client.post(
             "/api/v1/models-configs/configs/upload",
             headers={"X-API-Key": TEST_X_API_KEY},
             json=request_data
         )
-        
+
         # Assert
         assert response.status_code == 500
 
@@ -565,16 +563,16 @@ class TestIntegration:
         """Test that the models_configs router is properly configured."""
         # Act & Assert
         from deployment.app.api.models_configs import router
-        
+
         # Test router exists and has expected attributes
         assert router is not None
         assert hasattr(router, 'routes')
         assert len(router.routes) > 0
-        
+
         # Test that expected routes exist
         route_paths = [route.path for route in router.routes]
         expected_paths = ["/configs/active", "/configs/best", "/configs", "/configs/{config_id}/set-active", "/configs/delete", "/configs/upload"]
-        
+
         for expected_path in expected_paths:
             assert any(expected_path in path for path in route_paths), \
                    f"Expected path containing '{expected_path}' not found in {route_paths}"

@@ -1,8 +1,10 @@
-import pytest
 import sqlite3
 import tempfile
 import time
 from pathlib import Path
+
+import pytest
+
 
 @pytest.fixture
 def temp_db():
@@ -48,7 +50,7 @@ def temp_db():
                 conn.close()
             except Exception:
                 pass
-        
+
         # Clean up the file
         if tmp:
             try:
@@ -68,28 +70,28 @@ def test_foreign_key_constraint(temp_db):
     # Connect to the database
     conn = sqlite3.connect(temp_db)
     conn.execute("PRAGMA foreign_keys = ON")
-    
+
     # Insert a job
     conn.execute(
         "INSERT INTO jobs (job_id, created_at, updated_at, status) VALUES (?, ?, ?, ?)",
         ("test_job", "2021-01-01", "2021-01-01", "running")
     )
-    
+
     # Insert a job status history entry with a valid job_id
     conn.execute(
         "INSERT INTO job_status_history (job_id, status, progress, created_at) VALUES (?, ?, ?, ?)",
         ("test_job", "running", 50, "2021-01-01")
     )
-    
+
     # Try to insert a job status history entry with an invalid job_id
     with pytest.raises(sqlite3.IntegrityError) as excinfo:
         conn.execute(
             "INSERT INTO job_status_history (job_id, status, progress, created_at) VALUES (?, ?, ?, ?)",
             ("nonexistent_job", "running", 50, "2021-01-01")
         )
-    
+
     # Check that the error message mentions foreign key constraint
     assert "FOREIGN KEY constraint failed" in str(excinfo.value)
-    
+
     # Clean up
-    conn.close() 
+    conn.close()
