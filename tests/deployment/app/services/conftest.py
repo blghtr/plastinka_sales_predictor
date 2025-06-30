@@ -16,10 +16,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Global mocks registry for session optimization without scope mismatch
-_GLOBAL_MOCKS_REGISTRY = {}
-
-# Safe imports - these don't conflict with ML frameworks
 from deployment.app.models.api_models import (
     LRSchedulerConfig,
     ModelConfig,
@@ -27,6 +23,9 @@ from deployment.app.models.api_models import (
     TrainingConfig,
     TrainingDatasetConfig,
 )
+
+# Global mocks registry for session optimization without scope mismatch
+_GLOBAL_MOCKS_REGISTRY = {}
 
 # =================================================================================
 # NEW ARCHITECTURE: Real Filesystem + Temporary Directories

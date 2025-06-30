@@ -13,11 +13,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-# Добавляем корневую директорию проекта в sys.path для исправления импортов
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-# Импорты schema, auth, config остаются здесь, так как они нужны для определения моков
 from deployment.app.db.schema import SCHEMA_SQL
 
 # from deployment.app.services.auth import get_admin_user, security # Removed - will be imported in fixture

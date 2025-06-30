@@ -5,17 +5,11 @@ from pathlib import Path
 
 import uvicorn
 
+from deployment.app.config import get_settings
+
 # Find the project root directory (one level up from deployment)
 script_dir = Path(__file__).resolve().parent
 project_root = script_dir.parent
-
-# Add the project root to sys.path
-# This allows importing modules like 'deployment.app.main' correctly
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-# Import settings after adding project root to path
-from deployment.app.config import get_settings
 
 
 # Parse command line arguments
