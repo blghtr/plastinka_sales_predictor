@@ -1,3 +1,3 @@
-# API models for the Plastinka Sales Predictor 
+# API models for the Plastinka Sales Predictor
 
-# Package marker for deployment.app.models module 
+# Package marker for deployment.app.models module

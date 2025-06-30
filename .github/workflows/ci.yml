@@ -36,7 +36,6 @@ jobs:
     
     - name: Run tests with coverage
       run: |
-        export PYTHONPATH="${PYTHONPATH}:$(pwd)"
         uv run --all-extras pytest --cov=plastinka_sales_predictor --cov=deployment --cov-report=term-missing --cov-fail-under=60 --maxfail=10
     
     - name: Upload coverage reports
