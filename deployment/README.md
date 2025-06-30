@@ -212,49 +212,123 @@ The application uses SQLite with a star schema design:
 ```
 deployment/
 ├── app/
-│   ├── api/                  # API routes and request/response models (e.g., models_params.py)
+│   ├── api/                  # API routes and request/response models
+│   │   ├── admin.py          # Admin endpoints (system info, cleanup)
+│   │   ├── health.py         # Health check endpoints
+│   │   ├── jobs.py           # Job management endpoints
+│   │   └── models_configs.py # Model parameter management
 │   ├── db/                   # Database schema, operations, and data retention logic
-│   ├── services/             # Business logic services (auth, data processing, DataSphere interaction)
-│   ├── utils/                # Utility functions (error handling, validation, retry logic)
+│   │   ├── database.py       # Core database operations
+│   │   ├── schema.py         # Database table definitions
+│   │   ├── data_retention.py # Automated data cleanup
+│   │   └── feature_storage.py # Feature engineering data storage
+│   ├── services/             # Business logic services
+│   │   ├── auth.py           # Authentication service
+│   │   ├── data_processor.py # Data processing and validation
+│   │   ├── datasphere_service.py # Yandex DataSphere integration
+│   │   └── report_service.py # Report generation service
+│   ├── utils/                # Utility functions
+│   │   ├── error_handling.py # Error handling and retry logic
+│   │   ├── file_validation.py # File upload validation
+│   │   ├── retry.py          # Retry mechanisms
+│   │   └── validation.py     # Data validation utilities
 │   ├── config.py             # Configuration management (Pydantic settings)
+│   ├── logger_config.py      # Centralized logging configuration
 │   └── main.py               # FastAPI application setup and main entry point
 ├── datasphere/
 │   ├── client.py             # Yandex DataSphere client for API interactions
-│   ├── prepare_datasets.py   # Scripts for preparing datasets for DataSphere jobs
-│   └── datasphere_job/       # Code and dependencies executed within DataSphere
-│       ├── train_and_predict.py  # Core model training and prediction script for DataSphere
-│       └── requirements.txt      # Python dependencies for the DataSphere job
-│                                 # (Note: The main `plastinka_sales_predictor` package is built as a wheel and installed from the job's input archive)
-├── data/                     # Data storage (partially created at runtime)
-│   ├── plastinka.db          # SQLite database file
-│   ├── models_repository/    # Storage for trained model artifacts (e.g., .onnx files)
-│   ├── uploads/              # Temporary storage for uploaded files (runtime)
-│   ├── predictions/          # Saved prediction outputs (runtime)
-│   └── reports/              # Generated reports (runtime)
-├── logs/                     # Application logs (created at runtime)
+│   └── prepare_datasets.py   # Scripts for preparing datasets for DataSphere jobs
+├── infrastructure/           # Terraform infrastructure as code
+│   ├── modules/              # Reusable Terraform modules
+│   │   ├── datasphere_community/ # DataSphere community setup
+│   │   ├── datasphere_project/   # DataSphere project configuration
+│   │   └── service_account/      # Service account and IAM setup
+│   └── envs/
+│       └── prod/             # Production environment configuration
 ├── scripts/                  # Deployment and utility scripts
 │   └── check_environment.py  # Script to validate environment setup
 └── run.py                    # Main runner script for the API application
+```
+
+**Data Storage Structure** (created at runtime based on `DATA_ROOT_DIR`):
+```
+~/.plastinka_sales_predictor/    # Default data root directory
+├── database/
+│   └── plastinka.db            # SQLite database file
+├── models/                     # Storage for trained model artifacts (e.g., .onnx files)
+├── datasphere_input/           # Prepared datasets for DataSphere jobs
+├── datasphere_output/          # Downloaded results from DataSphere
+├── predictions/                # Saved prediction outputs
+├── reports/                    # Generated reports
+├── logs/                       # Application logs
 ```
 
 ## Troubleshooting
 
 ### Common Issues
 
-- **Database errors**: Check that SQLite is available and the `data` directory is writable
-- **Missing dependencies**: Ensure all requirements are installed with `pip install -r requirements.txt`
-- **File permission errors**: Check permissions on the `data` and `logs` directories
+- **Database errors**: Check that SQLite is available and the data directory is writable
+- **Missing dependencies**: Ensure all requirements are installed with `pip install -e ".[deployment]"`
+- **File permission errors**: Check permissions on data directories (controlled by `DATA_ROOT_DIR`)
 - **Cloud errors**: Verify your Yandex Cloud credentials and network connectivity
 - **Missing environment variables**: Run the check_environment.py script to verify your setup
 
 ### Logs
 
-Application logs are stored in `deployment/logs/app.log`
+Application logs are stored in `{DATA_ROOT_DIR}/logs/app.log` (default: `~/.plastinka_sales_predictor/logs/`)
+
+Log levels can be configured via the `API_LOG_LEVEL` environment variable:
+- `DEBUG` - Detailed debugging information
+- `INFO` - General operational messages (default)
+- `WARNING` - Warning messages
+- `ERROR` - Error messages only
 
 ### Environment Validation
 
 Run the environment checker to validate your setup:
 
 ```bash
-python deployment/scripts/check_environment.py
-``` 
+python deployment/scripts/check_environment.py .env.template
+```
+
+This script will:
+- Check Python version compatibility
+- Verify required dependencies
+- Validate environment variables
+- Test database connectivity
+- Check file system permissions
+- Generate a `.env.template` file
+
+### Performance Optimization
+
+**Database Performance:**
+- Regular database maintenance via `/api/v1/admin/cleanup`
+- Monitor database size and query performance
+- Use indexed queries for large datasets
+
+**File Storage:**
+- Configure appropriate `DATA_ROOT_DIR` location
+- Monitor disk space usage
+- Use data retention policies to manage storage
+
+**API Performance:**
+- Monitor job queue length
+- Use appropriate timeout settings for DataSphere jobs
+- Configure CORS origins for production deployment
+
+### Security Considerations
+
+**Authentication:**
+- Set strong `CLOUD_CALLBACK_AUTH_TOKEN` for DataSphere callbacks
+- Use HTTPS in production deployments
+- Configure appropriate CORS origins
+
+**Data Protection:**
+- Secure file upload validation
+- Database access controls
+- Proper error message sanitization
+
+**Cloud Security:**
+- Rotate Yandex Cloud credentials regularly
+- Use IAM roles with minimal required permissions
+- Monitor cloud resource usage 
