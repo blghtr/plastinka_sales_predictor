@@ -1,6 +1,3 @@
-import sys
-from pathlib import Path
-
 import pytest
 
 # This fixture is removed to prevent global state pollution.
@@ -49,9 +46,7 @@ import pytest
 #
 #     # monkeypatch automatically handles teardown, restoring original modules
 
-# Add the project root to sys.path to fix imports
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# Imports now work properly due to deployment/__init__.py package structure
 
 from deployment.app.models.api_models import (
     LRSchedulerConfig,
