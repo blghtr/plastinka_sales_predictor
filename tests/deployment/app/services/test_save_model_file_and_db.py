@@ -38,6 +38,7 @@ def create_test_save_model_file_and_db():
     Creates a test-friendly version of save_model_file_and_db that doesn't depend on DataSphere imports.
     This function replicates the core logic of save_model_file_and_db without the DataSphere dependencies.
     """
+
     async def test_save_model_file_and_db(
         job_id: str,
         model_path: str,
@@ -45,7 +46,7 @@ def create_test_save_model_file_and_db():
         config: TrainingConfig,
         metrics_data: dict = None,
         create_model_record_func=None,
-        get_settings_func=None
+        get_settings_func=None,
     ) -> str:
         """
         Test-friendly version of save_model_file_and_db function.
@@ -101,7 +102,7 @@ def create_test_save_model_file_and_db():
                 "permanent_storage_path": permanent_path,
                 "config_model_id_base": config.model_id,
                 "metrics": metrics_data or {},
-                "file_size_bytes": file_size
+                "file_size_bytes": file_size,
             }
 
             # Create database record
@@ -111,7 +112,7 @@ def create_test_save_model_file_and_db():
                     job_id=job_id,
                     model_path=permanent_path,
                     created_at=created_at,
-                    metadata=metadata
+                    metadata=metadata,
                 )
 
             return model_id
@@ -119,7 +120,7 @@ def create_test_save_model_file_and_db():
         except Exception as e:
             # Clean up any copied files on error
             try:
-                if 'permanent_path' in locals() and os.path.exists(permanent_path):
+                if "permanent_path" in locals() and os.path.exists(permanent_path):
                     os.remove(permanent_path)
             except Exception:
                 pass
@@ -127,7 +128,9 @@ def create_test_save_model_file_and_db():
             if isinstance(e, RuntimeError):
                 raise
             else:
-                raise RuntimeError(f"Failed to save model file and create DB record: {str(e)}") from e
+                raise RuntimeError(
+                    f"Failed to save model file and create DB record: {str(e)}"
+                ) from e
 
     return test_save_model_file_and_db
 
@@ -149,22 +152,13 @@ def sample_training_config():
             "batch_size": 32,
             "dropout": 0.2,
             "use_reversible_instance_norm": True,
-            "use_layer_norm": True
+            "use_layer_norm": True,
         },
-        optimizer_config={
-            "lr": 0.001,
-            "weight_decay": 0.0001
-        },
-        lr_shed_config={
-            "T_0": 10,
-            "T_mult": 2
-        },
-        train_ds_config={
-            "alpha": 0.05,
-            "span": 12
-        },
+        optimizer_config={"lr": 0.001, "weight_decay": 0.0001},
+        lr_shed_config={"T_0": 10, "T_mult": 2},
+        train_ds_config={"alpha": 0.05, "span": 12},
         lags=12,
-        quantiles=[0.05, 0.25, 0.5, 0.75, 0.95]
+        quantiles=[0.05, 0.25, 0.5, 0.75, 0.95],
     )
 
 
@@ -185,7 +179,9 @@ class TestSaveModelFileAndDb:
     """Test suite for save_model_file_and_db function using new ML-compatible architecture."""
 
     @pytest.mark.asyncio
-    async def test_save_model_file_and_db_success(self, file_operations_fs, test_db, temp_workspace, sample_training_config):
+    async def test_save_model_file_and_db_success(
+        self, file_operations_fs, test_db, temp_workspace, sample_training_config
+    ):
         """Test successful model file copying and database record creation."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
@@ -201,10 +197,13 @@ class TestSaveModelFileAndDb:
 
         # Mock settings
         mock_settings = MagicMock()
-        mock_settings.models_dir = temp_workspace['models_dir']  # Use models_dir from the workspace dict
+        mock_settings.models_dir = temp_workspace[
+            "models_dir"
+        ]  # Use models_dir from the workspace dict
 
         # Mock database operations
         captured_calls = []
+
         def mock_create_model_record(**kwargs):
             captured_calls.append(kwargs)
 
@@ -216,7 +215,7 @@ class TestSaveModelFileAndDb:
             config=sample_training_config,
             metrics_data=metrics_data,
             create_model_record_func=mock_create_model_record,
-            get_settings_func=lambda: mock_settings
+            get_settings_func=lambda: mock_settings,
         )
 
         # Assert
@@ -224,7 +223,9 @@ class TestSaveModelFileAndDb:
         assert len(result_model_id.split("_")) == 3  # test_model_{uuid}
 
         # Verify file was copied to permanent location (real filesystem)
-        expected_permanent_path = os.path.join(temp_workspace['models_dir'], f"{result_model_id}.onnx")
+        expected_permanent_path = os.path.join(
+            temp_workspace["models_dir"], f"{result_model_id}.onnx"
+        )
         assert os.path.exists(expected_permanent_path)
 
         # Verify file contents were preserved
@@ -235,23 +236,25 @@ class TestSaveModelFileAndDb:
         assert len(captured_calls) == 1
         call_kwargs = captured_calls[0]
 
-        assert call_kwargs['model_id'] == result_model_id
-        assert call_kwargs['job_id'] == job_id
-        assert call_kwargs['model_path'] == expected_permanent_path
-        assert 'created_at' in call_kwargs
-        assert 'metadata' in call_kwargs
+        assert call_kwargs["model_id"] == result_model_id
+        assert call_kwargs["job_id"] == job_id
+        assert call_kwargs["model_path"] == expected_permanent_path
+        assert "created_at" in call_kwargs
+        assert "metadata" in call_kwargs
 
         # Verify metadata structure
-        metadata = call_kwargs['metadata']
-        assert metadata['downloaded_from_ds_job'] == ds_job_id
-        assert metadata['original_temp_path'] == temp_model_path
-        assert metadata['permanent_storage_path'] == expected_permanent_path
-        assert metadata['config_model_id_base'] == "test_model"
-        assert metadata['metrics'] == metrics_data
-        assert metadata['file_size_bytes'] == len("fake model data")
+        metadata = call_kwargs["metadata"]
+        assert metadata["downloaded_from_ds_job"] == ds_job_id
+        assert metadata["original_temp_path"] == temp_model_path
+        assert metadata["permanent_storage_path"] == expected_permanent_path
+        assert metadata["config_model_id_base"] == "test_model"
+        assert metadata["metrics"] == metrics_data
+        assert metadata["file_size_bytes"] == len("fake model data")
 
     @pytest.mark.asyncio
-    async def test_save_model_file_and_db_source_not_found(self, file_operations_fs, test_db, temp_workspace, sample_training_config):
+    async def test_save_model_file_and_db_source_not_found(
+        self, file_operations_fs, test_db, temp_workspace, sample_training_config
+    ):
         """Test handling of missing source model file."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
@@ -263,7 +266,7 @@ class TestSaveModelFileAndDb:
 
         # Mock settings
         mock_settings = MagicMock()
-        mock_settings.models_dir = temp_workspace['models_dir']
+        mock_settings.models_dir = temp_workspace["models_dir"]
 
         # Act & Assert
         with pytest.raises(RuntimeError, match="Source model file not found"):
@@ -273,11 +276,18 @@ class TestSaveModelFileAndDb:
                 ds_job_id=ds_job_id,
                 config=sample_training_config,
                 metrics_data=None,
-                get_settings_func=lambda: mock_settings
+                get_settings_func=lambda: mock_settings,
             )
 
     @pytest.mark.asyncio
-    async def test_save_model_file_and_db_copy_failure(self, file_operations_fs, test_db, temp_workspace, sample_training_config, monkeypatch):
+    async def test_save_model_file_and_db_copy_failure(
+        self,
+        file_operations_fs,
+        test_db,
+        temp_workspace,
+        sample_training_config,
+        monkeypatch,
+    ):
         """Test handling of file copy failure."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
@@ -292,27 +302,36 @@ class TestSaveModelFileAndDb:
 
         # Mock settings
         mock_settings = MagicMock()
-        mock_settings.models_dir = temp_workspace['models_dir']
+        mock_settings.models_dir = temp_workspace["models_dir"]
 
         # Mock shutil.copy2 to raise an exception
         def mock_copy_failure(src, dst):
             raise OSError("Permission denied")
 
-        monkeypatch.setattr('shutil.copy2', mock_copy_failure)
+        monkeypatch.setattr("shutil.copy2", mock_copy_failure)
 
         # Act & Assert
-        with pytest.raises(RuntimeError, match="Failed to save model file and create DB record"):
+        with pytest.raises(
+            RuntimeError, match="Failed to save model file and create DB record"
+        ):
             await save_model_file_and_db(
                 job_id=job_id,
                 model_path=temp_model_path,
                 ds_job_id=ds_job_id,
                 config=sample_training_config,
                 metrics_data=None,
-                get_settings_func=lambda: mock_settings
+                get_settings_func=lambda: mock_settings,
             )
 
     @pytest.mark.asyncio
-    async def test_save_model_file_and_db_copy_verification_failure(self, file_operations_fs, test_db, temp_workspace, sample_training_config, monkeypatch):
+    async def test_save_model_file_and_db_copy_verification_failure(
+        self,
+        file_operations_fs,
+        test_db,
+        temp_workspace,
+        sample_training_config,
+        monkeypatch,
+    ):
         """Test handling of copy verification failure."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
@@ -327,16 +346,17 @@ class TestSaveModelFileAndDb:
 
         # Mock settings
         mock_settings = MagicMock()
-        mock_settings.models_dir = temp_workspace['models_dir']
+        mock_settings.models_dir = temp_workspace["models_dir"]
 
         # Mock copy2 to succeed but verification to fail
         original_copy2 = shutil.copy2
+
         def mock_copy_with_verification_failure(src, dst):
             original_copy2(src, dst)
             # Remove the file after copying to simulate verification failure
             os.remove(dst)
 
-        monkeypatch.setattr('shutil.copy2', mock_copy_with_verification_failure)
+        monkeypatch.setattr("shutil.copy2", mock_copy_with_verification_failure)
 
         # Act & Assert
         with pytest.raises(RuntimeError, match="Model file copy verification failed"):
@@ -346,11 +366,13 @@ class TestSaveModelFileAndDb:
                 ds_job_id=ds_job_id,
                 config=sample_training_config,
                 metrics_data=None,
-                get_settings_func=lambda: mock_settings
+                get_settings_func=lambda: mock_settings,
             )
 
     @pytest.mark.asyncio
-    async def test_save_model_file_and_db_database_error(self, file_operations_fs, test_db, temp_workspace, sample_training_config):
+    async def test_save_model_file_and_db_database_error(
+        self, file_operations_fs, test_db, temp_workspace, sample_training_config
+    ):
         """Test handling of database record creation failure."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
@@ -365,14 +387,16 @@ class TestSaveModelFileAndDb:
 
         # Mock settings
         mock_settings = MagicMock()
-        mock_settings.models_dir = temp_workspace['models_dir']
+        mock_settings.models_dir = temp_workspace["models_dir"]
 
         # Mock create_model_record to raise an exception
         def mock_create_model_record(**kwargs):
             raise sqlite3.OperationalError("Database error")
 
         # Act & Assert
-        with pytest.raises(RuntimeError, match="Failed to save model file and create DB record"):
+        with pytest.raises(
+            RuntimeError, match="Failed to save model file and create DB record"
+        ):
             await save_model_file_and_db(
                 job_id=job_id,
                 model_path=temp_model_path,
@@ -380,17 +404,23 @@ class TestSaveModelFileAndDb:
                 config=sample_training_config,
                 metrics_data=None,
                 create_model_record_func=mock_create_model_record,
-                get_settings_func=lambda: mock_settings
+                get_settings_func=lambda: mock_settings,
             )
 
         # Verify that the permanent file was created but database failed
         # (The function should still fail, but file should exist)
         result_model_id_prefix = f"{sample_training_config.model_id}_"
-        model_files = [f for f in os.listdir(temp_workspace['models_dir']) if f.startswith(result_model_id_prefix)]
+        model_files = [
+            f
+            for f in os.listdir(temp_workspace["models_dir"])
+            if f.startswith(result_model_id_prefix)
+        ]
         assert len(model_files) == 0  # File should be cleaned up on error
 
     @pytest.mark.asyncio
-    async def test_save_model_file_and_db_metadata_preservation(self, file_operations_fs, test_db, temp_workspace, sample_training_config):
+    async def test_save_model_file_and_db_metadata_preservation(
+        self, file_operations_fs, test_db, temp_workspace, sample_training_config
+    ):
         """Test that metadata is correctly preserved and structured."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
@@ -404,7 +434,7 @@ class TestSaveModelFileAndDb:
             "val_loss": 0.03,
             "train_loss": 0.025,
             "epochs": 50,
-            "early_stopping": True
+            "early_stopping": True,
         }
 
         # Create source model file with specific content
@@ -413,10 +443,11 @@ class TestSaveModelFileAndDb:
 
         # Mock settings
         mock_settings = MagicMock()
-        mock_settings.models_dir = temp_workspace['models_dir']
+        mock_settings.models_dir = temp_workspace["models_dir"]
 
         # Mock database operations to capture metadata
         captured_metadata = {}
+
         def capture_metadata(**kwargs):
             captured_metadata.update(kwargs)
 
@@ -428,34 +459,38 @@ class TestSaveModelFileAndDb:
             config=sample_training_config,
             metrics_data=complex_metrics,
             create_model_record_func=capture_metadata,
-            get_settings_func=lambda: mock_settings
+            get_settings_func=lambda: mock_settings,
         )
 
         # Assert metadata structure and content
-        metadata = captured_metadata['metadata']
+        metadata = captured_metadata["metadata"]
 
         # Basic structure
-        assert 'downloaded_from_ds_job' in metadata
-        assert 'original_temp_path' in metadata
-        assert 'permanent_storage_path' in metadata
-        assert 'config_model_id_base' in metadata
-        assert 'metrics' in metadata
-        assert 'file_size_bytes' in metadata
+        assert "downloaded_from_ds_job" in metadata
+        assert "original_temp_path" in metadata
+        assert "permanent_storage_path" in metadata
+        assert "config_model_id_base" in metadata
+        assert "metrics" in metadata
+        assert "file_size_bytes" in metadata
 
         # Specific values
-        assert metadata['downloaded_from_ds_job'] == ds_job_id
-        assert metadata['original_temp_path'] == temp_model_path
-        assert metadata['permanent_storage_path'].endswith(f"{result_model_id}.onnx")
-        assert metadata['config_model_id_base'] == sample_training_config.model_id
-        assert metadata['metrics'] == complex_metrics
-        assert metadata['file_size_bytes'] == len(model_content)
+        assert metadata["downloaded_from_ds_job"] == ds_job_id
+        assert metadata["original_temp_path"] == temp_model_path
+        assert metadata["permanent_storage_path"].endswith(f"{result_model_id}.onnx")
+        assert metadata["config_model_id_base"] == sample_training_config.model_id
+        assert metadata["metrics"] == complex_metrics
+        assert metadata["file_size_bytes"] == len(model_content)
 
         # Verify paths are correctly formed
-        expected_permanent_path = os.path.join(temp_workspace['models_dir'], f"{result_model_id}.onnx")
-        assert metadata['permanent_storage_path'] == expected_permanent_path
+        expected_permanent_path = os.path.join(
+            temp_workspace["models_dir"], f"{result_model_id}.onnx"
+        )
+        assert metadata["permanent_storage_path"] == expected_permanent_path
 
     @pytest.mark.asyncio
-    async def test_save_model_file_and_db_no_metrics(self, file_operations_fs, test_db, temp_workspace, sample_training_config):
+    async def test_save_model_file_and_db_no_metrics(
+        self, file_operations_fs, test_db, temp_workspace, sample_training_config
+    ):
         """Test handling when metrics_data is None."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
@@ -466,14 +501,17 @@ class TestSaveModelFileAndDb:
         temp_model_path = "/fake/temp/model_no_metrics.onnx"
 
         # Create source model file
-        file_operations_fs.create_file(temp_model_path, contents="model without metrics")
+        file_operations_fs.create_file(
+            temp_model_path, contents="model without metrics"
+        )
 
         # Mock settings
         mock_settings = MagicMock()
-        mock_settings.models_dir = temp_workspace['models_dir']
+        mock_settings.models_dir = temp_workspace["models_dir"]
 
         # Mock database operations
         captured_metadata = {}
+
         def capture_metadata(**kwargs):
             captured_metadata.update(kwargs)
 
@@ -485,23 +523,25 @@ class TestSaveModelFileAndDb:
             config=sample_training_config,
             metrics_data=None,
             create_model_record_func=capture_metadata,
-            get_settings_func=lambda: mock_settings
+            get_settings_func=lambda: mock_settings,
         )
 
         # Assert
         assert result_model_id.startswith("test_model_")
 
         # Verify that metrics is an empty dict when None is passed
-        metadata = captured_metadata['metadata']
-        assert metadata['metrics'] == {}
+        metadata = captured_metadata["metadata"]
+        assert metadata["metrics"] == {}
 
         # Other metadata should still be present
-        assert metadata['downloaded_from_ds_job'] == ds_job_id
-        assert metadata['original_temp_path'] == temp_model_path
-        assert metadata['config_model_id_base'] == sample_training_config.model_id
+        assert metadata["downloaded_from_ds_job"] == ds_job_id
+        assert metadata["original_temp_path"] == temp_model_path
+        assert metadata["config_model_id_base"] == sample_training_config.model_id
 
     @pytest.mark.asyncio
-    async def test_save_model_file_and_db_unique_model_ids(self, file_operations_fs, test_db, temp_workspace, sample_training_config):
+    async def test_save_model_file_and_db_unique_model_ids(
+        self, file_operations_fs, test_db, temp_workspace, sample_training_config
+    ):
         """Test that multiple calls generate unique model IDs."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
@@ -518,7 +558,7 @@ class TestSaveModelFileAndDb:
 
         # Mock settings
         mock_settings = MagicMock()
-        mock_settings.models_dir = temp_workspace['models_dir']
+        mock_settings.models_dir = temp_workspace["models_dir"]
 
         # Mock database operations
         def mock_create_model_record(**kwargs):
@@ -532,7 +572,7 @@ class TestSaveModelFileAndDb:
             config=sample_training_config,
             metrics_data=None,
             create_model_record_func=mock_create_model_record,
-            get_settings_func=lambda: mock_settings
+            get_settings_func=lambda: mock_settings,
         )
 
         result_id_2 = await save_model_file_and_db(
@@ -542,7 +582,7 @@ class TestSaveModelFileAndDb:
             config=sample_training_config,
             metrics_data=None,
             create_model_record_func=mock_create_model_record,
-            get_settings_func=lambda: mock_settings
+            get_settings_func=lambda: mock_settings,
         )
 
         # Assert
@@ -551,8 +591,12 @@ class TestSaveModelFileAndDb:
         assert result_id_2.startswith("test_model_")
 
         # Verify both files were created with different names
-        expected_path_1 = os.path.join(temp_workspace['models_dir'], f"{result_id_1}.onnx")
-        expected_path_2 = os.path.join(temp_workspace['models_dir'], f"{result_id_2}.onnx")
+        expected_path_1 = os.path.join(
+            temp_workspace["models_dir"], f"{result_id_1}.onnx"
+        )
+        expected_path_2 = os.path.join(
+            temp_workspace["models_dir"], f"{result_id_2}.onnx"
+        )
 
         assert os.path.exists(expected_path_1)
         assert os.path.exists(expected_path_2)

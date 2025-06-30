@@ -68,11 +68,13 @@ class TestUtilityFunctions:
         # For cross-platform compatibility, just check it's the expected structure
         assert "plastinka_sales_predictor" in result
 
-    @patch('deployment.app.config.logger')
-    @patch('deployment.app.config.Path')
-    @patch('deployment.app.config.tempfile.gettempdir')
-    @patch('deployment.app.config.os.path.join')
-    def test_get_default_data_root_dir_fallback_to_temp(self, mock_join, mock_gettempdir, mock_path, mock_logger):
+    @patch("deployment.app.config.logger")
+    @patch("deployment.app.config.Path")
+    @patch("deployment.app.config.tempfile.gettempdir")
+    @patch("deployment.app.config.os.path.join")
+    def test_get_default_data_root_dir_fallback_to_temp(
+        self, mock_join, mock_gettempdir, mock_path, mock_logger
+    ):
         """Test fallback to temp directory when home directory fails."""
         # Arrange
         mock_path.side_effect = RuntimeError("Home directory not available")
@@ -88,12 +90,14 @@ class TestUtilityFunctions:
         mock_logger.info.assert_called()
         mock_gettempdir.assert_called_once()
 
-    @patch('deployment.app.config.logger')
-    @patch('deployment.app.config.Path')
-    @patch('deployment.app.config.tempfile.gettempdir')
-    @patch('deployment.app.config.os.getcwd')
-    @patch('deployment.app.config.os.path.join')
-    def test_get_default_data_root_dir_final_fallback(self, mock_join, mock_getcwd, mock_gettempdir, mock_path, mock_logger):
+    @patch("deployment.app.config.logger")
+    @patch("deployment.app.config.Path")
+    @patch("deployment.app.config.tempfile.gettempdir")
+    @patch("deployment.app.config.os.getcwd")
+    @patch("deployment.app.config.os.path.join")
+    def test_get_default_data_root_dir_final_fallback(
+        self, mock_join, mock_getcwd, mock_gettempdir, mock_path, mock_logger
+    ):
         """Test final fallback to current working directory when all else fails."""
         # Arrange
         mock_path.side_effect = RuntimeError("Home directory not available")
@@ -167,7 +171,7 @@ api:
         # Clear the cache and set environment variable
         get_config_values.cache_clear()
 
-        with patch.dict(os.environ, {'CONFIG_FILE_PATH': config_path}):
+        with patch.dict(os.environ, {"CONFIG_FILE_PATH": config_path}):
             # Act
             result = get_config_values()
 
@@ -186,9 +190,9 @@ api:
         # Assert
         assert result == {}
 
-    @patch('deployment.app.config.logger')
-    @patch.dict(os.environ, {'CONFIG_FILE_PATH': '/test/config.yaml'})
-    @patch('deployment.app.config.load_config_file')
+    @patch("deployment.app.config.logger")
+    @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
+    @patch("deployment.app.config.load_config_file")
     def test_get_config_values_load_error(self, mock_load_config, mock_logger):
         """Test get_config_values handles config loading errors gracefully."""
         # Arrange
@@ -204,7 +208,7 @@ api:
         assert result == {}
         mock_logger.error.assert_called_once()
 
-    @patch('deployment.app.config.get_config_values')
+    @patch("deployment.app.config.get_config_values")
     def test_config_section_getters(self, mock_get_config):
         """Test all config section getter functions."""
         # Arrange
@@ -213,7 +217,7 @@ api:
             "db": {"filename": "db.sqlite"},
             "datasphere": {"project_id": "test-project"},
             "data_retention": {"cleanup_enabled": True},
-            "other": {"value": "test"}
+            "other": {"value": "test"},
         }
         mock_get_config.return_value = full_config
 
@@ -224,8 +228,8 @@ api:
         assert get_data_retention_config() == {"cleanup_enabled": True}
         assert get_app_config() == {"other": {"value": "test"}}
 
-    @patch('deployment.app.config.logger')
-    @patch('deployment.app.config.Path')
+    @patch("deployment.app.config.logger")
+    @patch("deployment.app.config.Path")
     def test_ensure_directory_exists_file_path(self, mock_path_class, mock_logger):
         """Test ensure_directory_exists creates parent directory for file paths."""
         # Arrange
@@ -239,10 +243,12 @@ api:
 
         # Assert
         assert result == "/test/path/file.txt"
-        mock_path_instance.parent.mkdir.assert_called_once_with(parents=True, exist_ok=True)
+        mock_path_instance.parent.mkdir.assert_called_once_with(
+            parents=True, exist_ok=True
+        )
 
-    @patch('deployment.app.config.logger')
-    @patch('deployment.app.config.Path')
+    @patch("deployment.app.config.logger")
+    @patch("deployment.app.config.Path")
     def test_ensure_directory_exists_directory_path(self, mock_path_class, mock_logger):
         """Test ensure_directory_exists creates directory for directory paths."""
         # Arrange
@@ -274,7 +280,9 @@ class TestAPISettings:
         get_config_values.cache_clear()
 
     @patch.dict(os.environ, {}, clear=True)
-    @patch('pydantic_settings.sources.DotEnvSettingsSource.__call__', return_value={})  # Disable .env loading
+    @patch(
+        "pydantic_settings.sources.DotEnvSettingsSource.__call__", return_value={}
+    )  # Disable .env loading
     def test_api_settings_defaults(self, mock_dotenv):
         """Test APISettings uses correct default values."""
         # Act
@@ -289,16 +297,21 @@ class TestAPISettings:
         assert settings.x_api_key == ""
         assert settings.log_level == "INFO"
 
-    @patch.dict(os.environ, {
-        'API_HOST': '127.0.0.1',
-        'API_PORT': '9000',
-        'API_DEBUG': 'true',
-        'API_ALLOWED_ORIGINS': '["http://test1.com", "http://test2.com"]',
-        'API_API_KEY': 'test-api-key',
-        'API_X_API_KEY': 'test-x-api-key',
-        'API_LOG_LEVEL': 'DEBUG'
-    })
-    @patch('pydantic_settings.sources.DotEnvSettingsSource.__call__', return_value={})  # Disable .env loading
+    @patch.dict(
+        os.environ,
+        {
+            "API_HOST": "127.0.0.1",
+            "API_PORT": "9000",
+            "API_DEBUG": "true",
+            "API_ALLOWED_ORIGINS": '["http://test1.com", "http://test2.com"]',
+            "API_API_KEY": "test-api-key",
+            "API_X_API_KEY": "test-x-api-key",
+            "API_LOG_LEVEL": "DEBUG",
+        },
+    )
+    @patch(
+        "pydantic_settings.sources.DotEnvSettingsSource.__call__", return_value={}
+    )  # Disable .env loading
     def test_api_settings_from_environment(self, mock_dotenv):
         """Test APISettings loads values from environment variables."""
         # Act
@@ -329,12 +342,14 @@ class TestAPISettings:
         # Assert
         assert settings.allowed_origins == ["http://test1.com", "http://test2.com"]
 
-    @patch.dict(os.environ, {'CONFIG_FILE_PATH': '/test/config.yaml'})
-    @patch('deployment.app.config.load_config_file')
+    @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
+    @patch("deployment.app.config.load_config_file")
     def test_api_settings_custom_sources(self, mock_load_config_file):
         """Test APISettings custom configuration sources."""
         # Arrange
-        mock_load_config_file.return_value = {"api": {"host": "config-host", "port": 3000}}
+        mock_load_config_file.return_value = {
+            "api": {"host": "config-host", "port": 3000}
+        }
         # Clear the LRU cache so get_config_values can be called again
         get_config_values.cache_clear()
 
@@ -342,7 +357,7 @@ class TestAPISettings:
         settings = APISettings()
 
         # Assert - config file values should be loaded
-        mock_load_config_file.assert_called_once_with('/test/config.yaml')
+        mock_load_config_file.assert_called_once_with("/test/config.yaml")
         # The settings should use config values when available
         assert settings.host == "config-host"
         assert settings.port == 3000
@@ -364,7 +379,7 @@ class TestDatabaseSettings:
         # Assert
         assert settings.filename == "plastinka.db"
 
-    @patch.dict(os.environ, {'DB_FILENAME': 'custom.db'})
+    @patch.dict(os.environ, {"DB_FILENAME": "custom.db"})
     def test_database_settings_from_environment(self):
         """Test DatabaseSettings loads values from environment variables."""
         # Act
@@ -373,8 +388,8 @@ class TestDatabaseSettings:
         # Assert
         assert settings.filename == "custom.db"
 
-    @patch.dict(os.environ, {'CONFIG_FILE_PATH': '/test/config.yaml'})
-    @patch('deployment.app.config.load_config_file')
+    @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
+    @patch("deployment.app.config.load_config_file")
     def test_database_settings_custom_sources(self, mock_load_config_file):
         """Test DatabaseSettings custom configuration sources."""
         # Arrange
@@ -386,7 +401,7 @@ class TestDatabaseSettings:
         settings = DatabaseSettings()
 
         # Assert
-        mock_load_config_file.assert_called_once_with('/test/config.yaml')
+        mock_load_config_file.assert_called_once_with("/test/config.yaml")
         assert settings.filename == "config.db"
 
 
@@ -402,7 +417,7 @@ class TestTrainJobSettings:
         # Assert
         assert settings.wheel_build_timeout_seconds == 300
 
-    @patch.dict(os.environ, {'DATASPHERE_TRAIN_JOB_WHEEL_BUILD_TIMEOUT_SECONDS': '600'})
+    @patch.dict(os.environ, {"DATASPHERE_TRAIN_JOB_WHEEL_BUILD_TIMEOUT_SECONDS": "600"})
     def test_train_job_settings_from_environment(self):
         """Test TrainJobSettings loads values from environment variables."""
         # Act
@@ -420,7 +435,9 @@ class TestDataSphereSettings:
         get_config_values.cache_clear()
 
     @patch.dict(os.environ, {}, clear=True)
-    @patch('pydantic_settings.sources.DotEnvSettingsSource.__call__', return_value={})  # Disable .env loading
+    @patch(
+        "pydantic_settings.sources.DotEnvSettingsSource.__call__", return_value={}
+    )  # Disable .env loading
     def test_datasphere_settings_defaults(self, mock_dotenv):
         """Test DataSphereSettings uses correct default values."""
         # Act
@@ -441,15 +458,18 @@ class TestDataSphereSettings:
         assert settings.client_cancel_timeout_seconds == 60
         assert isinstance(settings.train_job, TrainJobSettings)
 
-    @patch.dict(os.environ, {
-        'DATASPHERE_PROJECT_ID': 'test-project',
-        'DATASPHERE_FOLDER_ID': 'test-folder',
-        'DATASPHERE_OAUTH_TOKEN': 'test-token',
-        'DATASPHERE_YC_PROFILE': 'test-profile',
-        'DATASPHERE_MAX_POLLS': '200',
-        'DATASPHERE_POLL_INTERVAL': '10.0',
-        'DATASPHERE_DOWNLOAD_DIAGNOSTICS_ON_SUCCESS': 'true'
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "DATASPHERE_PROJECT_ID": "test-project",
+            "DATASPHERE_FOLDER_ID": "test-folder",
+            "DATASPHERE_OAUTH_TOKEN": "test-token",
+            "DATASPHERE_YC_PROFILE": "test-profile",
+            "DATASPHERE_MAX_POLLS": "200",
+            "DATASPHERE_POLL_INTERVAL": "10.0",
+            "DATASPHERE_DOWNLOAD_DIAGNOSTICS_ON_SUCCESS": "true",
+        },
+    )
     def test_datasphere_settings_from_environment(self):
         """Test DataSphereSettings loads values from environment variables."""
         # Act
@@ -471,7 +491,7 @@ class TestDataSphereSettings:
             project_id="test-project",
             folder_id="test-folder",
             oauth_token="test-token",
-            yc_profile="test-profile"
+            yc_profile="test-profile",
         )
 
         # Act
@@ -482,16 +502,18 @@ class TestDataSphereSettings:
             "project_id": "test-project",
             "folder_id": "test-folder",
             "oauth_token": "test-token",
-            "yc_profile": "test-profile"
+            "yc_profile": "test-profile",
         }
         assert client_config == expected
 
-    @patch.dict(os.environ, {'CONFIG_FILE_PATH': '/test/config.yaml'})
-    @patch('deployment.app.config.load_config_file')
+    @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
+    @patch("deployment.app.config.load_config_file")
     def test_datasphere_settings_custom_sources(self, mock_load_config_file):
         """Test DataSphereSettings custom configuration sources."""
         # Arrange
-        mock_load_config_file.return_value = {"datasphere": {"project_id": "config-project"}}
+        mock_load_config_file.return_value = {
+            "datasphere": {"project_id": "config-project"}
+        }
         # Clear the LRU cache so get_config_values can be called again
         get_config_values.cache_clear()
 
@@ -499,7 +521,7 @@ class TestDataSphereSettings:
         settings = DataSphereSettings()
 
         # Assert
-        mock_load_config_file.assert_called_once_with('/test/config.yaml')
+        mock_load_config_file.assert_called_once_with("/test/config.yaml")
         assert settings.project_id == "config-project"
 
 
@@ -521,7 +543,7 @@ class TestDataRetentionSettings:
         assert settings.cleanup_enabled is True
         assert settings.cleanup_schedule == "0 3 * * 0"
 
-    @patch('pydantic_settings.sources.EnvSettingsSource.__call__')
+    @patch("pydantic_settings.sources.EnvSettingsSource.__call__")
     def test_data_retention_settings_from_environment(self, mock_env_source):
         """
         Test DataRetentionSettings loads values from environment variables.
@@ -530,13 +552,13 @@ class TestDataRetentionSettings:
         """
         # Arrange
         mock_env_source.return_value = {
-            'sales_retention_days': 365,
-            'stock_retention_days': 180,
-            'prediction_retention_days': 90,
-            'models_to_keep': 10,
-            'inactive_model_retention_days': 30,
-            'cleanup_enabled': False,
-            'cleanup_schedule': '0 2 * * 1'
+            "sales_retention_days": 365,
+            "stock_retention_days": 180,
+            "prediction_retention_days": 90,
+            "models_to_keep": 10,
+            "inactive_model_retention_days": 30,
+            "cleanup_enabled": False,
+            "cleanup_schedule": "0 2 * * 1",
         }
 
         # Act: Create a new instance, which will use the patched source
@@ -549,14 +571,16 @@ class TestDataRetentionSettings:
         assert settings.models_to_keep == 10
         assert settings.inactive_model_retention_days == 30
         assert settings.cleanup_enabled is False
-        assert settings.cleanup_schedule == '0 2 * * 1'
+        assert settings.cleanup_schedule == "0 2 * * 1"
 
-    @patch.dict(os.environ, {'CONFIG_FILE_PATH': '/test/config.yaml'})
-    @patch('deployment.app.config.load_config_file')
+    @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
+    @patch("deployment.app.config.load_config_file")
     def test_data_retention_settings_custom_sources(self, mock_load_config_file):
         """Test DataRetentionSettings custom configuration sources."""
         # Arrange
-        mock_load_config_file.return_value = {"data_retention": {"cleanup_enabled": False}}
+        mock_load_config_file.return_value = {
+            "data_retention": {"cleanup_enabled": False}
+        }
         # Clear the LRU cache so get_config_values can be called again
         get_config_values.cache_clear()
 
@@ -564,7 +588,7 @@ class TestDataRetentionSettings:
         settings = DataRetentionSettings()
 
         # Assert
-        mock_load_config_file.assert_called_once_with('/test/config.yaml')
+        mock_load_config_file.assert_called_once_with("/test/config.yaml")
         assert settings.cleanup_enabled is False
 
 
@@ -575,10 +599,11 @@ class TestAppSettings:
         """Setup method to clear LRU cache before each test."""
         get_config_values.cache_clear()
 
-    @patch.dict(os.environ, {
-        'DATA_ROOT_DIR': '/default/data/root',
-        'PROJECT_ROOT_DIR': '/project/root'
-    }, clear=True)
+    @patch.dict(
+        os.environ,
+        {"DATA_ROOT_DIR": "/default/data/root", "PROJECT_ROOT_DIR": "/project/root"},
+        clear=True,
+    )
     def test_app_settings_defaults(self):
         """Test AppSettings uses correct default values."""
         # Act
@@ -602,22 +627,31 @@ class TestAppSettings:
     def test_app_settings_from_environment(self):
         """Test AppSettings loads values from environment variables."""
         # Use patch.dict with clear=True
-        with patch.dict(os.environ, {
-            'ENV': 'production',
-            'CALLBACK_BASE_URL': 'https://prod.example.com',
-            'CALLBACK_AUTH_TOKEN': 'prod-token',
-            'MAX_UPLOAD_SIZE': '104857600',  # 100MB
-            'TEMP_UPLOAD_DIR': '/tmp/uploads',
-            'MAX_MODELS_TO_KEEP': '10',
-            'FILE_STORAGE_DIR': '/var/storage',
-            'DEFAULT_METRIC': 'accuracy',
-            'DEFAULT_METRIC_HIGHER_IS_BETTER': 'false',
-            'AUTO_SELECT_BEST_CONFIGS': 'false',
-            'AUTO_SELECT_BEST_MODEL': 'false',
-            'PROJECT_ROOT_DIR': '/custom/project',
-            'DATA_ROOT_DIR': '/custom/data'
-        }, clear=True), \
-        patch('pydantic_settings.sources.DotEnvSettingsSource.__call__', return_value={}):  # Disable .env loading
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ENV": "production",
+                    "CALLBACK_BASE_URL": "https://prod.example.com",
+                    "CALLBACK_AUTH_TOKEN": "prod-token",
+                    "MAX_UPLOAD_SIZE": "104857600",  # 100MB
+                    "TEMP_UPLOAD_DIR": "/tmp/uploads",
+                    "MAX_MODELS_TO_KEEP": "10",
+                    "FILE_STORAGE_DIR": "/var/storage",
+                    "DEFAULT_METRIC": "accuracy",
+                    "DEFAULT_METRIC_HIGHER_IS_BETTER": "false",
+                    "AUTO_SELECT_BEST_CONFIGS": "false",
+                    "AUTO_SELECT_BEST_MODEL": "false",
+                    "PROJECT_ROOT_DIR": "/custom/project",
+                    "DATA_ROOT_DIR": "/custom/data",
+                },
+                clear=True,
+            ),
+            patch(
+                "pydantic_settings.sources.DotEnvSettingsSource.__call__",
+                return_value={},
+            ),
+        ):  # Disable .env loading
             # Create a completely new instance
             settings = AppSettings()
 
@@ -634,6 +668,7 @@ class TestAppSettings:
             assert settings.auto_select_best_configs is False
             assert settings.auto_select_best_model is False
             assert settings.data_root_dir == "/custom/data"
+
             # For project_root_dir, use cross-platform path comparison
             def normalize_path(path):
                 """Normalize path for cross-platform comparison."""
@@ -645,15 +680,16 @@ class TestAppSettings:
                 while "//" in normalized:
                     normalized = normalized.replace("//", "/")
                 return normalized
+
             expected_project_path = "/custom/project"
             actual_project_path = normalize_path(settings.project_root_dir)
             assert actual_project_path == expected_project_path
 
-    @patch('deployment.app.config.ensure_directory_exists', side_effect=lambda x: x)
+    @patch("deployment.app.config.ensure_directory_exists", side_effect=lambda x: x)
     def test_app_settings_computed_properties(self, mock_ensure_dir):
         """Test AppSettings computed properties for directory paths."""
         # Arrange - use forward slashes for cross-platform compatibility
-        with patch.dict(os.environ, {'DATA_ROOT_DIR': '/test/data'}, clear=True):
+        with patch.dict(os.environ, {"DATA_ROOT_DIR": "/test/data"}, clear=True):
             settings = AppSettings()
 
         # Act & Assert - normalize path separators for Windows compatibility
@@ -672,7 +708,7 @@ class TestAppSettings:
     def test_app_settings_datasphere_job_properties(self):
         """Test AppSettings DataSphere job-related properties."""
         # Use patch.dict with clear=True
-        with patch.dict(os.environ, {'PROJECT_ROOT_DIR': '/project/root'}, clear=True):
+        with patch.dict(os.environ, {"PROJECT_ROOT_DIR": "/project/root"}, clear=True):
             settings = AppSettings()
 
         # Act & Assert - normalize paths properly
@@ -691,14 +727,16 @@ class TestAppSettings:
         actual_job_dir = normalize_path(settings.datasphere_job_dir)
         assert actual_job_dir == expected_job_dir
 
-        expected_config_path = "/project/root/plastinka_sales_predictor/datasphere_job/config.yaml"
+        expected_config_path = (
+            "/project/root/plastinka_sales_predictor/datasphere_job/config.yaml"
+        )
         actual_config_path = normalize_path(settings.datasphere_job_config_path)
         assert actual_config_path == expected_config_path
 
     def test_app_settings_project_root_validation(self):
         """Test AppSettings validates and resolves project_root_dir."""
         # Use patch.dict with clear=True
-        with patch.dict(os.environ, {'PROJECT_ROOT_DIR': '/test/project'}, clear=True):
+        with patch.dict(os.environ, {"PROJECT_ROOT_DIR": "/test/project"}, clear=True):
             settings = AppSettings()
 
         # Assert - just check the path contains our expected path
@@ -717,8 +755,8 @@ class TestAppSettings:
         actual_path = normalize_path(settings.project_root_dir)
         assert actual_path == expected_path
 
-    @patch.dict(os.environ, {'CONFIG_FILE_PATH': '/test/config.yaml'})
-    @patch('deployment.app.config.load_config_file')
+    @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
+    @patch("deployment.app.config.load_config_file")
     def test_app_settings_custom_sources(self, mock_load_config_file):
         """Test AppSettings custom configuration sources."""
         # Arrange
@@ -730,7 +768,7 @@ class TestAppSettings:
         settings = AppSettings()
 
         # Assert
-        mock_load_config_file.assert_called_once_with('/test/config.yaml')
+        mock_load_config_file.assert_called_once_with("/test/config.yaml")
         assert settings.env == "config-env"
 
 
@@ -741,8 +779,8 @@ class TestConfigurationPrecedence:
         """Setup method to clear LRU cache before each test."""
         get_config_values.cache_clear()
 
-    @patch('deployment.app.config.get_api_config')
-    @patch.dict(os.environ, {'HOST': 'env-host'})
+    @patch("deployment.app.config.get_api_config")
+    @patch.dict(os.environ, {"HOST": "env-host"})
     def test_precedence_init_over_env(self, mock_get_api_config):
         """Test that init arguments take precedence over environment variables."""
         # Arrange
@@ -754,8 +792,10 @@ class TestConfigurationPrecedence:
         # Assert
         assert settings.host == "init-host"  # init wins over env
 
-    @patch.dict(os.environ, {'CONFIG_FILE_PATH': '/test/config.yaml', 'API_HOST': 'env-host'})
-    @patch('deployment.app.config.load_config_file')
+    @patch.dict(
+        os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml", "API_HOST": "env-host"}
+    )
+    @patch("deployment.app.config.load_config_file")
     def test_precedence_config_file_over_env(self, mock_load_config_file):
         """Test that config file values take precedence over environment variables."""
         # Arrange
@@ -767,7 +807,7 @@ class TestConfigurationPrecedence:
         settings = APISettings()
 
         # Assert
-        mock_load_config_file.assert_called_once_with('/test/config.yaml')
+        mock_load_config_file.assert_called_once_with("/test/config.yaml")
         assert settings.host == "config-host"
 
 
@@ -778,14 +818,14 @@ class TestErrorHandling:
         """Setup method to clear LRU cache before each test."""
         get_config_values.cache_clear()
 
-    @patch.dict(os.environ, {'API_PORT': 'invalid-port'})
+    @patch.dict(os.environ, {"API_PORT": "invalid-port"})
     def test_invalid_environment_variable_type(self):
         """Test handling of invalid environment variable types."""
         # Act & Assert
         with pytest.raises(ValidationError):
             APISettings()
 
-    @patch.dict(os.environ, {'DATASPHERE_MAX_POLLS': 'not-a-number'})
+    @patch.dict(os.environ, {"DATASPHERE_MAX_POLLS": "not-a-number"})
     def test_invalid_numeric_environment_variable(self):
         """Test handling of invalid numeric environment variables."""
         # Act & Assert
@@ -850,18 +890,18 @@ class TestIntegration:
 
         # Verify it's an AppSettings instance
         assert isinstance(settings, AppSettings)
-        assert hasattr(settings, 'api')
-        assert hasattr(settings, 'db')
-        assert hasattr(settings, 'datasphere')
-        assert hasattr(settings, 'data_retention')
+        assert hasattr(settings, "api")
+        assert hasattr(settings, "db")
+        assert hasattr(settings, "datasphere")
+        assert hasattr(settings, "data_retention")
 
-    @patch('deployment.app.config.get_config_values')
+    @patch("deployment.app.config.get_config_values")
     def test_nested_settings_integration(self, mock_get_config_values):
         """Test that nested settings work correctly within AppSettings."""
         # Arrange
         mock_get_config_values.return_value = {
             "api": {"host": "nested-host"},
-            "db": {"filename": "nested.db"}
+            "db": {"filename": "nested.db"},
         }
 
         # Act
@@ -873,7 +913,7 @@ class TestIntegration:
         assert isinstance(app_settings.datasphere, DataSphereSettings)
         assert isinstance(app_settings.data_retention, DataRetentionSettings)
 
-    @patch('deployment.app.config.ensure_directory_exists')
+    @patch("deployment.app.config.ensure_directory_exists")
     def test_end_to_end_configuration_loading(self, mock_ensure_dir):
         """Test end-to-end configuration loading with all components."""
         # Arrange
@@ -884,7 +924,7 @@ class TestIntegration:
             env="testing",
             data_root_dir="/test/data",
             api=APISettings(host="test-host", port=9000),
-            db=DatabaseSettings(filename="test.db")
+            db=DatabaseSettings(filename="test.db"),
         )
 
         # Assert - Verify the configuration was loaded correctly

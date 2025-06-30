@@ -22,15 +22,15 @@ logger = logging.getLogger(__name__)
 # If DataSphere extends the enum, add the new values here – keeping mapping logic
 # isolated in this module avoids scattering magic numbers across the codebase.
 JOB_STATUS_MAP: dict[int, str] = {
-    0: "unspecified",     # JOB_STATUS_UNSPECIFIED
-    1: "pending",         # CREATING
-    2: "running",         # EXECUTING ✓ confirmed
-    3: "running",         # UPLOADING_OUTPUT
-    4: "completed",       # SUCCESS
-    5: "failed",          # ERROR ✓ confirmed
-    6: "cancelled",       # CANCELLED ✓ confirmed
-    7: "cancelling",      # CANCELLING
-    8: "pending",         # PREPARING
+    0: "unspecified",  # JOB_STATUS_UNSPECIFIED
+    1: "pending",  # CREATING
+    2: "running",  # EXECUTING ✓ confirmed
+    3: "running",  # UPLOADING_OUTPUT
+    4: "completed",  # SUCCESS
+    5: "failed",  # ERROR ✓ confirmed
+    6: "cancelled",  # CANCELLED ✓ confirmed
+    7: "cancelling",  # CANCELLING
+    8: "pending",  # PREPARING
 }
 
 
@@ -59,13 +59,20 @@ def _normalize_status(raw_status) -> str:
 
 class DataSphereClientError(Exception):
     """Custom exception for DataSphere client errors."""
+
     pass
 
 
 class DataSphereClient:
     """Client for interacting with Yandex DataSphere Jobs using official DataSphere client."""
 
-    def __init__(self, project_id: str, folder_id: str, oauth_token: str = None, yc_profile: str = None):
+    def __init__(
+        self,
+        project_id: str,
+        folder_id: str,
+        oauth_token: str = None,
+        yc_profile: str = None,
+    ):
         """
         Initializes the DataSphere client.
 
@@ -85,11 +92,15 @@ class DataSphereClient:
         self.folder_id = folder_id
 
         try:
-            self._client = DatasphereClient(oauth_token=oauth_token, yc_profile=yc_profile)
+            self._client = DatasphereClient(
+                oauth_token=oauth_token, yc_profile=yc_profile
+            )
             logger.info("DataSphere client initialized successfully.")
         except Exception as e:
             logger.exception(f"Failed to initialize DataSphere client: {e}")
-            raise DataSphereClientError(f"Failed to initialize official DataSphere client: {e}") from e
+            raise DataSphereClientError(
+                f"Failed to initialize official DataSphere client: {e}"
+            ) from e
 
         logger.info(
             f"DataSphereClient initialized. Project ID: '{self.project_id}', Folder ID: '{self.folder_id}'"
@@ -109,7 +120,9 @@ class DataSphereClient:
         Raises:
             DataSphereClientError: If preparation fails.
         """
-        logger.info(f"Preparing job with local modules support from config: {config_path}")
+        logger.info(
+            f"Preparing job with local modules support from config: {config_path}"
+        )
         logger.info(f"Using work directory: {work_dir}")
 
         try:
@@ -127,7 +140,9 @@ class DataSphereClient:
                 py_env = define_py_env(cfg.python_root_modules, cfg.env.python)
             except Exception as e:
                 logger.error(f"Failed to define python environment: {e}")
-                raise DataSphereClientError(f"Failed to define python environment: {e}") from e
+                raise DataSphereClientError(
+                    f"Failed to define python environment: {e}"
+                ) from e
 
         try:
             # Use build environment context to control temporary file locations
@@ -140,13 +155,18 @@ class DataSphereClient:
                 sha256_to_display_path = {}
 
                 if py_env:
-                    logger.info("Preparing local modules with build artifact cleanup...")
+                    logger.info(
+                        "Preparing local modules with build artifact cleanup..."
+                    )
                     local_module_paths = prepare_local_modules(py_env, work_dir)
                     local_modules = [f.get_file() for f in local_module_paths]
 
                     # Create mapping for display paths
                     sha256_to_display_path = {
-                        f.sha256: p for f, p in zip(local_modules, py_env.local_modules_paths, strict=False)
+                        f.sha256: p
+                        for f, p in zip(
+                            local_modules, py_env.local_modules_paths, strict=False
+                        )
                     }
 
                 # Check limits
@@ -155,7 +175,9 @@ class DataSphereClient:
                 # Generate job parameters
                 job_params = cfg.get_job_params(py_env, local_modules)
 
-            logger.info("Job parameters prepared successfully with local modules support")
+            logger.info(
+                "Job parameters prepared successfully with local modules support"
+            )
             return job_params, cfg, sha256_to_display_path
 
         except Exception as e:
@@ -182,23 +204,22 @@ class DataSphereClient:
 
         try:
             # Prepare job parameters with local modules support
-            job_params, cfg, sha256_to_display_path = self._prepare_job_with_local_modules(
-                config_path, work_dir
+            job_params, cfg, sha256_to_display_path = (
+                self._prepare_job_with_local_modules(config_path, work_dir)
             )
 
             # Create the job
             try:
                 job_id = self._client.create(
-                    job_params,
-                    cfg,
-                    self.project_id,
-                    sha256_to_display_path
+                    job_params, cfg, self.project_id, sha256_to_display_path
                 )
                 logger.info(f"Successfully created job with ID: {job_id}")
 
                 # Execute the job
                 op, _ = self._client.execute(job_id)
-                logger.info(f"Successfully started job execution. Operation ID: {op.id}")
+                logger.info(
+                    f"Successfully started job execution. Operation ID: {op.id}"
+                )
 
                 return job_id
             except Exception as e:
@@ -218,13 +239,17 @@ class DataSphereClient:
                 return yaml.safe_load(f)
         except FileNotFoundError:
             logger.error(f"Configuration file not found: {config_path}")
-            raise DataSphereClientError(f"Configuration file not found: {config_path}")
+            raise DataSphereClientError(
+                f"Configuration file not found: {config_path}"
+            ) from None
         except yaml.YAMLError as e:
             logger.error(f"Failed to parse YAML configuration: {e}")
             raise DataSphereClientError(f"Invalid YAML configuration: {e}") from e
         except Exception as e:
             logger.error(f"Unexpected error reading configuration file: {e}")
-            raise DataSphereClientError(f"Failed to read configuration file: {e}") from e
+            raise DataSphereClientError(
+                f"Failed to read configuration file: {e}"
+            ) from e
 
     def get_job_status(self, job_id: str) -> str:
         """Gets and normalises the status of a DataSphere Job.
@@ -250,7 +275,13 @@ class DataSphereClient:
             logger.error(f"Failed to get status for Job ID {job_id}: {e}")
             raise DataSphereClientError(f"Failed to get job status: {e}") from e
 
-    def download_job_results(self, job_id: str, output_dir: str, with_logs: bool = False, with_diagnostics: bool = False):
+    def download_job_results(
+        self,
+        job_id: str,
+        output_dir: str,
+        with_logs: bool = False,
+        with_diagnostics: bool = False,
+    ):
         """Downloads the results (and optionally logs/diagnostics) of a DataSphere Job.
 
         Args:
@@ -263,7 +294,9 @@ class DataSphereClient:
             DataSphereClientError: If the download operation fails.
         """
         logger.info(f"Downloading files for Job ID: {job_id} to {output_dir}")
-        logger.info(f"Download options: logs={with_logs}, diagnostics={with_diagnostics}")
+        logger.info(
+            f"Download options: logs={with_logs}, diagnostics={with_diagnostics}"
+        )
 
         try:
             # Get job to determine file lists
@@ -343,6 +376,7 @@ class DataSphereClient:
             logger.error(f"Failed to get job details: {e}")
             raise DataSphereClientError(f"Failed to get job details: {e}") from e
 
+
 def _cleanup_build_artifacts(base_dir: str) -> None:
     """
     Removes common Python build artifacts from the specified directory.
@@ -361,7 +395,7 @@ def _cleanup_build_artifacts(base_dir: str) -> None:
         "__pycache__",
         "*.pyc",
         "*.pyo",
-        ".pytest_cache"
+        ".pytest_cache",
     ]
 
     removed_items = []
@@ -393,7 +427,9 @@ def _cleanup_build_artifacts(base_dir: str) -> None:
                     logger.warning(f"Failed to remove {item}: {e}")
 
     if removed_items:
-        logger.info(f"Cleaned up {len(removed_items)} build artifacts: {removed_items[:5]}{'...' if len(removed_items) > 5 else ''}")
+        logger.info(
+            f"Cleaned up {len(removed_items)} build artifacts: {removed_items[:5]}{'...' if len(removed_items) > 5 else ''}"
+        )
 
 
 def cleanup_all_build_artifacts(base_dirs: list[str] = None) -> None:
@@ -447,30 +483,33 @@ def _build_environment_context(work_dir: str):
     wheel_build_dir = os.path.join(build_artifacts_dir, "wheel_build")
 
     # Create all directories
-    for dir_path in [build_temp_dir, pip_temp_dir, egg_cache_dir, pip_cache_dir, build_lib_dir, wheel_build_dir]:
+    for dir_path in [
+        build_temp_dir,
+        pip_temp_dir,
+        egg_cache_dir,
+        pip_cache_dir,
+        build_lib_dir,
+        wheel_build_dir,
+    ]:
         os.makedirs(dir_path, exist_ok=True)
 
     temp_vars = {
         # Standard temp directories - point to build artifacts dir
-        'TMPDIR': build_artifacts_dir,
-        'TMP': build_artifacts_dir,
-        'TEMP': build_artifacts_dir,
-        'PYTHONDONTWRITEBYTECODE': '1',
-
+        "TMPDIR": build_artifacts_dir,
+        "TMP": build_artifacts_dir,
+        "TEMP": build_artifacts_dir,
+        "PYTHONDONTWRITEBYTECODE": "1",
         # Python build-specific directories
-        'PYTHON_EGG_CACHE': egg_cache_dir,
-
+        "PYTHON_EGG_CACHE": egg_cache_dir,
         # Pip configuration
-        'PIP_BUILD_DIR': pip_temp_dir,
-        'PIP_CACHE_DIR': pip_cache_dir,
-
+        "PIP_BUILD_DIR": pip_temp_dir,
+        "PIP_CACHE_DIR": pip_cache_dir,
         # Setuptools/distutils configuration
-        'DISTUTILS_BUILD_DIR': build_temp_dir,
-        'BUILD_TEMP': build_temp_dir,
-        'BUILD_LIB': build_lib_dir,
-
+        "DISTUTILS_BUILD_DIR": build_temp_dir,
+        "BUILD_TEMP": build_temp_dir,
+        "BUILD_LIB": build_lib_dir,
         # Wheel build directory
-        'WHEEL_BUILD_DIR': wheel_build_dir,
+        "WHEEL_BUILD_DIR": wheel_build_dir,
     }
 
     # Set temporary environment variables
@@ -478,7 +517,9 @@ def _build_environment_context(work_dir: str):
         original_env[key] = os.environ.get(key)
         os.environ[key] = value
 
-    logger.info(f"Build environment configured to use build artifacts dir: {build_artifacts_dir}")
+    logger.info(
+        f"Build environment configured to use build artifacts dir: {build_artifacts_dir}"
+    )
 
     try:
         yield

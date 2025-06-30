@@ -57,6 +57,7 @@ from deployment.app.db.schema import SCHEMA_SQL
 # Resilience tests
 # =============================================
 
+
 def test_database_connection_nonexistent_dir(mocker):
     """Test that database path directory is created if it doesn't exist"""
     # Set DATABASE_PATH to a non-existent directory
@@ -73,7 +74,9 @@ def test_database_connection_nonexistent_dir(mocker):
 
     # Ensure the parent directory does NOT exist before the call
     if os.path.exists(non_existent_parent_path):
-        shutil.rmtree(non_existent_parent_path) # Clean up if it somehow exists from a previous failed run
+        shutil.rmtree(
+            non_existent_parent_path
+        )  # Clean up if it somehow exists from a previous failed run
     assert not os.path.exists(non_existent_parent_path)
 
     conn = None  # Initialize conn to None
@@ -84,47 +87,55 @@ def test_database_connection_nonexistent_dir(mocker):
         test_data_root = non_existent_parent_path
 
         # Patch the environment variable that controls data_root_dir, not the settings object directly
-        with patch.dict(os.environ, {'DATA_ROOT_DIR': test_data_root}, clear=False):
+        with patch.dict(os.environ, {"DATA_ROOT_DIR": test_data_root}, clear=False):
             # For Pydantic BaseSettings, we need to mock the get_db_connection to use our test path
             # instead of trying to refresh the global settings instance
 
             # Now the computed database_path will be: test_data_root/database/plastinka.db
             expected_computed_db_dir = os.path.join(test_data_root, "database")
-            expected_computed_db_path = os.path.join(expected_computed_db_dir, "plastinka.db")
+            expected_computed_db_path = os.path.join(
+                expected_computed_db_dir, "plastinka.db"
+            )
 
             # Mock the get_db_connection to use our test database path directly
-            with patch('deployment.app.db.database.get_db_connection') as mock_get_db:
+            with patch("deployment.app.db.database.get_db_connection") as mock_get_db:
                 # Create a real connection to the test path
-                os.makedirs(expected_computed_db_dir, exist_ok=True)  # Create the directory
+                os.makedirs(
+                    expected_computed_db_dir, exist_ok=True
+                )  # Create the directory
                 real_conn = sqlite3.connect(expected_computed_db_path)
                 real_conn.row_factory = dict_factory
                 real_conn.executescript(SCHEMA_SQL)  # Initialize with schema
                 mock_get_db.return_value = real_conn
 
-                conn = get_db_connection() # Call the function that uses our mocked connection
+                conn = (
+                    get_db_connection()
+                )  # Call the function that uses our mocked connection
                 assert isinstance(conn, sqlite3.Connection)
 
                 # Verify directory and file were created
-                assert os.path.exists(test_data_root) # Check data_root_dir was created
-                assert os.path.exists(expected_computed_db_dir) # Check database subdir was created
-                assert os.path.exists(expected_computed_db_path)   # Check db file itself
+                assert os.path.exists(test_data_root)  # Check data_root_dir was created
+                assert os.path.exists(
+                    expected_computed_db_dir
+                )  # Check database subdir was created
+                assert os.path.exists(expected_computed_db_path)  # Check db file itself
 
                 # Close the real connection immediately to avoid Windows file locking issues
                 if real_conn:
                     real_conn.close()
                     real_conn = None
 
-    except Exception: # Removed e_outer
+    except Exception:  # Removed e_outer
         # print(f"Test failed with exception: {e_outer}") # For debugging if needed
-        raise # Re-raise the exception to fail the test
+        raise  # Re-raise the exception to fail the test
     finally:
         # CRITICAL: Close connections in proper order to avoid Windows file locking
-        if conn and conn != real_conn: # Close the returned connection if different
+        if conn and conn != real_conn:  # Close the returned connection if different
             try:
                 conn.close()
             except Exception:
                 pass
-        if real_conn: # Close the real connection
+        if real_conn:  # Close the real connection
             try:
                 real_conn.close()
             except Exception:
@@ -148,12 +159,13 @@ def test_database_connection_nonexistent_dir(mocker):
                     pass
 
         try:
-            base_temp_dir.cleanup() # Cleanup the base temporary directory
+            base_temp_dir.cleanup()  # Cleanup the base temporary directory
         except PermissionError:
             # Windows file locking issue - cleanup will happen eventually
             pass
 
         # CRITICAL: Environment variable patch is automatically cleaned up by patch.dict context manager
+
 
 def test_database_error_handling():
     """Test that DatabaseError properly captures error details"""
@@ -166,7 +178,7 @@ def test_database_error_handling():
         message="Database operation failed",
         query=query,
         params=params,
-        original_error=original_error
+        original_error=original_error,
     )
 
     # Verify error properties
@@ -176,18 +188,21 @@ def test_database_error_handling():
     assert error.original_error == original_error
     assert str(error) == "Database operation failed"
 
+
 def test_execute_query_connection_error():
     """Test that execute_query handles connection errors"""
     # Mock get_db_connection to raise a DatabaseError directly
-    with patch('deployment.app.db.database.get_db_connection',
-               side_effect=DatabaseError("Connection failed")):
-
+    with patch(
+        "deployment.app.db.database.get_db_connection",
+        side_effect=DatabaseError("Connection failed"),
+    ):
         # Function should propagate the error
         with pytest.raises(DatabaseError) as exc_info:
             execute_query("SELECT 1")
 
         # Verify error message
         assert "Connection failed" in str(exc_info.value)
+
 
 def test_execute_query_with_provided_connection():
     """Test that execute_query uses the provided connection without creating a new one"""
@@ -212,12 +227,14 @@ def test_execute_query_with_provided_connection():
     # Verify connection was not closed (since it was provided)
     mock_conn.close.assert_not_called()
 
+
 def test_execute_many_with_connection_error():
     """Test that execute_many handles connection errors"""
     # Mock get_db_connection to raise a DatabaseError directly
-    with patch('deployment.app.db.database.get_db_connection',
-               side_effect=DatabaseError("Connection failed")):
-
+    with patch(
+        "deployment.app.db.database.get_db_connection",
+        side_effect=DatabaseError("Connection failed"),
+    ):
         # Function should propagate the error
         with pytest.raises(DatabaseError) as exc_info:
             execute_many("INSERT INTO table VALUES (?)", [("value1",), ("value2",)])
@@ -225,12 +242,13 @@ def test_execute_many_with_connection_error():
         # Verify error message
         assert "Connection failed" in str(exc_info.value)
 
+
 def test_create_job_duplicate_id():
     """Test creating a job with a duplicate ID"""
     # Mock generate_id to always return the same ID
     fixed_id = "duplicate-id"
 
-    with patch('deployment.app.db.database.generate_id', return_value=fixed_id):
+    with patch("deployment.app.db.database.generate_id", return_value=fixed_id):
         # Create temporary database
         conn = sqlite3.connect(":memory:")
         conn.executescript(SCHEMA_SQL)
@@ -248,6 +266,7 @@ def test_create_job_duplicate_id():
 
         conn.close()
 
+
 def test_update_job_status_nonexistent_job(temp_db):
     """Test updating status for a non-existent job. Should not fail."""
     # This test now uses the `temp_db` fixture which provides a direct connection
@@ -260,10 +279,13 @@ def test_update_job_status_nonexistent_job(temp_db):
 
     # Verify no job was actually created or updated
     cursor = temp_db.cursor()
-    cursor.execute("SELECT COUNT(*) AS count FROM jobs WHERE job_id = ?", (non_existent_id,))
+    cursor.execute(
+        "SELECT COUNT(*) AS count FROM jobs WHERE job_id = ?", (non_existent_id,)
+    )
     result = cursor.fetchone()
     assert result is not None
-    assert result['count'] == 0
+    assert result["count"] == 0
+
 
 def test_get_best_model_by_metric(temp_db_with_data):
     """Test getting the best model based on a metric"""
@@ -277,24 +299,32 @@ def test_get_best_model_by_metric(temp_db_with_data):
         metrics={"mape": 10.5, "accuracy": 0.9},
         config={},
         duration=100,
-        connection=conn
+        connection=conn,
     )
     # Create a second model and result to compare against
     job2 = create_job("training", {}, connection=conn)
     model2_id = str(uuid.uuid4())
-    create_model_record(model_id=model2_id, job_id=job2, model_path="/path/2", created_at=datetime.now(), connection=conn)
+    create_model_record(
+        model_id=model2_id,
+        job_id=job2,
+        model_path="/path/2",
+        created_at=datetime.now(),
+        connection=conn,
+    )
     create_training_result(
         job_id=job2,
         model_id=model2_id,
         config_id=temp_db_with_data["config_id"],
-        metrics={"mape": 9.8, "accuracy": 0.92}, # Better MAPE
+        metrics={"mape": 9.8, "accuracy": 0.92},  # Better MAPE
         config={},
         duration=100,
-        connection=conn
+        connection=conn,
     )
 
     # Get best model by MAPE (lower is better)
-    best_model = get_best_model_by_metric("mape", higher_is_better=False, connection=conn)
+    best_model = get_best_model_by_metric(
+        "mape", higher_is_better=False, connection=conn
+    )
 
     assert best_model is not None
     assert best_model["model_id"] == model2_id
@@ -304,6 +334,7 @@ def test_get_best_model_by_metric(temp_db_with_data):
     with pytest.raises(ValueError) as excinfo_model:
         get_best_model_by_metric("nonexistent_metric", connection=conn)
     assert "Invalid metric_name: nonexistent_metric" in str(excinfo_model.value)
+
 
 def test_get_best_config_by_metric(temp_db_with_data):
     """Test retrieving the best config by a given metric"""
@@ -316,12 +347,17 @@ def test_get_best_config_by_metric(temp_db_with_data):
     # Create necessary data for the query to work
     job_id = temp_db_with_data["job_id"]
     model_id = temp_db_with_data["model_id"]
-    create_training_result(job_id, model_id, config_id, {"accuracy": 0.88}, {}, 120, connection=conn)
+    create_training_result(
+        job_id, model_id, config_id, {"accuracy": 0.88}, {}, 120, connection=conn
+    )
 
-    best_config = get_best_config_by_metric("accuracy", higher_is_better=True, connection=conn)
+    best_config = get_best_config_by_metric(
+        "accuracy", higher_is_better=True, connection=conn
+    )
 
     assert best_config is not None
     assert best_config["config_id"] == config_id
+
 
 def test_delete_model_record_and_file(temp_db_with_data, fs):
     """Test deleting a model record and its associated file"""
@@ -330,9 +366,11 @@ def test_delete_model_record_and_file(temp_db_with_data, fs):
 
     # Create a fake model file for the record to point to
     model_path = "/path/to/model/to_delete.pkl"
-    fs.create_file(model_path, contents='fake model data')
+    fs.create_file(model_path, contents="fake model data")
     # Update the record to point to our fake file
-    conn.execute("UPDATE models SET model_path = ? WHERE model_id = ?", (model_path, model_id))
+    conn.execute(
+        "UPDATE models SET model_path = ? WHERE model_id = ?", (model_path, model_id)
+    )
     conn.commit()
 
     assert fs.exists(model_path)
@@ -342,9 +380,12 @@ def test_delete_model_record_and_file(temp_db_with_data, fs):
 
     # Assert
     assert deleted is True
-    assert not fs.exists(model_path) # File should be gone
-    res = conn.execute("SELECT * FROM models WHERE model_id = ?", (model_id,)).fetchone()
-    assert res is None # Record should be gone
+    assert not fs.exists(model_path)  # File should be gone
+    res = conn.execute(
+        "SELECT * FROM models WHERE model_id = ?", (model_id,)
+    ).fetchone()
+    assert res is None  # Record should be gone
+
 
 def test_delete_model_nonexistent_file(temp_db_with_data):
     """Test that deleting a model record succeeds even if the file is already gone"""
@@ -353,22 +394,27 @@ def test_delete_model_nonexistent_file(temp_db_with_data):
 
     # Ensure the file does NOT exist
     model_path = "/path/to/nonexistent_model.pkl"
-    conn.execute("UPDATE models SET model_path = ? WHERE model_id = ?", (model_path, model_id))
+    conn.execute(
+        "UPDATE models SET model_path = ? WHERE model_id = ?", (model_path, model_id)
+    )
     conn.commit()
 
     # Act
     deleted = delete_model_record_and_file(model_id, connection=conn)
 
     # Assert
-    assert deleted is True # Should report success
-    res = conn.execute("SELECT * FROM models WHERE model_id = ?", (model_id,)).fetchone()
-    assert res is None # Record should still be gone
+    assert deleted is True  # Should report success
+    res = conn.execute(
+        "SELECT * FROM models WHERE model_id = ?", (model_id,)
+    ).fetchone()
+    assert res is None  # Record should still be gone
+
 
 def test_delete_models_by_ids_with_active_model(temp_db_with_data):
     """Test that an active model is not deleted by delete_models_by_ids"""
     conn = temp_db_with_data["conn"]
     model_id = temp_db_with_data["model_id"]
-    set_model_active(model_id, connection=conn) # Make it active
+    set_model_active(model_id, connection=conn)  # Make it active
 
     # Try to delete it
     result = delete_models_by_ids([model_id], connection=conn)
@@ -377,14 +423,17 @@ def test_delete_models_by_ids_with_active_model(temp_db_with_data):
     assert result["skipped_count"] == 1
     assert model_id in result["skipped_models"]
 
-    res = conn.execute("SELECT * FROM models WHERE model_id = ?", (model_id,)).fetchone()
-    assert res is not None # Should still exist
+    res = conn.execute(
+        "SELECT * FROM models WHERE model_id = ?", (model_id,)
+    ).fetchone()
+    assert res is not None  # Should still exist
+
 
 def test_delete_configs_by_ids_with_active_set(temp_db_with_data):
     """Test that an active config is not deleted by delete_configs_by_ids"""
     conn = temp_db_with_data["conn"]
     config_id = temp_db_with_data["config_id"]
-    set_config_active(config_id, connection=conn) # Make it active
+    set_config_active(config_id, connection=conn)  # Make it active
 
     # Try to delete it
     result = delete_configs_by_ids([config_id], connection=conn)
@@ -393,16 +442,21 @@ def test_delete_configs_by_ids_with_active_set(temp_db_with_data):
     assert result["skipped_count"] == 1
     assert config_id in result["skipped_configs"]
 
-    res = conn.execute("SELECT * FROM configs WHERE config_id = ?", (config_id,)).fetchone()
-    assert res is not None # Should still exist
+    res = conn.execute(
+        "SELECT * FROM configs WHERE config_id = ?", (config_id,)
+    ).fetchone()
+    assert res is not None  # Should still exist
+
 
 def test_set_model_active_nonexistent_id(temp_db):
     """Test setting a non-existent model ID as active fails gracefully"""
     assert set_model_active("non-existent-id", connection=temp_db) is False
 
+
 def test_set_config_active_nonexistent_id(temp_db):
     """Test setting a non-existent config ID as active fails gracefully"""
     assert set_config_active("non-existent-id", connection=temp_db) is False
+
 
 def test_create_or_get_config_idempotent(temp_db):
     """Test that create_or_get_config is idempotent"""
@@ -416,8 +470,11 @@ def test_create_or_get_config_idempotent(temp_db):
     res = temp_db.execute("SELECT COUNT(*) AS count FROM configs").fetchone()
     assert res["count"] == 1
 
-@patch('deployment.app.db.database.create_or_get_config')
-def test_concurrency_simulation(mock_create_config, isolated_db_session, create_training_params_fn):
+
+@patch("deployment.app.db.database.create_or_get_config")
+def test_concurrency_simulation(
+    mock_create_config, isolated_db_session, create_training_params_fn
+):
     """Simulate concurrent access to database functions using a file-based DB."""
     db_path = isolated_db_session
 
@@ -458,11 +515,12 @@ def test_concurrency_simulation(mock_create_config, isolated_db_session, create_
 
         # Handle both dictionary and tuple result formats
         if isinstance(result, dict):
-            job_count = result['COUNT(*)']
+            job_count = result["COUNT(*)"]
         else:
             job_count = result[0]
 
         assert job_count == num_threads
+
 
 def json_default_serializer(obj):
     """
@@ -471,6 +529,7 @@ def json_default_serializer(obj):
     if isinstance(obj, datetime | date):
         return obj.isoformat()
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
 
 def test_transaction_rollback_on_error(isolated_db_session, create_training_params_fn):
     """Test that a transaction is rolled back if an error occurs."""
@@ -487,14 +546,14 @@ def test_transaction_rollback_on_error(isolated_db_session, create_training_para
 
         # Handle both dictionary and tuple result formats
         if isinstance(result, dict):
-            initial_count = result['COUNT(*)']
+            initial_count = result["COUNT(*)"]
         else:
             initial_count = result[0]
 
         with pytest.raises(sqlite3.OperationalError):
-            with conn: # Start a transaction
+            with conn:  # Start a transaction
                 # This one is fine
-                create_job("job1", {"p":1}, connection=conn)
+                create_job("job1", {"p": 1}, connection=conn)
                 # This one will fail due to a non-existent table, triggering a rollback
                 conn.execute("INSERT INTO non_existent_table VALUES (1)")
 
@@ -505,16 +564,19 @@ def test_transaction_rollback_on_error(isolated_db_session, create_training_para
 
         # Handle both dictionary and tuple result formats
         if isinstance(result, dict):
-            final_count = result['COUNT(*)']
+            final_count = result["COUNT(*)"]
         else:
             final_count = result[0]
 
         assert final_count == initial_count
 
+
 def test_database_error_propagation():
     """Test that DatabaseError properly propagates from lower-level functions"""
     # Mock sqlite3.connect to raise an error
-    with patch('sqlite3.connect', side_effect=sqlite3.OperationalError("Connection error")):
+    with patch(
+        "sqlite3.connect", side_effect=sqlite3.OperationalError("Connection error")
+    ):
         # Try to get a connection
         with pytest.raises(DatabaseError) as exc_info:
             get_db_connection()

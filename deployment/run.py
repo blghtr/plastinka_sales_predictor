@@ -20,13 +20,22 @@ from deployment.app.config import get_settings
 
 # Parse command line arguments
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run the Plastinka Sales Predictor API")
-    parser.add_argument("--host", default=None, help="Host to bind to (overrides config)")
-    parser.add_argument("--port", type=int, default=None, help="Port to bind to (overrides config)")
+    parser = argparse.ArgumentParser(
+        description="Run the Plastinka Sales Predictor API"
+    )
+    parser.add_argument(
+        "--host", default=None, help="Host to bind to (overrides config)"
+    )
+    parser.add_argument(
+        "--port", type=int, default=None, help="Port to bind to (overrides config)"
+    )
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
-    parser.add_argument("--workers", type=int, default=1, help="Number of worker processes")
+    parser.add_argument(
+        "--workers", type=int, default=1, help="Number of worker processes"
+    )
 
     return parser.parse_args()
+
 
 # Main function
 def main():
@@ -44,8 +53,9 @@ def main():
         port=port,
         reload=args.reload,
         workers=args.workers,
-        app_dir="."
+        app_dir=".",
     )
+
 
 if __name__ == "__main__":
     main()

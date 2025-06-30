@@ -46,6 +46,7 @@ try:
         cleanup_old_predictions,
         run_cleanup_job,
     )
+
     DATA_RETENTION_AVAILABLE = True
 except ImportError:
     DATA_RETENTION_AVAILABLE = False
@@ -56,7 +57,7 @@ from deployment.app.db.schema import SCHEMA_SQL
 @pytest.fixture
 def domain_db():
     """Create an in-memory SQLite database with schema for domain testing."""
-    conn = sqlite3.connect(':memory:')
+    conn = sqlite3.connect(":memory:")
     conn.row_factory = dict_factory
     conn.execute("PRAGMA foreign_keys = ON")
 
@@ -69,13 +70,13 @@ def domain_db():
     # Insert test config
     conn.execute(
         "INSERT INTO configs (config_id, config, created_at, is_active) VALUES (?, ?, ?, ?)",
-        ("test_config_1", json.dumps({"test": "config"}), now, 0)
+        ("test_config_1", json.dumps({"test": "config"}), now, 0),
     )
 
     # Insert test job
     conn.execute(
         "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, config_id) VALUES (?, ?, ?, ?, ?, ?)",
-        ("test_job_1", "training", "completed", now, now, "test_config_1")
+        ("test_job_1", "training", "completed", now, now, "test_config_1"),
     )
 
     conn.commit()
@@ -99,11 +100,7 @@ def temp_model_files():
             f.write(f"dummy model content {i}".encode())
         model_files.append(model_path)
 
-    yield {
-        "temp_dir": temp_dir,
-        "model_dir": model_dir,
-        "model_files": model_files
-    }
+    yield {"temp_dir": temp_dir, "model_dir": model_dir, "model_files": model_files}
 
     # Cleanup
     for _ in range(5):
@@ -122,14 +119,16 @@ def sample_model_data():
         "job_id": "test_job_1",
         "created_at": datetime.now(),
         "metadata": {"test_key": "test_value", "file_size_bytes": 1024},
-        "is_active": False
+        "is_active": False,
     }
 
 
 class TestModelRegistration:
     """Test suite for model registration and lifecycle management."""
 
-    def test_create_model_record_success(self, domain_db, temp_model_files, sample_model_data):
+    def test_create_model_record_success(
+        self, domain_db, temp_model_files, sample_model_data
+    ):
         """Test successful model record creation."""
         conn = domain_db["conn"]
         model_path = temp_model_files["model_files"][0]
@@ -142,12 +141,14 @@ class TestModelRegistration:
             created_at=sample_model_data["created_at"],
             metadata=sample_model_data["metadata"],
             is_active=sample_model_data["is_active"],
-            connection=conn
+            connection=conn,
         )
 
         # Verify record was created
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM models WHERE model_id = ?", (sample_model_data["model_id"],))
+        cursor.execute(
+            "SELECT * FROM models WHERE model_id = ?", (sample_model_data["model_id"],)
+        )
         record = cursor.fetchone()
 
         assert record is not None
@@ -166,7 +167,7 @@ class TestModelRegistration:
         models = [
             {"model_id": "model_1", "is_active": False},
             {"model_id": "model_2", "is_active": True},  # Active model
-            {"model_id": "model_3", "is_active": False}
+            {"model_id": "model_3", "is_active": False},
         ]
 
         for model in models:
@@ -177,7 +178,7 @@ class TestModelRegistration:
                 created_at=datetime.now(),
                 metadata={"test": "data"},
                 is_active=model["is_active"],
-                connection=conn
+                connection=conn,
             )
 
         # Get active model
@@ -202,7 +203,7 @@ class TestModelRegistration:
                 created_at=datetime.now(),
                 metadata={"test": "data"},
                 is_active=False,
-                connection=conn
+                connection=conn,
             )
 
         # Activate model_2
@@ -215,15 +216,19 @@ class TestModelRegistration:
 
         # Verify others are inactive
         cursor = conn.cursor()
-        cursor.execute("SELECT model_id, is_active FROM models WHERE model_id != ?", ("model_2",))
+        cursor.execute(
+            "SELECT model_id, is_active FROM models WHERE model_id != ?", ("model_2",)
+        )
         other_models = cursor.fetchall()
 
         for model in other_models:
             assert model["is_active"] == 0
 
-    @patch('os.path.exists')
-    @patch('os.remove')
-    def test_delete_model_record_and_file_success(self, mock_remove, mock_exists, domain_db, temp_model_files):
+    @patch("os.path.exists")
+    @patch("os.remove")
+    def test_delete_model_record_and_file_success(
+        self, mock_remove, mock_exists, domain_db, temp_model_files
+    ):
         """Test deleting model record and file."""
         mock_exists.return_value = True
         conn = domain_db["conn"]
@@ -237,7 +242,7 @@ class TestModelRegistration:
             created_at=datetime.now(),
             metadata={"test": "data"},
             is_active=False,
-            connection=conn
+            connection=conn,
         )
 
         # Delete model
@@ -254,13 +259,17 @@ class TestModelRegistration:
         mock_remove.assert_called_once_with(model_path)
 
 
-@pytest.mark.skipif(not DATA_RETENTION_AVAILABLE, reason="Data retention module not available")
+@pytest.mark.skipif(
+    not DATA_RETENTION_AVAILABLE, reason="Data retention module not available"
+)
 class TestDataRetention:
     """Test suite for data retention and cleanup operations."""
 
-    @patch('deployment.app.db.data_retention.get_settings')
-    @patch('deployment.app.db.data_retention.get_db_connection')
-    def test_cleanup_old_predictions_success(self, mock_get_db, mock_get_settings, domain_db):
+    @patch("deployment.app.db.data_retention.get_settings")
+    @patch("deployment.app.db.data_retention.get_db_connection")
+    def test_cleanup_old_predictions_success(
+        self, mock_get_db, mock_get_settings, domain_db
+    ):
         """Test cleaning up old predictions."""
         conn = domain_db["conn"]
         mock_get_db.return_value = conn
@@ -287,7 +296,7 @@ class TestDataRetention:
                 created_at=now,
                 metadata={"test": "data"},
                 is_active=False,
-                connection=conn
+                connection=conn,
             )
 
         # Create test predictions table and data
@@ -308,14 +317,58 @@ class TestDataRetention:
 
         # Old predictions (older than 30 days)
         old_predictions = [
-            (1, now - timedelta(days=45), "result1", "model1", 10.0, 15.0, 20.0, 25.0, 30.0, (now - timedelta(days=45)).isoformat()),
-            (2, now - timedelta(days=40), "result2", "model2", 12.0, 17.0, 22.0, 27.0, 32.0, (now - timedelta(days=40)).isoformat())
+            (
+                1,
+                now - timedelta(days=45),
+                "result1",
+                "model1",
+                10.0,
+                15.0,
+                20.0,
+                25.0,
+                30.0,
+                (now - timedelta(days=45)).isoformat(),
+            ),
+            (
+                2,
+                now - timedelta(days=40),
+                "result2",
+                "model2",
+                12.0,
+                17.0,
+                22.0,
+                27.0,
+                32.0,
+                (now - timedelta(days=40)).isoformat(),
+            ),
         ]
 
         # Recent predictions (within 30 days)
         recent_predictions = [
-            (3, now - timedelta(days=10), "result3", "model3", 11.0, 16.0, 21.0, 26.0, 31.0, (now - timedelta(days=10)).isoformat()),
-            (4, now - timedelta(days=5), "result4", "model4", 13.0, 18.0, 23.0, 28.0, 33.0, (now - timedelta(days=5)).isoformat())
+            (
+                3,
+                now - timedelta(days=10),
+                "result3",
+                "model3",
+                11.0,
+                16.0,
+                21.0,
+                26.0,
+                31.0,
+                (now - timedelta(days=10)).isoformat(),
+            ),
+            (
+                4,
+                now - timedelta(days=5),
+                "result4",
+                "model4",
+                13.0,
+                18.0,
+                23.0,
+                28.0,
+                33.0,
+                (now - timedelta(days=5)).isoformat(),
+            ),
         ]
 
         all_predictions = old_predictions + recent_predictions
@@ -323,7 +376,7 @@ class TestDataRetention:
             """INSERT INTO fact_predictions
                (multiindex_id, prediction_date, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            all_predictions
+            all_predictions,
         )
         conn.commit()
 
@@ -342,13 +395,19 @@ class TestDataRetention:
         final_count = cursor.fetchone()["count"]
 
         assert deleted_count == 2  # 2 old predictions should be deleted
-        assert final_count == 2   # 2 recent predictions should remain
+        assert final_count == 2  # 2 recent predictions should remain
 
-    @patch('deployment.app.db.data_retention.cleanup_old_predictions')
-    @patch('deployment.app.db.data_retention.cleanup_old_models')
-    @patch('deployment.app.db.data_retention.cleanup_old_historical_data')
-    @patch('deployment.app.db.data_retention.get_settings')
-    def test_run_cleanup_job_success(self, mock_get_settings, mock_cleanup_historical, mock_cleanup_models, mock_cleanup_predictions):
+    @patch("deployment.app.db.data_retention.cleanup_old_predictions")
+    @patch("deployment.app.db.data_retention.cleanup_old_models")
+    @patch("deployment.app.db.data_retention.cleanup_old_historical_data")
+    @patch("deployment.app.db.data_retention.get_settings")
+    def test_run_cleanup_job_success(
+        self,
+        mock_get_settings,
+        mock_cleanup_historical,
+        mock_cleanup_models,
+        mock_cleanup_predictions,
+    ):
         """Test running complete cleanup job."""
         # Mock settings
         mock_settings_object = MagicMock()
@@ -359,8 +418,17 @@ class TestDataRetention:
 
         # Mock cleanup function returns
         mock_cleanup_predictions.return_value = 5
-        mock_cleanup_models.return_value = ["model_1", "model_2", "model_3"]  # Returns list of model IDs
-        mock_cleanup_historical.return_value = {"sales": 10, "stock": 8, "stock_changes": 3, "prices": 2}
+        mock_cleanup_models.return_value = [
+            "model_1",
+            "model_2",
+            "model_3",
+        ]  # Returns list of model IDs
+        mock_cleanup_historical.return_value = {
+            "sales": 10,
+            "stock": 8,
+            "stock_changes": 3,
+            "prices": 2,
+        }
 
         # Run cleanup job (returns None)
         result = run_cleanup_job()
@@ -415,7 +483,7 @@ class TestIntegration:
             created_at=datetime.now(),
             metadata={"lifecycle": "test"},
             is_active=False,
-            connection=conn
+            connection=conn,
         )
 
         # 2. Verify model exists
@@ -435,8 +503,10 @@ class TestIntegration:
         # Note: get_active_model doesn't return is_active field
 
         # 5. Delete model
-        with patch('os.path.exists', return_value=True), \
-             patch('os.remove') as mock_remove:
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.remove") as mock_remove,
+        ):
             delete_result = delete_model_record_and_file(model_id, connection=conn)
             assert delete_result is True
             mock_remove.assert_called_once_with(model_path)

@@ -22,12 +22,10 @@ from plastinka_sales_predictor import (
     prepare_for_training,
 )
 
-filterwarnings('ignore')
+filterwarnings("ignore")
 
 
-logger = configure_logger(
-    child_logger_name='tune'
-)
+logger = configure_logger(child_logger_name="tune")
 
 
 def load_fixed_params(json_path=None, tunable_params=None):
@@ -41,7 +39,9 @@ def load_fixed_params(json_path=None, tunable_params=None):
         tuple: (tunable_params, fixed_params)
     """
 
-    assert json_path or tunable_params, "Either json_path or tunable_params must be provided."
+    assert json_path or tunable_params, (
+        "Either json_path or tunable_params must be provided."
+    )
     if tunable_params is None:
         tunable_params = {}
 
@@ -52,18 +52,21 @@ def load_fixed_params(json_path=None, tunable_params=None):
 
     fixed_params = defaultdict(dict)
     for key in [
-        'model_config',
-        'lags',
-        'lr_shed_config',
-        'train_ds_config',
-        'weights_config'
+        "model_config",
+        "lags",
+        "lr_shed_config",
+        "train_ds_config",
+        "weights_config",
     ]:
         if key in fixed:
             fixed_part = None
             if key in tunable_params:
                 if isinstance(fixed[key], dict):
-                    fixed_part = {k: v for k, v in fixed[key].items()
-                                  if k not in tunable_params[key]}
+                    fixed_part = {
+                        k: v
+                        for k, v in fixed[key].items()
+                        if k not in tunable_params[key]
+                    }
                 if fixed_part:
                     fixed_params[key] = fixed_part
             else:
@@ -86,18 +89,8 @@ def merge_with_fixed_params(tunable_params, fixed_params):
     return merged
 
 
-def train_model(
-        config,
-        ds,
-        val_ds,
-        random_state=42,
-        model_name='TiDE'
-):
-    def load_from_checkpoint(
-        ckpt_dir: str,
-        best=True,
-        **kwargs
-    ):
+def train_model(config, ds, val_ds, random_state=42, model_name="TiDE"):
+    def load_from_checkpoint(ckpt_dir: str, best=True, **kwargs):
         def _get_checkpoint_fname():
             path = Path(ckpt_dir)
 
@@ -109,11 +102,10 @@ def train_model(
             for i in range(len(prefixes)):
                 prefix = prefixes[i]
                 checklist = list(path.glob(prefix))
-                if i == len(prefixes)-1 and len(checklist) == 0:
+                if i == len(prefixes) - 1 and len(checklist) == 0:
                     raise FileNotFoundError(
-                            "There is no file matching "
-                            f"prefix {prefix} in {ckpt_dir}"
-                        )
+                        f"There is no file matching prefix {prefix} in {ckpt_dir}"
+                    )
                 if len(checklist) > 0:
                     break
 
@@ -123,21 +115,14 @@ def train_model(
         file_name = None
         trial_dir = Path(ckpt_dir).parent
         ckpt_trial_id = str(trial_dir.parts[-1])[6:]
-        base_model_path = (
-            trial_dir /
-            ckpt_trial_id /
-            model_name /
-            INIT_MODEL_NAME
-        )
+        base_model_path = trial_dir / ckpt_trial_id / model_name / INIT_MODEL_NAME
         if not os.path.exists(base_model_path):
             raise FileNotFoundError(
                 "Could not find base model save file"
                 f" `{INIT_MODEL_NAME}` in {base_model_path}."
             )
         print(f"! Loading base model from {base_model_path}")
-        model = torch.load(
-            base_model_path, weights_only=False
-        )
+        model = torch.load(base_model_path, weights_only=False)
 
         if file_name is None:
             file_name = _get_checkpoint_fname()
@@ -170,7 +155,9 @@ def train_model(
                 print("✓ Injected checkpoint callback")
                 callbacks_[i] = ckpt_callback
                 break
-        assert isinstance(callbacks_[i], DartsCheckpointCallback), f"Callback {callbacks_[i]} is not injected"
+        assert isinstance(callbacks_[i], DartsCheckpointCallback), (
+            f"Callback {callbacks_[i]} is not injected"
+        )
 
     pl.seed_everything(random_state)
 
@@ -178,19 +165,17 @@ def train_model(
     trial_id = context.get_trial_id()
 
     ckpt_callback = DartsCheckpointCallback(
-            metrics=['val_MIWS', 'val_MIC', 'val_MIWS_MIC_Ratio'],
-            dirpath=str(
-                Path(
-                    trial_id, model_name, CHECKPOINTS_FOLDER
-                )
-            ),
-            monitor='val_MIWS_MIC_Ratio',
-            mode='min',
-            save_last=True,
-            save_top_k=-1,
-            filename="best-{epoch}-{val_loss:.2f}-{val_MIWS_MIC_Ratio:.2f}"
-        )
-    ckpt_callback.CHECKPOINT_NAME_LAST = "last-{epoch}-{val_loss:.2f}-{val_MIWS_MIC_Ratio:.2f}"
+        metrics=["val_MIWS", "val_MIC", "val_MIWS_MIC_Ratio"],
+        dirpath=str(Path(trial_id, model_name, CHECKPOINTS_FOLDER)),
+        monitor="val_MIWS_MIC_Ratio",
+        mode="min",
+        save_last=True,
+        save_top_k=-1,
+        filename="best-{epoch}-{val_loss:.2f}-{val_MIWS_MIC_Ratio:.2f}",
+    )
+    ckpt_callback.CHECKPOINT_NAME_LAST = (
+        "last-{epoch}-{val_loss:.2f}-{val_MIWS_MIC_Ratio:.2f}"
+    )
 
     (
         ds,
@@ -201,12 +186,8 @@ def train_model(
         optimizer_config,
         model_config,
         likelihood,
-        _
-    ) = prepare_for_training(
-        config=config,
-        ds=ds,
-        val_ds=val_ds
-    )
+        _,
+    ) = prepare_for_training(config=config, ds=ds, val_ds=val_ds)
     checkpoint = ray.train.get_checkpoint()
     if checkpoint:
         with checkpoint.as_directory() as checkpoint_dir:
@@ -216,7 +197,7 @@ def train_model(
                 print(f"✓ Resumed training from epoch {model.epochs_trained}")
 
     else:
-        model_config['nr_epochs_val_period'] = 5
+        model_config["nr_epochs_val_period"] = 5
         model = get_model(
             optimizer_config=optimizer_config,
             callbacks=callbacks,
@@ -228,7 +209,7 @@ def train_model(
             save_checkpoints=True,
             likelihood=likelihood,
             torch_metrics=DEFAULT_METRICS,
-            model_config=model_config
+            model_config=model_config,
         )
         inject_callback()
 
@@ -240,18 +221,14 @@ def train_fn(config, fixed_config, ds):
     config = merge_with_fixed_params(config, fixed_config)
 
     L = ds.L
-    lags = config['lags']
+    lags = config["lags"]
     length = lags + 1
 
     temp_train = ds.setup_dataset(
-        input_chunk_length=lags,
-        output_chunk_length=1,
-        window=(0, L - 1)
+        input_chunk_length=lags, output_chunk_length=1, window=(0, L - 1)
     )
     temp_val = ds.setup_dataset(
-        input_chunk_length=lags,
-        output_chunk_length=1,
-        window=(L - length, L)
+        input_chunk_length=lags, output_chunk_length=1, window=(L - length, L)
     )
 
     assert temp_train.L < ds.L and temp_val.end < ds._n_time_steps
@@ -286,5 +263,5 @@ def flatten_config(config, parent_key=None):
         if isinstance(value, dict):
             flattened.update(flatten_config(value, keys))
         else:
-            flattened['/'.join(keys)] = value
+            flattened["/".join(keys)] = value
     return flattened

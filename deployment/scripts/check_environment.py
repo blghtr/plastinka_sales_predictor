@@ -2,6 +2,7 @@
 """
 Script to check environment variables and generate a template .env file if needed.
 """
+
 import logging
 import os
 import sys
@@ -9,8 +10,7 @@ from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("env_checker")
 
@@ -26,10 +26,10 @@ REQUIRED_VARS = {
     "DATASPHERE_FOLDER_ID": "Datasphere folder ID (may differ from YANDEX_CLOUD_FOLDER_ID)",
     "DATASPHERE_OAUTH_TOKEN": "OAuth token for Datasphere authentication",
     "API_X_API_KEY": "API key for Datasphere API access",
-
     # Terraform
-    "TF_VAR_yc_token": "Yandex Cloud token for Terraform operations"
+    "TF_VAR_yc_token": "Yandex Cloud token for Terraform operations",
 }
+
 
 def check_environment():
     """Check environment variables and return missing required ones."""
@@ -39,6 +39,7 @@ def check_environment():
             missing.append(var)
 
     return missing
+
 
 def generate_env_template(output_path=None):
     """Generate a template .env file with all variables."""
@@ -66,6 +67,7 @@ def generate_env_template(output_path=None):
     logger.info("Template generated. Please fill it with appropriate values.")
     return True
 
+
 def main():
     """Main function."""
     logger.info(f"Project root directory: {PROJECT_ROOT}")
@@ -84,14 +86,19 @@ def main():
         env_template_file_path = PROJECT_ROOT / ".env.template"
 
         if not env_file_path.exists() and not env_template_file_path.exists():
-            logger.info(f"No {env_file_path.name} or {env_template_file_path.name} found in project root ({PROJECT_ROOT}). Generating template...")
+            logger.info(
+                f"No {env_file_path.name} or {env_template_file_path.name} found in project root ({PROJECT_ROOT}). Generating template..."
+            )
             generate_env_template()
-            logger.info(f"Please fill {env_template_file_path} with your values and rename it to {env_file_path.name} in the project root.")
+            logger.info(
+                f"Please fill {env_template_file_path} with your values and rename it to {env_file_path.name} in the project root."
+            )
 
         return 1
     else:
         logger.info("All required environment variables are set.")
         return 0
+
 
 if __name__ == "__main__":
     # If an argument is provided, use it as the output path

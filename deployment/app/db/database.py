@@ -13,6 +13,7 @@ from deployment.app.config import get_settings
 
 logger = logging.getLogger("plastinka.database")
 
+
 def json_default_serializer(obj):
     """
     JSON serializer for objects not serializable by default json code
@@ -22,6 +23,7 @@ def json_default_serializer(obj):
     if isinstance(obj, Path):
         return str(obj)
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
 
 # Define allowed metric names for dynamic queries
 ALLOWED_METRICS = [
@@ -35,24 +37,36 @@ ALLOWED_METRICS = [
     "mean_squared_log_error",
     "explained_variance_score",
     "max_error",
-    "val_MIC", # Added based on test failures
-    "accuracy" # Added based on test failures
+    "val_MIC",  # Added based on test failures
+    "accuracy",  # Added based on test failures
     # Add other allowed metric names as needed
 ]
 
 # Use database path from settings
 # DB_PATH = settings.database_path
 
+
 class DatabaseError(Exception):
     """Exception raised for database errors."""
-    def __init__(self, message: str, query: str = None, params: tuple = None, original_error: Exception = None):
+
+    def __init__(
+        self,
+        message: str,
+        query: str = None,
+        params: tuple = None,
+        original_error: Exception = None,
+    ):
         self.message = message
         self.query = query
         self.params = params
         self.original_error = original_error
         super().__init__(self.message)
 
-def get_db_connection(db_path_override: str | Path | None = None, existing_connection: sqlite3.Connection | None = None):
+
+def get_db_connection(
+    db_path_override: str | Path | None = None,
+    existing_connection: sqlite3.Connection | None = None,
+):
     """
     Get a connection to the SQLite database.
     If existing_connection is provided, it uses that connection.
@@ -75,7 +89,10 @@ def get_db_connection(db_path_override: str | Path | None = None, existing_conne
         return conn
     except Exception as e:
         logger.error(f"Failed to connect to database: {str(e)}", exc_info=True)
-        raise DatabaseError(f"Database connection failed: {str(e)}", original_error=e)
+        raise DatabaseError(
+            f"Database connection failed: {str(e)}", original_error=e
+        ) from e
+
 
 @contextmanager
 def db_transaction(db_path_or_conn: str | Path | sqlite3.Connection = None):
@@ -97,7 +114,9 @@ def db_transaction(db_path_or_conn: str | Path | sqlite3.Connection = None):
 
     try:
         if isinstance(db_path_or_conn, str | Path):
-            conn = get_db_connection(db_path_or_conn) # Assuming get_db_connection can take a path
+            conn = get_db_connection(
+                db_path_or_conn
+            )  # Assuming get_db_connection can take a path
             conn_created_internally = True
         elif isinstance(db_path_or_conn, sqlite3.Connection):
             conn = db_path_or_conn
@@ -105,12 +124,14 @@ def db_transaction(db_path_or_conn: str | Path | sqlite3.Connection = None):
             # However, get_db_connection already does this. If conn is external, we assume it's configured.
             # For safety, we could execute it, but it might interfere if the user has specific PRAGMA settings.
             # Let's assume external connections are ready or get_db_connection handles it.
-        else: # db_path_or_conn is None, use default
-            conn = get_db_connection() # Uses DB_PATH by default
+        else:  # db_path_or_conn is None, use default
+            conn = get_db_connection()  # Uses DB_PATH by default
             conn_created_internally = True
 
-        if conn is None: # Should not happen if get_db_connection raises on failure
-            raise DatabaseError("Failed to establish a database connection for transaction.")
+        if conn is None:  # Should not happen if get_db_connection raises on failure
+            raise DatabaseError(
+                "Failed to establish a database connection for transaction."
+            )
 
         # Ensure PRAGMA foreign_keys = ON; is set for connections it establishes.
         # get_db_connection already handles this.
@@ -131,21 +152,32 @@ def db_transaction(db_path_or_conn: str | Path | sqlite3.Connection = None):
 
     except Exception as e:
         if conn:
-            logger.error(f"db_transaction: Exception occurred, rolling back transaction for connection id: {id(conn)}. Error: {e}", exc_info=True)
+            logger.error(
+                f"db_transaction: Exception occurred, rolling back transaction for connection id: {id(conn)}. Error: {e}",
+                exc_info=True,
+            )
             conn.rollback()
         # Re-raise the exception to be handled by the caller
         # If it's already a DatabaseError, re-raise it directly. Otherwise, wrap it.
         if isinstance(e, DatabaseError):
             raise
-        raise DatabaseError(f"Transaction failed: {str(e)}", original_error=e)
+        raise DatabaseError(f"Transaction failed: {str(e)}", original_error=e) from e
     finally:
         if conn and conn_created_internally:
             conn.close()
+
+
 def dict_factory(cursor, row):
     """Convert row to dictionary"""
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
-def execute_query(query: str, params: tuple = (), fetchall: bool = False, connection: sqlite3.Connection = None) -> list[dict] | dict | None:
+
+def execute_query(
+    query: str,
+    params: tuple = (),
+    fetchall: bool = False,
+    connection: sqlite3.Connection = None,
+) -> list[dict] | dict | None:
     """
     Execute a query and optionally return results
 
@@ -182,8 +214,8 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
                     message=f"Connection validation failed: {str(e)}",
                     query=query,
                     params=params,
-                    original_error=e
-                )
+                    original_error=e,
+                ) from e
         else:
             conn = get_db_connection()
             conn_created = True
@@ -212,14 +244,17 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
 
         # Log with limited parameter data for security
         safe_params = "..." if params else "()"
-        logger.error(f"Database error in query: {query[:100]} with params: {safe_params}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Database error in query: {query[:100]} with params: {safe_params}: {str(e)}",
+            exc_info=True,
+        )
 
         raise DatabaseError(
             message=f"Database operation failed: {str(e)}",
             query=query,
             params=params,
-            original_error=e
-        )
+            original_error=e,
+        ) from e
     finally:
         # Close the connection if it was created here
         if conn_created and conn:
@@ -228,7 +263,10 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
             except Exception:
                 pass  # Ignore close errors
 
-def execute_many(query: str, params_list: list[tuple], connection: sqlite3.Connection = None) -> None:
+
+def execute_many(
+    query: str, params_list: list[tuple], connection: sqlite3.Connection = None
+) -> None:
     """
     Execute a query with multiple parameter sets
 
@@ -267,29 +305,42 @@ def execute_many(query: str, params_list: list[tuple], connection: sqlite3.Conne
             conn.commit()
 
     except sqlite3.Error as e:
-        if conn and conn_created: # Only rollback if this function created the connection
+        if (
+            conn and conn_created
+        ):  # Only rollback if this function created the connection
             conn.rollback()
 
-        logger.error(f"Database error in executemany: {query[:100]}, params count: {len(params_list)}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Database error in executemany: {query[:100]}, params count: {len(params_list)}: {str(e)}",
+            exc_info=True,
+        )
 
         raise DatabaseError(
             message=f"Batch database operation failed: {str(e)}",
             query=query,
-            original_error=e
-        )
+            original_error=e,
+        ) from e
     finally:
         if cursor:
             cursor.close()
         if conn and conn_created:
             conn.close()
 
+
 # Job-related database functions
+
 
 def generate_id() -> str:
     """Generate a unique ID for jobs or results"""
     return str(uuid.uuid4())
 
-def create_job(job_type: str, parameters: dict[str, Any] = None, connection: sqlite3.Connection = None, status: str = 'pending') -> str:
+
+def create_job(
+    job_type: str,
+    parameters: dict[str, Any] = None,
+    connection: sqlite3.Connection = None,
+    status: str = "pending",
+) -> str:
     """
     Create a new job record and return the job ID.
     If an external 'connection' is provided, this function operates within that transaction.
@@ -319,7 +370,7 @@ def create_job(job_type: str, parameters: dict[str, Any] = None, connection: sql
         now,
         now,
         json.dumps(parameters, default=json_default_serializer) if parameters else None,
-        0
+        0,
     )
 
     def _db_operation(conn_to_use: sqlite3.Connection):
@@ -333,17 +384,30 @@ def create_job(job_type: str, parameters: dict[str, Any] = None, connection: sql
             _db_operation(connection)
         else:
             # Create and manage its own transaction
-            with db_transaction() as new_conn: # db_transaction handles commit/rollback/close
+            with (
+                db_transaction() as new_conn
+            ):  # db_transaction handles commit/rollback/close
                 _db_operation(new_conn)
         return job_id
-    except DatabaseError: # db_transaction would have logged and rolled back if it was used
-        logger.error(f"Failed to create job {job_id} of type {job_type}. Error re-raised.", exc_info=True)
-        raise # Re-raise the original DatabaseError which includes details
+    except (
+        DatabaseError
+    ):  # db_transaction would have logged and rolled back if it was used
+        logger.error(
+            f"Failed to create job {job_id} of type {job_type}. Error re-raised.",
+            exc_info=True,
+        )
+        raise  # Re-raise the original DatabaseError which includes details
 
-def update_job_status(job_id: str, status: str, progress: float = None,
-                      result_id: str = None, error_message: str = None,
-                      status_message: str = None,
-                      connection: sqlite3.Connection = None) -> None:
+
+def update_job_status(
+    job_id: str,
+    status: str,
+    progress: float = None,
+    result_id: str = None,
+    error_message: str = None,
+    status_message: str = None,
+    connection: sqlite3.Connection = None,
+) -> None:
     """
     Update job status and related fields
 
@@ -371,13 +435,14 @@ def update_job_status(job_id: str, status: str, progress: float = None,
         except Exception:
             pass  # Connection state check failed
 
-
     try:
         # First check if the job exists
         check_query = "SELECT 1 FROM jobs WHERE job_id = ?"
         result = execute_query(check_query, (job_id,), connection=connection)
         if not result:
-            logger.warning(f"Job with ID {job_id} not found while trying to update status to {status}")
+            logger.warning(
+                f"Job with ID {job_id} not found while trying to update status to {status}"
+            )
             return  # Exit early without raising an error
 
         # Update job status
@@ -396,7 +461,9 @@ def update_job_status(job_id: str, status: str, progress: float = None,
 
         # Always log status change to job_status_history table
         # If no status_message is provided, use the status itself
-        history_message = status_message if status_message else f"Status changed to: {status}"
+        history_message = (
+            status_message if status_message else f"Status changed to: {status}"
+        )
         history_query = """
             INSERT INTO job_status_history
             (job_id, status, status_message, progress, updated_at)
@@ -409,10 +476,13 @@ def update_job_status(job_id: str, status: str, progress: float = None,
         if conn_created:
             connection.commit()
 
-        logger.info(f"Updated job {job_id}: status={status}, progress={progress}, message={status_message}")
+        logger.info(
+            f"Updated job {job_id}: status={status}, progress={progress}, message={status_message}"
+        )
     finally:
         if conn_created and connection:
             connection.close()
+
 
 def get_job(job_id: str, connection: sqlite3.Connection = None) -> dict:
     """
@@ -433,7 +503,13 @@ def get_job(job_id: str, connection: sqlite3.Connection = None) -> dict:
         logger.error(f"Failed to get job {job_id}: {str(e)}")
         raise
 
-def list_jobs(job_type: str = None, status: str = None, limit: int = 100, connection: sqlite3.Connection = None) -> list[dict]:
+
+def list_jobs(
+    job_type: str = None,
+    status: str = None,
+    limit: int = 100,
+    connection: sqlite3.Connection = None,
+) -> list[dict]:
     """
     List jobs with optional filters
 
@@ -461,18 +537,25 @@ def list_jobs(job_type: str = None, status: str = None, limit: int = 100, connec
     params.append(limit)
 
     try:
-        results = execute_query(query, tuple(params), fetchall=True, connection=connection)
+        results = execute_query(
+            query, tuple(params), fetchall=True, connection=connection
+        )
         return results or []
     except DatabaseError as e:
         logger.error(f"Failed to list jobs: {str(e)}")
         raise
 
+
 # Result-related functions
 
-def create_data_upload_result(job_id: str, records_processed: int,
-                              features_generated: list[str],
-                              processing_run_id: int,
-                              connection: sqlite3.Connection = None) -> str:
+
+def create_data_upload_result(
+    job_id: str,
+    records_processed: int,
+    features_generated: list[str],
+    processing_run_id: int,
+    connection: sqlite3.Connection = None,
+) -> str:
     """
     Create a data upload result record
 
@@ -499,7 +582,7 @@ def create_data_upload_result(job_id: str, records_processed: int,
         job_id,
         records_processed,
         json.dumps(features_generated, default=json_default_serializer),
-        processing_run_id
+        processing_run_id,
     )
 
     try:
@@ -509,10 +592,11 @@ def create_data_upload_result(job_id: str, records_processed: int,
         logger.error(f"Failed to create data upload result for job {job_id}")
         raise
 
+
 def create_or_get_config(
     config_dict: dict[str, Any],
     is_active: bool = False,
-    connection: sqlite3.Connection = None
+    connection: sqlite3.Connection = None,
 ) -> str:
     """
     Creates a config record if it doesn't exist, based on a hash of the config.
@@ -538,13 +622,14 @@ def create_or_get_config(
         cursor = conn.cursor()
 
         # Hash the JSON representation of the config for a stable ID
-        config_json = json.dumps(config_dict, sort_keys=True, default=json_default_serializer)
+        config_json = json.dumps(
+            config_dict, sort_keys=True, default=json_default_serializer
+        )
         config_id = hashlib.md5(config_json.encode()).hexdigest()
 
         # Check if this config already exists
         cursor.execute(
-            "SELECT config_id FROM configs WHERE config_id = ?",
-            (config_id,)
+            "SELECT config_id FROM configs WHERE config_id = ?", (config_id,)
         )
 
         if not cursor.fetchone():
@@ -556,7 +641,7 @@ def create_or_get_config(
                 INSERT INTO configs (config_id, config, is_active, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (config_id, config_json, 1 if is_active else 0, now)
+                (config_id, config_json, 1 if is_active else 0, now),
             )
 
             if is_active:
@@ -567,10 +652,10 @@ def create_or_get_config(
                     SET is_active = 0
                     WHERE config_id != ?
                     """,
-                    (config_id,)
+                    (config_id,),
                 )
 
-            if conn_created: # Only commit if this function created the connection
+            if conn_created:  # Only commit if this function created the connection
                 conn.commit()
             logger.info(f"Created config: {config_id}, active: {is_active}")
         elif is_active:
@@ -581,7 +666,7 @@ def create_or_get_config(
                 SET is_active = 0
                 WHERE config_id != ?
                 """,
-                (config_id,)
+                (config_id,),
             )
 
             cursor.execute(
@@ -590,10 +675,10 @@ def create_or_get_config(
                 SET is_active = 1
                 WHERE config_id = ?
                 """,
-                (config_id,)
+                (config_id,),
             )
 
-            if conn_created: # Only commit if this function created the connection
+            if conn_created:  # Only commit if this function created the connection
                 conn.commit()
             logger.info(f"Set existing config {config_id} as active")
 
@@ -601,18 +686,19 @@ def create_or_get_config(
 
     except Exception as e:
         logger.error(f"Error with config: {e}")
-        if conn_created and 'conn' in locals():
+        if conn_created and "conn" in locals():
             try:
                 conn.rollback()
             except Exception:
                 pass  # Already closed or other issue
         raise
     finally:
-        if conn_created and 'conn' in locals():
+        if conn_created and "conn" in locals():
             try:
                 conn.close()
             except Exception:
                 pass  # Already closed or other issue
+
 
 def get_active_config(connection: sqlite3.Connection = None) -> dict[str, Any] | None:
     """
@@ -641,9 +727,9 @@ def get_active_config(connection: sqlite3.Connection = None) -> dict[str, Any] |
         if not result:
             return None
         # ... existing code ...
-        if hasattr(result, 'keys'):  # sqlite.Row
-            config_id = result['config_id']
-            config_json = result['config']
+        if hasattr(result, "keys"):  # sqlite.Row
+            config_id = result["config_id"]
+            config_json = result["config"]
         else:  # tuple
             config_id = result[0]
             config_json = result[1]
@@ -652,21 +738,23 @@ def get_active_config(connection: sqlite3.Connection = None) -> dict[str, Any] |
         except (json.JSONDecodeError, TypeError):
             logger.error(f"Error parsing config JSON: {config_json}")
             config = {}
-        return {
-            "config_id": config_id,
-            "config": config
-        }
+        return {"config_id": config_id, "config": config}
     except Exception as e:
         logger.error(f"Error getting active config: {e}")
         return None
     finally:
-        if conn_created and 'conn' in locals():
+        if conn_created and "conn" in locals():
             try:
                 conn.close()
             except Exception:
                 pass  # Already closed or other issue
 
-def set_config_active(config_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None) -> bool:
+
+def set_config_active(
+    config_id: str,
+    deactivate_others: bool = True,
+    connection: sqlite3.Connection = None,
+) -> bool:
     """
     Sets a config as active and optionally deactivates others.
 
@@ -689,10 +777,7 @@ def set_config_active(config_id: str, deactivate_others: bool = True, connection
         cursor = conn.cursor()
 
         # First check if config exists
-        cursor.execute(
-            "SELECT 1 FROM configs WHERE config_id = ?",
-            (config_id,)
-        )
+        cursor.execute("SELECT 1 FROM configs WHERE config_id = ?", (config_id,))
 
         if not cursor.fetchone():
             logger.error(f"Config {config_id} not found")
@@ -702,8 +787,7 @@ def set_config_active(config_id: str, deactivate_others: bool = True, connection
             cursor.execute("UPDATE configs SET is_active = 0")
 
         cursor.execute(
-            "UPDATE configs SET is_active = 1 WHERE config_id = ?",
-            (config_id,)
+            "UPDATE configs SET is_active = 1 WHERE config_id = ?", (config_id,)
         )
 
         if conn_created:
@@ -720,7 +804,12 @@ def set_config_active(config_id: str, deactivate_others: bool = True, connection
         if conn_created and conn:
             conn.close()
 
-def get_best_config_by_metric(metric_name: str, higher_is_better: bool = True, connection: sqlite3.Connection = None) -> dict[str, Any] | None:
+
+def get_best_config_by_metric(
+    metric_name: str,
+    higher_is_better: bool = True,
+    connection: sqlite3.Connection = None,
+) -> dict[str, Any] | None:
     """
     Returns the config with the best metric value based on training_results.
 
@@ -734,8 +823,12 @@ def get_best_config_by_metric(metric_name: str, higher_is_better: bool = True, c
         otherwise None.
     """
     if metric_name not in ALLOWED_METRICS:
-        logger.error(f"Invalid metric_name '{metric_name}' provided to get_best_config_by_metric.")
-        raise ValueError(f"Invalid metric_name: {metric_name}. Allowed metrics are: {ALLOWED_METRICS}")
+        logger.error(
+            f"Invalid metric_name '{metric_name}' provided to get_best_config_by_metric."
+        )
+        raise ValueError(
+            f"Invalid metric_name: {metric_name}. Allowed metrics are: {ALLOWED_METRICS}"
+        )
 
     conn_created = False
     try:
@@ -745,13 +838,13 @@ def get_best_config_by_metric(metric_name: str, higher_is_better: bool = True, c
             conn = get_db_connection()
             conn_created = True
 
-        conn.row_factory = dict_factory # Use dict_factory
+        conn.row_factory = dict_factory  # Use dict_factory
         cursor = conn.cursor()
 
         order_direction = "DESC" if higher_is_better else "ASC"
 
         # Construct the JSON path safely
-        json_path = f"'$.{metric_name}'" # The metric_name is now validated
+        json_path = f"'$.{metric_name}'"  # The metric_name is now validated
 
         # Join configs and training_results to find the best metrics
         # Ensure config_id is not NULL in training_results
@@ -775,40 +868,48 @@ def get_best_config_by_metric(metric_name: str, higher_is_better: bool = True, c
 
         if result:
             # Parse JSON fields
-            if result.get('config'):
-                 try:
-                     result['config'] = json.loads(result['config'])
-                 except json.JSONDecodeError:
-                     logger.warning(f"Could not decode config JSON for config {result['config_id']}")
-                     result['config'] = {} # Set to empty dict on error
+            if result.get("config"):
+                try:
+                    result["config"] = json.loads(result["config"])
+                except json.JSONDecodeError:
+                    logger.warning(
+                        f"Could not decode config JSON for config {result['config_id']}"
+                    )
+                    result["config"] = {}  # Set to empty dict on error
             else:
-                result['config'] = {}
+                result["config"] = {}
 
-            if result.get('metrics'):
-                 try:
-                     result['metrics'] = json.loads(result['metrics'])
-                 except json.JSONDecodeError:
-                     logger.warning(f"Could not decode metrics JSON for config {result['config_id']} in training_results")
-                     result['metrics'] = {} # Set to empty dict on error
+            if result.get("metrics"):
+                try:
+                    result["metrics"] = json.loads(result["metrics"])
+                except json.JSONDecodeError:
+                    logger.warning(
+                        f"Could not decode metrics JSON for config {result['config_id']} in training_results"
+                    )
+                    result["metrics"] = {}  # Set to empty dict on error
             else:
-                result['metrics'] = {}
+                result["metrics"] = {}
 
             # Remove the extracted metric_value helper column
-            result.pop('metric_value', None)
+            result.pop("metric_value", None)
             return result
 
         return None
 
     except sqlite3.Error as e:
-        logger.error(f"Database error in get_best_config_by_metric for metric '{metric_name}': {e}", exc_info=True)
+        logger.error(
+            f"Database error in get_best_config_by_metric for metric '{metric_name}': {e}",
+            exc_info=True,
+        )
         # It might be better to re-raise a custom error or let DatabaseError propagate if execute_query was used
-        return None # Or raise DatabaseError(f"Failed to get best config: {e}", original_error=e)
-    except ValueError as ve: # Catch the ValueError from metric_name validation
+        return None  # Or raise DatabaseError(f"Failed to get best config: {e}", original_error=e)
+    except ValueError as ve:  # Catch the ValueError from metric_name validation
         logger.error(f"ValueError in get_best_config_by_metric: {ve}", exc_info=True)
-        raise # Re-raise the ValueError to be handled by the caller
+        raise  # Re-raise the ValueError to be handled by the caller
     finally:
         if conn_created and conn:
-            conn.close() # Correct indentation
+            conn.close()  # Correct indentation
+
 
 def create_model_record(
     model_id: str,
@@ -817,7 +918,7 @@ def create_model_record(
     created_at: datetime,
     metadata: dict[str, Any] | None = None,
     is_active: bool = False,
-    connection: sqlite3.Connection = None
+    connection: sqlite3.Connection = None,
 ) -> None:
     """
     Creates a record for a trained model artifact.
@@ -851,10 +952,14 @@ def create_model_record(
                 model_id,
                 job_id,
                 model_path,
-                created_at.isoformat() if isinstance(created_at, datetime) else created_at,
-                json.dumps(metadata, default=json_default_serializer) if metadata else None,
-                1 if is_active else 0
-            )
+                created_at.isoformat()
+                if isinstance(created_at, datetime)
+                else created_at,
+                json.dumps(metadata, default=json_default_serializer)
+                if metadata
+                else None,
+                1 if is_active else 0,
+            ),
         )
 
         if is_active:
@@ -865,7 +970,7 @@ def create_model_record(
                 SET is_active = 0
                 WHERE model_id != ?
                 """,
-                (model_id,)
+                (model_id,),
             )
 
         conn.commit()
@@ -873,18 +978,19 @@ def create_model_record(
 
     except Exception as e:
         logger.error(f"Error creating model record: {e}")
-        if conn_created and 'conn' in locals():
+        if conn_created and "conn" in locals():
             try:
                 conn.rollback()
             except Exception:
                 pass  # Already closed or other issue
         raise
     finally:
-        if conn_created and 'conn' in locals():
+        if conn_created and "conn" in locals():
             try:
                 conn.close()
             except Exception:
                 pass  # Already closed or other issue
+
 
 def get_active_model(connection: sqlite3.Connection = None) -> dict[str, Any] | None:
     """
@@ -920,10 +1026,10 @@ def get_active_model(connection: sqlite3.Connection = None) -> dict[str, Any] | 
             return None
 
         # Check how to access the result (could be dict or sqlite.Row)
-        if hasattr(result, 'keys'):  # sqlite.Row or dict
-            model_id = result['model_id']
-            model_path = result['model_path']
-            metadata_str = result['metadata'] if 'metadata' in result else None
+        if hasattr(result, "keys"):  # sqlite.Row or dict
+            model_id = result["model_id"]
+            model_path = result["model_path"]
+            metadata_str = result["metadata"] if "metadata" in result else None
         else:  # tuple
             model_id = result[0]
             model_path = result[1]
@@ -936,11 +1042,7 @@ def get_active_model(connection: sqlite3.Connection = None) -> dict[str, Any] | 
             logger.warning(f"Could not decode metadata JSON for model {model_id}")
             metadata = {}  # Set to empty dict on error
 
-        return {
-            "model_id": model_id,
-            "model_path": model_path,
-            "metadata": metadata
-        }
+        return {"model_id": model_id, "model_path": model_path, "metadata": metadata}
 
     except sqlite3.Error as e:
         logger.error(f"Database error in get_active_model: {e}")
@@ -949,7 +1051,10 @@ def get_active_model(connection: sqlite3.Connection = None) -> dict[str, Any] | 
         if conn_created and conn:
             conn.close()
 
-def set_model_active(model_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None) -> bool:
+
+def set_model_active(
+    model_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None
+) -> bool:
     """
     Sets a model as active and optionally deactivates others.
 
@@ -972,10 +1077,7 @@ def set_model_active(model_id: str, deactivate_others: bool = True, connection: 
         cursor = conn.cursor()
 
         # First check if model exists
-        cursor.execute(
-            "SELECT 1 FROM models WHERE model_id = ?",
-            (model_id,)
-        )
+        cursor.execute("SELECT 1 FROM models WHERE model_id = ?", (model_id,))
 
         if not cursor.fetchone():
             logger.error(f"Model {model_id} not found")
@@ -985,8 +1087,7 @@ def set_model_active(model_id: str, deactivate_others: bool = True, connection: 
             cursor.execute("UPDATE models SET is_active = 0")
 
         cursor.execute(
-            "UPDATE models SET is_active = 1 WHERE model_id = ?",
-            (model_id,)
+            "UPDATE models SET is_active = 1 WHERE model_id = ?", (model_id,)
         )
 
         if conn_created:
@@ -1003,7 +1104,12 @@ def set_model_active(model_id: str, deactivate_others: bool = True, connection: 
         if conn_created and conn:
             conn.close()
 
-def get_best_model_by_metric(metric_name: str, higher_is_better: bool = True, connection: sqlite3.Connection = None) -> dict[str, Any] | None:
+
+def get_best_model_by_metric(
+    metric_name: str,
+    higher_is_better: bool = True,
+    connection: sqlite3.Connection = None,
+) -> dict[str, Any] | None:
     """
     Returns the model with the best metric value based on training_results.
 
@@ -1016,8 +1122,12 @@ def get_best_model_by_metric(metric_name: str, higher_is_better: bool = True, co
         Dictionary with model information if a best model exists, otherwise None.
     """
     if metric_name not in ALLOWED_METRICS:
-        logger.error(f"Invalid metric_name '{metric_name}' provided to get_best_model_by_metric.")
-        raise ValueError(f"Invalid metric_name: {metric_name}. Allowed metrics are: {ALLOWED_METRICS}")
+        logger.error(
+            f"Invalid metric_name '{metric_name}' provided to get_best_model_by_metric."
+        )
+        raise ValueError(
+            f"Invalid metric_name: {metric_name}. Allowed metrics are: {ALLOWED_METRICS}"
+        )
 
     conn_created = False
     try:
@@ -1027,13 +1137,13 @@ def get_best_model_by_metric(metric_name: str, higher_is_better: bool = True, co
             conn = get_db_connection()
             conn_created = True
 
-        conn.row_factory = dict_factory # Use dict_factory for easier access
+        conn.row_factory = dict_factory  # Use dict_factory for easier access
         cursor = conn.cursor()
 
         order_direction = "DESC" if higher_is_better else "ASC"
 
         # Construct the JSON path safely
-        json_path = f"'$.{metric_name}'" # The metric_name is now validated
+        json_path = f"'$.{metric_name}'"  # The metric_name is now validated
 
         # Join models and training_results to find the best metrics
         # Ensure model_id is not NULL in training_results
@@ -1059,43 +1169,53 @@ def get_best_model_by_metric(metric_name: str, higher_is_better: bool = True, co
         if result:
             # No need to parse JSON here, return the dict directly
             # Ensure metadata is parsed if it exists
-            if result.get('metadata'):
-                 try:
-                     result['metadata'] = json.loads(result['metadata'])
-                 except json.JSONDecodeError:
-                     logger.warning(f"Could not decode metadata JSON for model {result['model_id']}")
-                     result['metadata'] = {} # Set to empty dict on error
+            if result.get("metadata"):
+                try:
+                    result["metadata"] = json.loads(result["metadata"])
+                except json.JSONDecodeError:
+                    logger.warning(
+                        f"Could not decode metadata JSON for model {result['model_id']}"
+                    )
+                    result["metadata"] = {}  # Set to empty dict on error
             else:
-                result['metadata'] = {}
+                result["metadata"] = {}
 
             # Ensure metrics is parsed if it exists
-            if result.get('metrics'):
-                 try:
-                     result['metrics'] = json.loads(result['metrics'])
-                 except json.JSONDecodeError:
-                     logger.warning(f"Could not decode metrics JSON for model {result['model_id']} in training_results")
-                     result['metrics'] = {} # Set to empty dict on error
+            if result.get("metrics"):
+                try:
+                    result["metrics"] = json.loads(result["metrics"])
+                except json.JSONDecodeError:
+                    logger.warning(
+                        f"Could not decode metrics JSON for model {result['model_id']} in training_results"
+                    )
+                    result["metrics"] = {}  # Set to empty dict on error
             else:
-                result['metrics'] = {}
+                result["metrics"] = {}
 
             # Remove the extracted metric_value helper column
-            result.pop('metric_value', None)
+            result.pop("metric_value", None)
             return result
 
         return None
 
     except sqlite3.Error as e:
-        logger.error(f"Database error in get_best_model_by_metric for metric '{metric_name}': {e}", exc_info=True)
+        logger.error(
+            f"Database error in get_best_model_by_metric for metric '{metric_name}': {e}",
+            exc_info=True,
+        )
         # It might be better to re-raise a custom error or let DatabaseError propagate if execute_query was used
-        return None # Or raise DatabaseError(f"Failed to get best model: {e}", original_error=e)
-    except ValueError as ve: # Catch the ValueError from metric_name validation
+        return None  # Or raise DatabaseError(f"Failed to get best model: {e}", original_error=e)
+    except ValueError as ve:  # Catch the ValueError from metric_name validation
         logger.error(f"ValueError in get_best_model_by_metric: {ve}", exc_info=True)
-        raise # Re-raise the ValueError to be handled by the caller
+        raise  # Re-raise the ValueError to be handled by the caller
     finally:
         if conn_created and conn:
-            conn.close() # Correct indentation
+            conn.close()  # Correct indentation
 
-def get_recent_models(limit: int = 5, connection: sqlite3.Connection = None) -> list[dict[str, Any]]:
+
+def get_recent_models(
+    limit: int = 5, connection: sqlite3.Connection = None
+) -> list[dict[str, Any]]:
     """
     Get the most recent models from the database.
     """
@@ -1107,7 +1227,10 @@ def get_recent_models(limit: int = 5, connection: sqlite3.Connection = None) -> 
     """
     return execute_query(query, (limit,), fetchall=True, connection=connection)
 
-def delete_model_record_and_file(model_id: str, connection: sqlite3.Connection = None) -> bool:
+
+def delete_model_record_and_file(
+    model_id: str, connection: sqlite3.Connection = None
+) -> bool:
     """
     Deletes a model record from the database and its associated file from the filesystem.
     Returns True if successful, False otherwise.
@@ -1121,20 +1244,24 @@ def delete_model_record_and_file(model_id: str, connection: sqlite3.Connection =
             actual_conn = get_db_connection()
             conn_created = True
 
-        with actual_conn as conn: # Use connection as a context manager for transaction
+        with actual_conn as conn:  # Use connection as a context manager for transaction
             cursor = conn.cursor()
 
             # Get the model path before deleting the record
-            cursor.execute("SELECT model_path FROM models WHERE model_id = ?", (model_id,))
+            cursor.execute(
+                "SELECT model_path FROM models WHERE model_id = ?", (model_id,)
+            )
             result = cursor.fetchone()
             if not result:
                 logger.warning(f"Model with ID {model_id} not found for deletion.")
                 return False
 
-            model_path = result['model_path']
+            model_path = result["model_path"]
 
             # 1. Delete dependent records from training_results
-            cursor.execute("DELETE FROM training_results WHERE model_id = ?", (model_id,))
+            cursor.execute(
+                "DELETE FROM training_results WHERE model_id = ?", (model_id,)
+            )
 
             # 2. Delete the model record
             cursor.execute("DELETE FROM models WHERE model_id = ?", (model_id,))
@@ -1144,18 +1271,24 @@ def delete_model_record_and_file(model_id: str, connection: sqlite3.Connection =
                 try:
                     os.remove(model_path)
                 except OSError as e:
-                    logger.error(f"Error removing model file {model_path}: {e}", exc_info=True)
+                    logger.error(
+                        f"Error removing model file {model_path}: {e}", exc_info=True
+                    )
                     # Depending on policy, we might still consider the DB part a success
                     # For now, we'll let it be a success if the DB records are gone.
 
         return True
 
     except sqlite3.Error as e:
-        logger.error(f"Database error in delete_model_record_and_file for model_id {model_id}: {e}", exc_info=True)
+        logger.error(
+            f"Database error in delete_model_record_and_file for model_id {model_id}: {e}",
+            exc_info=True,
+        )
         return False
     finally:
         if conn_created and actual_conn:
             actual_conn.close()
+
 
 def create_training_result(
     job_id: str,
@@ -1164,13 +1297,13 @@ def create_training_result(
     metrics: dict[str, Any],
     config: dict[str, Any],
     duration: int | None,
-    connection: sqlite3.Connection = None # Allow passing connection for transaction
+    connection: sqlite3.Connection = None,  # Allow passing connection for transaction
 ) -> str:
     """Creates a record for a completed training job and handles auto-activation."""
     result_id = str(uuid.uuid4())
     metrics_json = json.dumps(metrics, default=json_default_serializer)
     # config_json = json.dumps(config) # This line is removed as config_json is no longer used for direct DB insertion
-    settings = get_settings() # Get latest settings
+    settings = get_settings()  # Get latest settings
 
     conn_created = False
     try:
@@ -1188,9 +1321,7 @@ def create_training_result(
         (result_id, job_id, model_id, config_id, metrics, duration)
         VALUES (?, ?, ?, ?, ?, ?)
         """
-        params = (
-            result_id, job_id, model_id, config_id, metrics_json, duration
-        )
+        params = (result_id, job_id, model_id, config_id, metrics_json, duration)
         cursor.execute(query, params)
         logger.info(f"Created training result: {result_id} for job: {job_id}")
 
@@ -1202,37 +1333,46 @@ def create_training_result(
             best_config = get_best_config_by_metric(
                 metric_name=settings.default_metric,
                 higher_is_better=settings.default_metric_higher_is_better,
-                connection=conn # Use the same connection
+                connection=conn,  # Use the same connection
             )
             if best_config and best_config.get("config_id"):
                 logger.info(f"Auto-activating best config: {best_config['config_id']}")
                 set_config_active(best_config["config_id"], connection=conn)
             else:
-                logger.warning(f"Auto-select configs enabled, but couldn't find best config by metric '{settings.default_metric}'")
-
+                logger.warning(
+                    f"Auto-select configs enabled, but couldn't find best config by metric '{settings.default_metric}'"
+                )
 
         # Auto-activate best model
-        if settings.auto_select_best_model and model_id: # Only if a model was actually created
-             best_model = get_best_model_by_metric(
-                 metric_name=settings.default_metric,
-                 higher_is_better=settings.default_metric_higher_is_better,
-                 connection=conn # Use the same connection
-             )
-             if best_model and best_model.get("model_id"):
-                 logger.info(f"Auto-activating best model: {best_model['model_id']}")
-                 set_model_active(best_model["model_id"], connection=conn)
-             else:
-                  logger.warning(f"Auto-select model enabled, but couldn't find best model by metric '{settings.default_metric}'")
+        if (
+            settings.auto_select_best_model and model_id
+        ):  # Only if a model was actually created
+            best_model = get_best_model_by_metric(
+                metric_name=settings.default_metric,
+                higher_is_better=settings.default_metric_higher_is_better,
+                connection=conn,  # Use the same connection
+            )
+            if best_model and best_model.get("model_id"):
+                logger.info(f"Auto-activating best model: {best_model['model_id']}")
+                set_model_active(best_model["model_id"], connection=conn)
+            else:
+                logger.warning(
+                    f"Auto-select model enabled, but couldn't find best model by metric '{settings.default_metric}'"
+                )
 
-
-        if conn_created: # Commit only if we created the connection here
-             conn.commit()
+        if conn_created:  # Commit only if we created the connection here
+            conn.commit()
 
     except sqlite3.Error as e:
-        logger.error(f"Database error creating training result or auto-activating for job {job_id}: {e}", exc_info=True)
+        logger.error(
+            f"Database error creating training result or auto-activating for job {job_id}: {e}",
+            exc_info=True,
+        )
         if conn_created and conn:
-            conn.rollback() # Rollback on error if we created the connection
-        raise DatabaseError(f"Failed to create training result: {e}", original_error=e)
+            conn.rollback()  # Rollback on error if we created the connection
+        raise DatabaseError(
+            f"Failed to create training result: {e}", original_error=e
+        ) from e
     finally:
         # Close only if we created the connection here
         if conn_created and conn:
@@ -1240,13 +1380,14 @@ def create_training_result(
 
     return result_id
 
+
 def create_prediction_result(
     job_id: str,
     model_id: str,
     output_path: str,
     summary_metrics: dict[str, Any] | None,
     prediction_month: date | None = None,  # New parameter
-    connection: sqlite3.Connection = None
+    connection: sqlite3.Connection = None,
 ) -> str:
     """
     Create a prediction result record
@@ -1274,8 +1415,10 @@ def create_prediction_result(
         job_id,
         model_id,
         output_path,
-        json.dumps(summary_metrics, default=json_default_serializer) if summary_metrics else None,
-        prediction_month.isoformat() if prediction_month else None
+        json.dumps(summary_metrics, default=json_default_serializer)
+        if summary_metrics
+        else None,
+        prediction_month.isoformat() if prediction_month else None,
     )
 
     try:
@@ -1285,7 +1428,14 @@ def create_prediction_result(
         logger.error(f"Failed to create prediction result for job {job_id}")
         raise
 
-def create_report_result(job_id: str, report_type: str, parameters: dict[str, Any], output_path: str, connection: sqlite3.Connection = None) -> str:
+
+def create_report_result(
+    job_id: str,
+    report_type: str,
+    parameters: dict[str, Any],
+    output_path: str,
+    connection: sqlite3.Connection = None,
+) -> str:
     """
     Create a report result record
 
@@ -1311,7 +1461,7 @@ def create_report_result(job_id: str, report_type: str, parameters: dict[str, An
         job_id,
         report_type,
         json.dumps(parameters, default=json_default_serializer),
-        output_path
+        output_path,
     )
 
     try:
@@ -1321,32 +1471,46 @@ def create_report_result(job_id: str, report_type: str, parameters: dict[str, An
         logger.error(f"Failed to create report result for job {job_id}")
         raise
 
-def get_data_upload_result(result_id: str, connection: sqlite3.Connection = None) -> dict:
+
+def get_data_upload_result(
+    result_id: str, connection: sqlite3.Connection = None
+) -> dict:
     """Get data upload result by ID"""
     query = "SELECT * FROM data_upload_results WHERE result_id = ?"
     return execute_query(query, (result_id,), connection=connection)
+
 
 def get_training_result(result_id: str, connection: sqlite3.Connection = None) -> dict:
     """Get training result by ID"""
     query = "SELECT * FROM training_results WHERE result_id = ?"
     return execute_query(query, (result_id,), connection=connection)
 
-def get_prediction_result(result_id: str, connection: sqlite3.Connection = None) -> dict:
+
+def get_prediction_result(
+    result_id: str, connection: sqlite3.Connection = None
+) -> dict:
     """Get prediction result by ID"""
     query = "SELECT * FROM prediction_results WHERE result_id = ?"
     return execute_query(query, (result_id,), connection=connection)
+
 
 def get_report_result(result_id: str, connection: sqlite3.Connection = None) -> dict:
     """Get report result by ID"""
     query = "SELECT * FROM report_results WHERE result_id = ?"
     return execute_query(query, (result_id,), connection=connection)
 
+
 # Processing runs management
 
-def create_processing_run(start_time: datetime, status: str,
-                         cutoff_date: str, source_files: str,
-                         end_time: datetime = None,
-                         connection: sqlite3.Connection = None) -> int:
+
+def create_processing_run(
+    start_time: datetime,
+    status: str,
+    cutoff_date: str,
+    source_files: str,
+    end_time: datetime = None,
+    connection: sqlite3.Connection = None,
+) -> int:
     """
     Create a processing run record
 
@@ -1371,21 +1535,28 @@ def create_processing_run(start_time: datetime, status: str,
         status,
         cutoff_date,
         source_files,
-        end_time.isoformat() if end_time else None
+        end_time.isoformat() if end_time else None,
     )
 
     try:
         execute_query(query, params, connection=connection)
 
         # Get the last inserted ID
-        result = execute_query("SELECT last_insert_rowid() as run_id", connection=connection)
+        result = execute_query(
+            "SELECT last_insert_rowid() as run_id", connection=connection
+        )
         return result["run_id"]
     except DatabaseError:
         logger.error("Failed to create processing run")
         raise
 
-def update_processing_run(run_id: int, status: str, end_time: datetime = None,
-                         connection: sqlite3.Connection = None) -> None:
+
+def update_processing_run(
+    run_id: int,
+    status: str,
+    end_time: datetime = None,
+    connection: sqlite3.Connection = None,
+) -> None:
     """
     Update a processing run
 
@@ -1411,14 +1582,23 @@ def update_processing_run(run_id: int, status: str, end_time: datetime = None,
         logger.error(f"Failed to update processing run {run_id}")
         raise
 
+
 # MultiIndex mapping functions
 
-def get_or_create_multiindex_id(barcode: str, artist: str, album: str,
-                                cover_type: str, price_category: str,
-                                release_type: str, recording_decade: str,
-                                release_decade: str, style: str,
-                                record_year: int,
-                                connection: sqlite3.Connection = None) -> int:
+
+def get_or_create_multiindex_id(
+    barcode: str,
+    artist: str,
+    album: str,
+    cover_type: str,
+    price_category: str,
+    release_type: str,
+    recording_decade: str,
+    release_decade: str,
+    style: str,
+    record_year: int,
+    connection: sqlite3.Connection = None,
+) -> int:
     """
     Get or create a multiindex mapping entry
 
@@ -1447,8 +1627,16 @@ def get_or_create_multiindex_id(barcode: str, artist: str, album: str,
     """
 
     params = (
-        barcode, artist, album, cover_type, price_category,
-        release_type, recording_decade, release_decade, style, record_year
+        barcode,
+        artist,
+        album,
+        cover_type,
+        price_category,
+        release_type,
+        recording_decade,
+        release_decade,
+        style,
+        record_year,
     )
 
     try:
@@ -1468,14 +1656,19 @@ def get_or_create_multiindex_id(barcode: str, artist: str, album: str,
         execute_query(insert_query, params, connection=connection)
 
         # Get the new ID
-        result = execute_query("SELECT last_insert_rowid() as multiindex_id", connection=connection)
+        result = execute_query(
+            "SELECT last_insert_rowid() as multiindex_id", connection=connection
+        )
         return result["multiindex_id"]
 
     except DatabaseError:
         logger.error("Failed to get or create multiindex mapping")
         raise
 
-def get_configs(limit: int = 5, connection: sqlite3.Connection = None) -> list[dict[str, Any]]:
+
+def get_configs(
+    limit: int = 5, connection: sqlite3.Connection = None
+) -> list[dict[str, Any]]:
     """
     Retrieves a list of configs ordered by creation date.
 
@@ -1504,13 +1697,13 @@ def get_configs(limit: int = 5, connection: sqlite3.Connection = None) -> list[d
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (limit,)
+            (limit,),
         )
 
         results = cursor.fetchall()
         for result in results:
-            if 'config' in result and result['config']:
-                result['config'] = json.loads(result['config'])
+            if "config" in result and result["config"]:
+                result["config"] = json.loads(result["config"])
 
         return results
 
@@ -1521,7 +1714,10 @@ def get_configs(limit: int = 5, connection: sqlite3.Connection = None) -> list[d
         if conn_created and conn:
             conn.close()
 
-def delete_configs_by_ids(config_ids: list[str], connection: sqlite3.Connection = None) -> dict[str, Any]:
+
+def delete_configs_by_ids(
+    config_ids: list[str], connection: sqlite3.Connection = None
+) -> dict[str, Any]:
     """
     Deletes multiple config records by their IDs, skipping active configs.
 
@@ -1535,11 +1731,7 @@ def delete_configs_by_ids(config_ids: list[str], connection: sqlite3.Connection 
     if not config_ids:
         return {"deleted_count": 0, "skipped_count": 0, "skipped_configs": []}
 
-    summary = {
-        "deleted_count": 0,
-        "skipped_count": 0,
-        "skipped_configs": []
-    }
+    summary = {"deleted_count": 0, "skipped_count": 0, "skipped_configs": []}
     conn_created = False
     try:
         if not connection:
@@ -1551,14 +1743,14 @@ def delete_configs_by_ids(config_ids: list[str], connection: sqlite3.Connection 
         with conn:  # Use connection as a context manager for transaction
             cursor = conn.cursor()
 
-            placeholders = ','.join('?' for _ in config_ids)
+            placeholders = ",".join("?" for _ in config_ids)
 
             # Find which configs are active
             cursor.execute(
                 f"SELECT config_id FROM configs WHERE config_id IN ({placeholders}) AND is_active = 1",
-                config_ids
+                config_ids,
             )
-            active_configs = {row['config_id'] for row in cursor.fetchall()}
+            active_configs = {row["config_id"] for row in cursor.fetchall()}
 
             summary["skipped_configs"] = list(active_configs)
             summary["skipped_count"] = len(active_configs)
@@ -1568,19 +1760,19 @@ def delete_configs_by_ids(config_ids: list[str], connection: sqlite3.Connection 
             if not configs_to_delete:
                 return summary
 
-            delete_placeholders = ','.join('?' for _ in configs_to_delete)
+            delete_placeholders = ",".join("?" for _ in configs_to_delete)
 
             # Find jobs using these configs
             cursor.execute(
                 f"SELECT config_id FROM jobs WHERE config_id IN ({delete_placeholders})"
             )
-            used_configs_in_jobs = {row['config_id'] for row in cursor.fetchall()}
+            used_configs_in_jobs = {row["config_id"] for row in cursor.fetchall()}
 
             # Also check training_results
             cursor.execute(
                 f"SELECT config_id FROM training_results WHERE config_id IN ({delete_placeholders})"
             )
-            used_configs_in_results = {row['config_id'] for row in cursor.fetchall()}
+            used_configs_in_results = {row["config_id"] for row in cursor.fetchall()}
 
             used_configs = used_configs_in_jobs.union(used_configs_in_results)
 
@@ -1591,17 +1783,19 @@ def delete_configs_by_ids(config_ids: list[str], connection: sqlite3.Connection 
                 summary["skipped_count"] += len(newly_skipped)
 
             # Recalculate configs to delete
-            final_configs_to_delete = [cid for cid in configs_to_delete if cid not in used_configs]
+            final_configs_to_delete = [
+                cid for cid in configs_to_delete if cid not in used_configs
+            ]
 
             if not final_configs_to_delete:
                 return summary
 
-            final_placeholders = ','.join('?' for _ in final_configs_to_delete)
+            final_placeholders = ",".join("?" for _ in final_configs_to_delete)
 
             # Now delete the unused, non-active configs
             cursor.execute(
                 f"DELETE FROM configs WHERE config_id IN ({final_placeholders})",
-                final_configs_to_delete
+                final_configs_to_delete,
             )
 
             summary["deleted_count"] = cursor.rowcount
@@ -1609,12 +1803,17 @@ def delete_configs_by_ids(config_ids: list[str], connection: sqlite3.Connection 
     except Exception as e:
         logger.error(f"Error deleting configs by IDs: {e}", exc_info=True)
     finally:
-        if conn_created and 'conn' in locals() and conn:
+        if conn_created and "conn" in locals() and conn:
             conn.close()
 
     return summary
 
-def get_all_models(limit: int = 100, include_active_status: bool = True, connection: sqlite3.Connection = None) -> list[dict[str, Any]]:
+
+def get_all_models(
+    limit: int = 100,
+    include_active_status: bool = True,
+    connection: sqlite3.Connection = None,
+) -> list[dict[str, Any]]:
     """
     Retrieves a list of all models with their details.
 
@@ -1644,13 +1843,13 @@ def get_all_models(limit: int = 100, include_active_status: bool = True, connect
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (limit,)
+            (limit,),
         )
 
         results = cursor.fetchall()
         for result in results:
-            if 'metadata' in result and result['metadata']:
-                result['metadata'] = json.loads(result['metadata'])
+            if "metadata" in result and result["metadata"]:
+                result["metadata"] = json.loads(result["metadata"])
 
         return results
 
@@ -1661,7 +1860,10 @@ def get_all_models(limit: int = 100, include_active_status: bool = True, connect
         if conn_created and conn:
             conn.close()
 
-def delete_models_by_ids(model_ids: list[str], connection: sqlite3.Connection = None) -> dict[str, Any]:
+
+def delete_models_by_ids(
+    model_ids: list[str], connection: sqlite3.Connection = None
+) -> dict[str, Any]:
     """
     Deletes multiple model records by their IDs and their associated files, skipping active models.
 
@@ -1673,13 +1875,18 @@ def delete_models_by_ids(model_ids: list[str], connection: sqlite3.Connection = 
         A dictionary with deletion summary.
     """
     if not model_ids:
-        return {"deleted_count": 0, "skipped_count": 0, "skipped_models": [], "failed_deletions": []}
+        return {
+            "deleted_count": 0,
+            "skipped_count": 0,
+            "skipped_models": [],
+            "failed_deletions": [],
+        }
 
     summary = {
         "deleted_count": 0,
         "skipped_count": 0,
         "skipped_models": [],
-        "failed_deletions": []
+        "failed_deletions": [],
     }
     conn_created = False
     try:
@@ -1692,67 +1899,72 @@ def delete_models_by_ids(model_ids: list[str], connection: sqlite3.Connection = 
         with conn:  # Use connection as a context manager for transaction
             cursor = conn.cursor()
 
-            placeholders = ','.join('?' for _ in model_ids)
+            placeholders = ",".join("?" for _ in model_ids)
 
             # Find which models are active
             cursor.execute(
                 f"SELECT model_id FROM models WHERE model_id IN ({placeholders}) AND is_active = 1",
-                model_ids
+                model_ids,
             )
-            active_models = {row['model_id'] for row in cursor.fetchall()}
+            active_models = {row["model_id"] for row in cursor.fetchall()}
 
             summary["skipped_models"] = list(active_models)
             summary["skipped_count"] = len(active_models)
 
-            models_to_delete_ids = [mid for mid in model_ids if mid not in active_models]
+            models_to_delete_ids = [
+                mid for mid in model_ids if mid not in active_models
+            ]
 
             if not models_to_delete_ids:
                 return summary
 
-            delete_placeholders = ','.join('?' for _ in models_to_delete_ids)
+            delete_placeholders = ",".join("?" for _ in models_to_delete_ids)
 
             # Get model paths before deleting records from DB
             cursor.execute(
                 f"SELECT model_id, model_path FROM models WHERE model_id IN ({delete_placeholders})",
-                models_to_delete_ids
+                models_to_delete_ids,
             )
             models_to_delete_with_paths = cursor.fetchall()
-
 
             # Delete associated training results first
             cursor.execute(
                 f"DELETE FROM training_results WHERE model_id IN ({delete_placeholders})",
-                models_to_delete_ids
+                models_to_delete_ids,
             )
 
             # Now delete the models from DB
             cursor.execute(
                 f"DELETE FROM models WHERE model_id IN ({delete_placeholders})",
-                models_to_delete_ids
+                models_to_delete_ids,
             )
 
             summary["deleted_count"] = cursor.rowcount
 
             # Finally, delete the physical files
             for model_info in models_to_delete_with_paths:
-                model_id = model_info['model_id']
-                model_path = model_info['model_path']
+                model_id = model_info["model_id"]
+                model_path = model_info["model_path"]
                 if model_path and os.path.exists(model_path):
                     try:
                         os.remove(model_path)
                         logger.info(f"Deleted model file: {model_path}")
                     except OSError as e:
-                        logger.error(f"Error removing model file {model_path} for model_id {model_id}: {e}", exc_info=True)
-                        summary['failed_deletions'].append(model_id)
+                        logger.error(
+                            f"Error removing model file {model_path} for model_id {model_id}: {e}",
+                            exc_info=True,
+                        )
+                        summary["failed_deletions"].append(model_id)
 
     except Exception as e:
         logger.error(f"Error deleting models by IDs: {e}", exc_info=True)
         # Do not re-raise to avoid hiding the summary
     finally:
-        if conn_created and 'conn' in locals() and conn:
+        if conn_created and "conn" in locals() and conn:
             conn.close()
 
     return summary
+
 
 def get_effective_config(settings, logger=None, connection=None):
     """
@@ -1773,20 +1985,18 @@ def get_effective_config(settings, logger=None, connection=None):
             logger.info(f"Found active config: {active_config_data['config_id']}")
         return active_config_data
     # Fallback: best by metric
-    metric_name = getattr(settings, 'default_metric', None)
-    higher_is_better = getattr(settings, 'default_metric_higher_is_better', True)
+    metric_name = getattr(settings, "default_metric", None)
+    higher_is_better = getattr(settings, "default_metric_higher_is_better", True)
     best_config_data = get_best_config_by_metric(
-        metric_name,
-        higher_is_better,
-        connection=connection
+        metric_name, higher_is_better, connection=connection
     )
     if best_config_data:
         if logger:
-            logger.info(f"Using best config by {metric_name}: {best_config_data['config_id']}")
+            logger.info(
+                f"Using best config by {metric_name}: {best_config_data['config_id']}"
+            )
         return best_config_data
     error_msg = "No active config and no best config by metric available"
     if logger:
         logger.error(error_msg)
     raise ValueError(error_msg)
-
-

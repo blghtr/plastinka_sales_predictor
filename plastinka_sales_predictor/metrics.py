@@ -20,7 +20,9 @@ def harmonic_mean(a: float, b: float, beta: float = 4.0) -> float:
         return float("inf")
     # Ensure inputs are not zero to avoid division by zero if beta makes one term dominant
     # This is implicitly handled by the structure, but good to be aware.
-    return ((beta ** 2 + 1) * (a * b)) / (a * beta ** 2 + b + 1e-9) # Add epsilon for stability
+    return ((beta**2 + 1) * (a * b)) / (
+        a * beta**2 + b + 1e-9
+    )  # Add epsilon for stability
 
 
 class BaseMetricWithZeroHandling(Metric):
@@ -28,13 +30,27 @@ class BaseMetricWithZeroHandling(Metric):
     Base class for metrics that handle zero and non-zero actual values separately
     and apply a penalty if scores deviate from specified thresholds.
     """
-    def __init__(self, q_interval=(0.05, 0.95), zero_thresh=0, nonzero_thresh=0, exp_base=2, direction=None):
+
+    def __init__(
+        self,
+        q_interval=(0.05, 0.95),
+        zero_thresh=0,
+        nonzero_thresh=0,
+        exp_base=2,
+        direction=None,
+    ):
         super().__init__()
         self.q_interval = q_interval
-        self.zero_thresh = zero_thresh # Target threshold for score on zero-valued actuals
-        self.nonzero_thresh = nonzero_thresh # Target threshold for score on non-zero-valued actuals
-        self.exp_base = exp_base # Base for exponential penalty calculation
-        self.penalty_sign = 1 if direction=='min' else -1 # 1 for minimization problems, -1 for maximization
+        self.zero_thresh = (
+            zero_thresh  # Target threshold for score on zero-valued actuals
+        )
+        self.nonzero_thresh = (
+            nonzero_thresh  # Target threshold for score on non-zero-valued actuals
+        )
+        self.exp_base = exp_base  # Base for exponential penalty calculation
+        self.penalty_sign = (
+            1 if direction == "min" else -1
+        )  # 1 for minimization problems, -1 for maximization
 
         self.add_state("zero_sum", torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("zero_count", torch.tensor(0), dist_reduce_fx="sum")
@@ -54,22 +70,32 @@ class BaseMetricWithZeroHandling(Metric):
             actual_series (torch.Tensor): Actual series.
                                           Expected shape: (N,) for MIWS, (N,1) for MIC.
         """
-        assert pred_series.ndim >= 1, f"pred_series must have at least 1 dimension, got {pred_series.ndim}"
-        assert actual_series.ndim >= 1, f"actual_series must have at least 1 dimension, got {actual_series.ndim}"
+        assert pred_series.ndim >= 1, (
+            f"pred_series must have at least 1 dimension, got {pred_series.ndim}"
+        )
+        assert actual_series.ndim >= 1, (
+            f"actual_series must have at least 1 dimension, got {actual_series.ndim}"
+        )
         # More specific shape checks will be in the _compute_score of derived classes
 
-        scaled_zero = 1e-6 # Threshold to consider an actual value as zero
+        scaled_zero = 1e-6  # Threshold to consider an actual value as zero
         zero_mask = actual_series == scaled_zero
-        non_zero_mask = ~zero_mask # Mask for actuals that are non-zero
+        non_zero_mask = ~zero_mask  # Mask for actuals that are non-zero
 
         # Update sub-metrics for zero and non-zero actuals separately
-        self._update_sub_metric(actual_series[zero_mask], pred_series[zero_mask], zero=True)
-        self._update_sub_metric(actual_series[non_zero_mask], pred_series[non_zero_mask], zero=False)
+        self._update_sub_metric(
+            actual_series[zero_mask], pred_series[zero_mask], zero=True
+        )
+        self._update_sub_metric(
+            actual_series[non_zero_mask], pred_series[non_zero_mask], zero=False
+        )
 
     def _update_sub_metric(self, actual, pred, zero):
-        if actual.numel() == 0: # No samples for this category (zero/non-zero)
+        if actual.numel() == 0:  # No samples for this category (zero/non-zero)
             return
-        score = self._compute_score(actual, pred) # Compute the raw score using derived class logic
+        score = self._compute_score(
+            actual, pred
+        )  # Compute the raw score using derived class logic
         if zero:
             self.zero_sum += score.sum()
             self.zero_count += score.numel()
@@ -84,9 +110,15 @@ class BaseMetricWithZeroHandling(Metric):
         and combines them using a harmonic mean.
         """
         # Calculate average score for zero actuals
-        zero_score = self.zero_sum / self.zero_count if self.zero_count > 0 else float("inf")
+        zero_score = (
+            self.zero_sum / self.zero_count if self.zero_count > 0 else float("inf")
+        )
         # Calculate average score for non-zero actuals
-        non_zero_score = self.non_zero_sum / self.non_zero_count if self.non_zero_count > 0 else float("inf")
+        non_zero_score = (
+            self.non_zero_sum / self.non_zero_count
+            if self.non_zero_count > 0
+            else float("inf")
+        )
 
         # Calculate deviation from thresholds
         zero_delta = zero_score - self.zero_thresh
@@ -94,10 +126,18 @@ class BaseMetricWithZeroHandling(Metric):
 
         penalty = 0
         # Apply exponential penalty if scores deviate from thresholds in the undesired direction
-        for delta, thresh in zip([zero_delta, non_zero_delta], [self.zero_thresh, self.nonzero_thresh], strict=False):
-            if thresh != 0: # Only apply penalty if a threshold is set
+        for delta, thresh in zip(
+            [zero_delta, non_zero_delta],
+            [self.zero_thresh, self.nonzero_thresh],
+            strict=False,
+        ):
+            if thresh != 0:  # Only apply penalty if a threshold is set
                 # Penalty is applied if the sign of delta matches the penalty_sign (e.g., for 'min' direction, if delta is positive)
-                penalty += self.penalty_sign * float(torch.sign(delta) == self.penalty_sign) * (self.exp_base**abs(delta) - 1)
+                penalty += (
+                    self.penalty_sign
+                    * float(torch.sign(delta) == self.penalty_sign)
+                    * (self.exp_base ** abs(delta) - 1)
+                )
 
         # Combine scores using harmonic mean and add penalty. Ensure result is non-negative.
         return max(0, harmonic_mean(zero_score, non_zero_score) + penalty)
@@ -107,16 +147,19 @@ class BaseMetricWithZeroHandling(Metric):
         raise NotImplementedError
 
 
-class MIWS(BaseMetricWithZeroHandling): # Mean Interval Width Score
+class MIWS(BaseMetricWithZeroHandling):  # Mean Interval Width Score
     """
     Mean Interval Width Score (MIWS). This metric evaluates the width of the prediction
     intervals and penalizes intervals that do not contain the actual value.
     Lower MIWS is better.
     """
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def _compute_score(self, actual_series: torch.Tensor, pred_series: torch.Tensor) -> torch.Tensor:
+    def _compute_score(
+        self, actual_series: torch.Tensor, pred_series: torch.Tensor
+    ) -> torch.Tensor:
         """
         Computes the MIWS score for given actual and predicted series.
 
@@ -131,25 +174,34 @@ class MIWS(BaseMetricWithZeroHandling): # Mean Interval Width Score
         Returns:
             torch.Tensor: A tensor of scores for each data point. Shape: (N,).
         """
-        assert actual_series.ndim == 1, f"actual_series expected to be 1D (N,), got shape {actual_series.shape}"
-        assert pred_series.ndim == 2, f"pred_series expected to be 2D (N, S), got shape {pred_series.shape}"
-        assert actual_series.shape[0] == pred_series.shape[0], \
+        assert actual_series.ndim == 1, (
+            f"actual_series expected to be 1D (N,), got shape {actual_series.shape}"
+        )
+        assert pred_series.ndim == 2, (
+            f"pred_series expected to be 2D (N, S), got shape {pred_series.shape}"
+        )
+        assert actual_series.shape[0] == pred_series.shape[0], (
             f"Batch size mismatch: actual_series has {actual_series.shape[0]}, pred_series has {pred_series.shape[0]}"
+        )
 
         # Calculate lower and upper quantiles from the predicted series
         # dim=1 means quantiles are computed across the S dimension (samples/quantiles for each data point)
-        y_pred_lo = torch.quantile(pred_series, q=self.q_interval[0], dim=1) # Shape: (N,)
-        y_pred_hi = torch.quantile(pred_series, q=self.q_interval[1], dim=1) # Shape: (N,)
+        y_pred_lo = torch.quantile(
+            pred_series, q=self.q_interval[0], dim=1
+        )  # Shape: (N,)
+        y_pred_hi = torch.quantile(
+            pred_series, q=self.q_interval[1], dim=1
+        )  # Shape: (N,)
 
         # Interval width: difference between upper and lower predicted quantiles
-        interval_width = y_pred_hi - y_pred_lo # Shape: (N,)
+        interval_width = y_pred_hi - y_pred_lo  # Shape: (N,)
         assert (interval_width >= 0).all(), "Interval width must be non-negative."
 
         # Penalty coefficients for when actual value is outside the interval
         # c_alpha_hi is for when actual_series > y_pred_hi
-        c_alpha_hi = 1 / (1 - self.q_interval[1] + 1e-9) # Add epsilon for stability
+        c_alpha_hi = 1 / (1 - self.q_interval[1] + 1e-9)  # Add epsilon for stability
         # c_alpha_lo is for when actual_series < y_pred_lo
-        c_alpha_lo = 1 / (self.q_interval[0] + 1e-9)     # Add epsilon for stability
+        c_alpha_lo = 1 / (self.q_interval[0] + 1e-9)  # Add epsilon for stability
 
         # Calculate score based on three cases:
         # 1. Actual is below the lower quantile: score = interval_width + penalty
@@ -157,24 +209,30 @@ class MIWS(BaseMetricWithZeroHandling): # Mean Interval Width Score
         # 3. Actual is within the interval: score = interval_width
         return torch.where(
             actual_series < y_pred_lo,
-            interval_width + c_alpha_lo * (y_pred_lo - actual_series), # Penalty for being too low
+            interval_width
+            + c_alpha_lo * (y_pred_lo - actual_series),  # Penalty for being too low
             torch.where(
                 actual_series > y_pred_hi,
-                interval_width + c_alpha_hi * (actual_series - y_pred_hi), # Penalty for being too high
-                interval_width, # No penalty if within interval
+                interval_width
+                + c_alpha_hi
+                * (actual_series - y_pred_hi),  # Penalty for being too high
+                interval_width,  # No penalty if within interval
             ),
         )
 
 
-class MIC(BaseMetricWithZeroHandling): # Mean Interval Coverage
+class MIC(BaseMetricWithZeroHandling):  # Mean Interval Coverage
     """
     Mean Interval Coverage (MIC). This metric measures the proportion of actual values
     that fall within the predicted interval. Higher MIC is better.
     """
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def _compute_score(self, actual_series: torch.Tensor, pred_series: torch.Tensor) -> torch.Tensor:
+    def _compute_score(
+        self, actual_series: torch.Tensor, pred_series: torch.Tensor
+    ) -> torch.Tensor:
         """
         Computes the MIC score (0 or 1 for each data point indicating coverage).
 
@@ -190,24 +248,34 @@ class MIC(BaseMetricWithZeroHandling): # Mean Interval Coverage
             torch.Tensor: A tensor of scores (0 or 1) for each data point. Shape: (N,).
         """
         if actual_series.ndim == 1:
-            actual_series = actual_series.unsqueeze(-1) # Ensure actual_series is (N, 1) for broadcasting
+            actual_series = actual_series.unsqueeze(
+                -1
+            )  # Ensure actual_series is (N, 1) for broadcasting
 
-        assert actual_series.ndim == 2 and actual_series.shape[1] == 1, \
+        assert actual_series.ndim == 2 and actual_series.shape[1] == 1, (
             f"actual_series expected to be 2D (N, 1) after potential unsqueeze, got shape {actual_series.shape}"
-        assert pred_series.ndim == 2, f"pred_series expected to be 2D (N, S), got shape {pred_series.shape}"
-        assert actual_series.shape[0] == pred_series.shape[0], \
+        )
+        assert pred_series.ndim == 2, (
+            f"pred_series expected to be 2D (N, S), got shape {pred_series.shape}"
+        )
+        assert actual_series.shape[0] == pred_series.shape[0], (
             f"Batch size mismatch: actual_series has {actual_series.shape[0]}, pred_series has {pred_series.shape[0]}"
+        )
 
         # Calculate lower and upper quantiles from the predicted series
         # dim=-1 (equivalent to dim=1 for 2D tensor) means quantiles are computed across the S dimension.
         # keepdim=True ensures the output shape is (N, 1) for broadcasting with actual_series (N, 1).
-        y_pred_lo = torch.quantile(pred_series, q=self.q_interval[0], dim=-1, keepdim=True) # Shape: (N, 1)
-        y_pred_hi = torch.quantile(pred_series, q=self.q_interval[1], dim=-1, keepdim=True) # Shape: (N, 1)
+        y_pred_lo = torch.quantile(
+            pred_series, q=self.q_interval[0], dim=-1, keepdim=True
+        )  # Shape: (N, 1)
+        y_pred_hi = torch.quantile(
+            pred_series, q=self.q_interval[1], dim=-1, keepdim=True
+        )  # Shape: (N, 1)
 
         # Check if actual value is within the [y_pred_lo, y_pred_hi] interval
         # Result is a boolean tensor, converted to float (0.0 or 1.0). Shape: (N, 1)
         coverage = ((y_pred_lo <= actual_series) & (actual_series <= y_pred_hi)).float()
-        return coverage.squeeze(-1) # Return as (N,)
+        return coverage.squeeze(-1)  # Return as (N,)
 
 
 class MIWS_MIC_Ratio(Metric):
@@ -217,12 +285,15 @@ class MIWS_MIC_Ratio(Metric):
     The (1 / MIC) term is used because harmonic_mean expects components where lower is better.
     A small epsilon is added to MIC in the denominator to prevent division by zero.
     """
+
     def __init__(self):
         super().__init__()
         # Initialize MIWS with specific thresholds and penalty direction (minimization)
-        self.miws = MIWS(nonzero_thresh=0.8, zero_thresh=0.8, exp_base=6, direction='min')
+        self.miws = MIWS(
+            nonzero_thresh=0.8, zero_thresh=0.8, exp_base=6, direction="min"
+        )
         # Initialize MIC with specific thresholds and penalty direction (maximization)
-        self.mic = MIC(nonzero_thresh=0.8, zero_thresh=0.8, exp_base=4, direction='max')
+        self.mic = MIC(nonzero_thresh=0.8, zero_thresh=0.8, exp_base=4, direction="max")
 
     def update(self, pred_series: torch.Tensor, actual_series: torch.Tensor):
         """
@@ -250,10 +321,4 @@ class MIWS_MIC_Ratio(Metric):
         return harmonic_mean(miws_val, 1 / (mic_val + 1e-10), beta=2.0)
 
 
-DEFAULT_METRICS = MetricCollection(
-    [
-        MIWS(),
-        MIC(),
-        MIWS_MIC_Ratio()
-    ]
-)
+DEFAULT_METRICS = MetricCollection([MIWS(), MIC(), MIWS_MIC_Ratio()])

@@ -1,6 +1,7 @@
 """
 Administrative API endpoints for system management tasks.
 """
+
 import sqlite3
 from collections.abc import Callable
 from typing import Any
@@ -18,6 +19,7 @@ from ..services.auth import get_admin_user
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+
 # A dependency that yields a DB connection and ensures it's closed
 async def get_db_conn_and_close():
     conn = None
@@ -28,11 +30,14 @@ async def get_db_conn_and_close():
         if conn:
             conn.close()
 
+
 @router.post("/data-retention/cleanup", response_model=dict[str, Any])
 async def trigger_cleanup_job(
     background_tasks: BackgroundTasks,
     admin_user: dict[str, Any] = Depends(get_admin_user),
-    cleanup_job_func: Callable[[], None] = Depends(lambda: run_cleanup_job) # Use a lambda to make it depend-able
+    cleanup_job_func: Callable[[], None] = Depends(
+        lambda: run_cleanup_job
+    ),  # Use a lambda to make it depend-able
 ):
     """
     Trigger a full data retention cleanup job to run in the background.
@@ -45,12 +50,15 @@ async def trigger_cleanup_job(
     background_tasks.add_task(cleanup_job_func)
     return {"status": "ok", "message": "Data retention cleanup job started"}
 
+
 @router.post("/data-retention/clean-predictions", response_model=dict[str, Any])
 async def clean_predictions(
     days_to_keep: int = None,
     admin_user: dict[str, Any] = Depends(get_admin_user),
     db_conn: sqlite3.Connection = Depends(get_db_conn_and_close),
-    cleanup_func: Callable[[int | None, sqlite3.Connection], int] = Depends(lambda: cleanup_old_predictions)
+    cleanup_func: Callable[[int | None, sqlite3.Connection], int] = Depends(
+        lambda: cleanup_old_predictions
+    ),
 ):
     """
     Clean up predictions older than the specified retention period.
@@ -65,11 +73,8 @@ async def clean_predictions(
         Dict with cleanup results
     """
     count = cleanup_func(days_to_keep, conn=db_conn)
-    return {
-        "status": "ok",
-        "records_removed": count,
-        "days_kept": days_to_keep
-    }
+    return {"status": "ok", "records_removed": count, "days_kept": days_to_keep}
+
 
 @router.post("/data-retention/clean-historical", response_model=dict[str, Any])
 async def clean_historical_data(
@@ -77,7 +82,9 @@ async def clean_historical_data(
     stock_days_to_keep: int = None,
     admin_user: dict[str, Any] = Depends(get_admin_user),
     db_conn: sqlite3.Connection = Depends(get_db_conn_and_close),
-    cleanup_func: Callable[[int | None, int | None, sqlite3.Connection], dict[str, int]] = Depends(lambda: cleanup_old_historical_data)
+    cleanup_func: Callable[
+        [int | None, int | None, sqlite3.Connection], dict[str, int]
+    ] = Depends(lambda: cleanup_old_historical_data),
 ):
     """
     Clean up historical sales, stock, price and stock change data older than the specified periods.
@@ -101,11 +108,12 @@ async def clean_historical_data(
             "stock": result.get("stock", 0),
             "stock_changes": result.get("stock_changes", 0),
             "prices": result.get("prices", 0),
-            "total": sum(result.values())
+            "total": sum(result.values()),
         },
         "sales_days_kept": sales_days_to_keep,
-        "stock_days_kept": stock_days_to_keep
+        "stock_days_kept": stock_days_to_keep,
     }
+
 
 @router.post("/data-retention/clean-models", response_model=dict[str, Any])
 async def clean_models(
@@ -113,7 +121,9 @@ async def clean_models(
     inactive_days_to_keep: int = None,
     admin_user: dict[str, Any] = Depends(get_admin_user),
     db_conn: sqlite3.Connection = Depends(get_db_conn_and_close),
-    cleanup_func: Callable[[int | None, int | None, sqlite3.Connection], list[str]] = Depends(lambda: cleanup_old_models)
+    cleanup_func: Callable[
+        [int | None, int | None, sqlite3.Connection], list[str]
+    ] = Depends(lambda: cleanup_old_models),
 ):
     """
     Clean up old models based on retention policy.
@@ -135,5 +145,5 @@ async def clean_models(
         "models_removed": removed_models,
         "models_removed_count": len(removed_models),
         "models_kept": models_to_keep,
-        "inactive_days_kept": inactive_days_to_keep
+        "inactive_days_kept": inactive_days_to_keep,
     }

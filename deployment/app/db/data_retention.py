@@ -14,6 +14,7 @@ from .database import ALLOWED_METRICS, get_db_connection  # Import ALLOWED_METRI
 
 logger = logging.getLogger(__name__)
 
+
 def cleanup_old_predictions(days_to_keep: int | None = None, conn=None) -> int:
     """
     Remove prediction records older than the specified retention period.
@@ -30,7 +31,7 @@ def cleanup_old_predictions(days_to_keep: int | None = None, conn=None) -> int:
         days_to_keep = get_settings().data_retention.prediction_retention_days
 
     retention_date = datetime.now() - timedelta(days=days_to_keep)
-    cutoff_date_str = retention_date.strftime('%Y-%m-%d')
+    cutoff_date_str = retention_date.strftime("%Y-%m-%d")
 
     # Track if we created this connection or if it was passed in
     connection_created = False
@@ -44,17 +45,19 @@ def cleanup_old_predictions(days_to_keep: int | None = None, conn=None) -> int:
         # Count records to be deleted
         cursor.execute(
             "SELECT COUNT(*) FROM fact_predictions WHERE DATE(prediction_date) < DATE(?)",
-            (cutoff_date_str,)
+            (cutoff_date_str,),
         )
         result = cursor.fetchone()
         # Handle both tuple (normal SQLite) and dict (test with dict_factory) result formats
-        count = result[0] if isinstance(result, tuple | list) else list(result.values())[0]
+        count = (
+            result[0] if isinstance(result, tuple | list) else list(result.values())[0]
+        )
 
         if count > 0:
             # Delete old predictions
             cursor.execute(
                 "DELETE FROM fact_predictions WHERE DATE(prediction_date) < DATE(?)",
-                (cutoff_date_str,)
+                (cutoff_date_str,),
             )
             conn.commit()
             logger.info(f"Deleted {count} predictions older than {cutoff_date_str}")
@@ -73,10 +76,11 @@ def cleanup_old_predictions(days_to_keep: int | None = None, conn=None) -> int:
         if connection_created:
             conn.close()
 
+
 def cleanup_old_historical_data(
     sales_days_to_keep: int | None = None,
     stock_days_to_keep: int | None = None,
-    conn=None
+    conn=None,
 ) -> dict[str, int]:
     """
     Remove historical sales and stock data older than the specified retention period.
@@ -100,8 +104,8 @@ def cleanup_old_historical_data(
     sales_cutoff = datetime.now() - timedelta(days=sales_days_to_keep)
     stock_cutoff = datetime.now() - timedelta(days=stock_days_to_keep)
 
-    sales_cutoff_str = sales_cutoff.strftime('%Y-%m-%d')
-    stock_cutoff_str = stock_cutoff.strftime('%Y-%m-%d')
+    sales_cutoff_str = sales_cutoff.strftime("%Y-%m-%d")
+    stock_cutoff_str = stock_cutoff.strftime("%Y-%m-%d")
 
     # Track if we created this connection or if it was passed in
     connection_created = False
@@ -115,63 +119,65 @@ def cleanup_old_historical_data(
     try:
         # Clean up sales data
         cursor.execute(
-            "SELECT COUNT(*) FROM fact_sales WHERE data_date < ?",
-            (sales_cutoff_str,)
+            "SELECT COUNT(*) FROM fact_sales WHERE data_date < ?", (sales_cutoff_str,)
         )
         sales_count = cursor.fetchone()[0]
 
         if sales_count > 0:
             cursor.execute(
-                "DELETE FROM fact_sales WHERE data_date < ?",
-                (sales_cutoff_str,)
+                "DELETE FROM fact_sales WHERE data_date < ?", (sales_cutoff_str,)
             )
             result["sales"] = sales_count
-            logger.info(f"Deleted {sales_count} sales records older than {sales_cutoff_str}")
+            logger.info(
+                f"Deleted {sales_count} sales records older than {sales_cutoff_str}"
+            )
 
         # Clean up stock data
         cursor.execute(
-            "SELECT COUNT(*) FROM fact_stock WHERE data_date < ?",
-            (stock_cutoff_str,)
+            "SELECT COUNT(*) FROM fact_stock WHERE data_date < ?", (stock_cutoff_str,)
         )
         stock_count = cursor.fetchone()[0]
 
         if stock_count > 0:
             cursor.execute(
-                "DELETE FROM fact_stock WHERE data_date < ?",
-                (stock_cutoff_str,)
+                "DELETE FROM fact_stock WHERE data_date < ?", (stock_cutoff_str,)
             )
             result["stock"] = stock_count
-            logger.info(f"Deleted {stock_count} stock records older than {stock_cutoff_str}")
+            logger.info(
+                f"Deleted {stock_count} stock records older than {stock_cutoff_str}"
+            )
 
         # Clean up stock change data
         cursor.execute(
             "SELECT COUNT(*) FROM fact_stock_changes WHERE data_date < ?",
-            (stock_cutoff_str,)
+            (stock_cutoff_str,),
         )
         changes_count = cursor.fetchone()[0]
 
         if changes_count > 0:
             cursor.execute(
                 "DELETE FROM fact_stock_changes WHERE data_date < ?",
-                (stock_cutoff_str,)
+                (stock_cutoff_str,),
             )
             result["stock_changes"] = changes_count
-            logger.info(f"Deleted {changes_count} stock change records older than {stock_cutoff_str}")
+            logger.info(
+                f"Deleted {changes_count} stock change records older than {stock_cutoff_str}"
+            )
 
         # Clean up price data
         cursor.execute(
-            "SELECT COUNT(*) FROM fact_prices WHERE data_date < ?",
-            (sales_cutoff_str,)
+            "SELECT COUNT(*) FROM fact_prices WHERE data_date < ?", (sales_cutoff_str,)
         )
         prices_count = cursor.fetchone()[0]
 
         if prices_count > 0:
             cursor.execute(
-                "DELETE FROM fact_prices WHERE data_date < ?",
-                (sales_cutoff_str,)
+                "DELETE FROM fact_prices WHERE data_date < ?", (sales_cutoff_str,)
             )
             result["prices"] = prices_count
-            logger.info(f"Deleted {prices_count} price records older than {sales_cutoff_str}")
+            logger.info(
+                f"Deleted {prices_count} price records older than {sales_cutoff_str}"
+            )
 
         conn.commit()
         return result
@@ -186,9 +192,12 @@ def cleanup_old_historical_data(
         if connection_created:
             conn.close()
 
-def cleanup_old_models(models_to_keep: int | None = None,
-                      inactive_days_to_keep: int | None = None,
-                      conn=None) -> list[str]:
+
+def cleanup_old_models(
+    models_to_keep: int | None = None,
+    inactive_days_to_keep: int | None = None,
+    conn=None,
+) -> list[str]:
     """
     Clean up old model records and files based on retention policy.
 
@@ -208,7 +217,9 @@ def cleanup_old_models(models_to_keep: int | None = None,
     if models_to_keep is None:
         models_to_keep = get_settings().data_retention.models_to_keep
     if inactive_days_to_keep is None:
-        inactive_days_to_keep = get_settings().data_retention.inactive_model_retention_days
+        inactive_days_to_keep = (
+            get_settings().data_retention.inactive_model_retention_days
+        )
 
     # Track if we created this connection or if it was passed in
     connection_created = False
@@ -233,12 +244,16 @@ def cleanup_old_models(models_to_keep: int | None = None,
         order_direction = "DESC" if higher_is_better else "ASC"
 
         if default_metric not in ALLOWED_METRICS:
-            logger.error(f"Invalid default_metric '{default_metric}' provided to cleanup_old_models.")
+            logger.error(
+                f"Invalid default_metric '{default_metric}' provided to cleanup_old_models."
+            )
             # Fallback to a safe default or raise an error
             # For now, let's raise an error as this indicates a configuration issue.
-            raise ValueError(f"Invalid default_metric: {default_metric}. Allowed metrics are: {ALLOWED_METRICS}")
+            raise ValueError(
+                f"Invalid default_metric: {default_metric}. Allowed metrics are: {ALLOWED_METRICS}"
+            )
 
-        json_path = f"'$.{default_metric}'" # metric_name is validated
+        json_path = f"'$.{default_metric}'"  # metric_name is validated
 
         for config_id in active_config_ids:
             # Get models for this config set, sorted by metric
@@ -262,18 +277,20 @@ def cleanup_old_models(models_to_keep: int | None = None,
                     # Check if model is currently used in any predictions
                     cursor.execute(
                         "SELECT COUNT(*) FROM fact_predictions WHERE model_id = ?",
-                        (model_id,)
+                        (model_id,),
                     )
                     prediction_count = cursor.fetchone()[0]
 
                     if prediction_count == 0:
                         # Safe to delete model as it's not referenced by predictions
-                        cursor.execute("DELETE FROM models WHERE model_id = ?", (model_id,))
+                        cursor.execute(
+                            "DELETE FROM models WHERE model_id = ?", (model_id,)
+                        )
 
                         # Delete associated training results
                         cursor.execute(
                             "DELETE FROM training_results WHERE model_id = ?",
-                            (model_id,)
+                            (model_id,),
                         )
 
                         # Delete physical file if it exists
@@ -282,27 +299,33 @@ def cleanup_old_models(models_to_keep: int | None = None,
                                 os.remove(model_path)
                                 logger.info(f"Deleted model file: {model_path}")
                             except OSError as e:
-                                logger.warning(f"Failed to delete model file {model_path}: {str(e)}")
+                                logger.warning(
+                                    f"Failed to delete model file {model_path}: {str(e)}"
+                                )
 
                         deleted_model_ids.append(model_id)
-                        logger.info(f"Deleted model {model_id} (excess model for config set {config_id})")
+                        logger.info(
+                            f"Deleted model {model_id} (excess model for config set {config_id})"
+                        )
 
         # 3. Clean up inactive models older than retention period
         retention_date = datetime.now() - timedelta(days=inactive_days_to_keep)
-        cutoff_date_str = retention_date.strftime('%Y-%m-%d %H:%M:%S')
+        cutoff_date_str = retention_date.strftime("%Y-%m-%d %H:%M:%S")
 
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT model_id, model_path
             FROM models
             WHERE is_active = 0 AND created_at < ?
-        """, (cutoff_date_str,))
+        """,
+            (cutoff_date_str,),
+        )
 
         inactive_models = cursor.fetchall()
         for model_id, model_path in inactive_models:
             # Check if model is used in any predictions
             cursor.execute(
-                "SELECT COUNT(*) FROM fact_predictions WHERE model_id = ?",
-                (model_id,)
+                "SELECT COUNT(*) FROM fact_predictions WHERE model_id = ?", (model_id,)
             )
             prediction_count = cursor.fetchone()[0]
 
@@ -312,8 +335,7 @@ def cleanup_old_models(models_to_keep: int | None = None,
 
                 # Delete associated training results
                 cursor.execute(
-                    "DELETE FROM training_results WHERE model_id = ?",
-                    (model_id,)
+                    "DELETE FROM training_results WHERE model_id = ?", (model_id,)
                 )
 
                 # Delete physical file
@@ -322,10 +344,14 @@ def cleanup_old_models(models_to_keep: int | None = None,
                         os.remove(model_path)
                         logger.info(f"Deleted model file: {model_path}")
                     except OSError as e:
-                        logger.warning(f"Failed to delete model file {model_path}: {str(e)}")
+                        logger.warning(
+                            f"Failed to delete model file {model_path}: {str(e)}"
+                        )
 
                 deleted_model_ids.append(model_id)
-                logger.info(f"Deleted inactive model {model_id} (older than {cutoff_date_str})")
+                logger.info(
+                    f"Deleted inactive model {model_id} (older than {cutoff_date_str})"
+                )
 
         conn.commit()
         return deleted_model_ids
@@ -339,6 +365,7 @@ def cleanup_old_models(models_to_keep: int | None = None,
         # Only close the connection if we created it
         if connection_created:
             conn.close()
+
 
 def run_cleanup_job() -> None:
     """
@@ -367,7 +394,9 @@ def run_cleanup_job() -> None:
         # Clean up old models
         try:
             models_removed = cleanup_old_models(conn=conn)
-            logger.info(f"Removed {len(models_removed)} old models: {', '.join(models_removed) if models_removed else 'none'}")
+            logger.info(
+                f"Removed {len(models_removed)} old models: {', '.join(models_removed) if models_removed else 'none'}"
+            )
         except Exception as e:
             logger.error(f"Error in model cleanup: {str(e)}")
 

@@ -24,11 +24,13 @@ def dict_factory(cursor, row):
         d[col[0]] = row[idx]
     return d
 
+
 @pytest.fixture
 def test_db_path(tmp_path):
     """Create a temporary database for testing."""
     db_path = tmp_path / "test_model_registry.db"
     return str(db_path)
+
 
 @pytest.fixture
 def create_test_db(test_db_path):
@@ -43,6 +45,7 @@ def create_test_db(test_db_path):
 
     # Use the official schema to ensure consistency
     from deployment.app.db.schema import SCHEMA_SQL
+
     cursor.executescript(SCHEMA_SQL)
 
     # Insert a test config first
@@ -52,7 +55,7 @@ def create_test_db(test_db_path):
         INSERT INTO configs (config_id, config, created_at, is_active)
         VALUES (?, ?, ?, ?)
         """,
-        (test_config_id, json.dumps({"test": "config"}), datetime.now().isoformat(), 0)
+        (test_config_id, json.dumps({"test": "config"}), datetime.now().isoformat(), 0),
     )
 
     # Insert a test job that subsequent tests can rely on
@@ -62,7 +65,15 @@ def create_test_db(test_db_path):
         INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, progress, config_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (test_job_id, "training", "completed", datetime.now().isoformat(), datetime.now().isoformat(), 100, test_config_id)
+        (
+            test_job_id,
+            "training",
+            "completed",
+            datetime.now().isoformat(),
+            datetime.now().isoformat(),
+            100,
+            test_config_id,
+        ),
     )
 
     conn.commit()
@@ -81,6 +92,7 @@ def create_test_db(test_db_path):
         except PermissionError:
             time.sleep(0.1)
 
+
 @pytest.fixture
 def test_model_path(tmp_path):
     """Create a temporary model file for testing."""
@@ -94,11 +106,13 @@ def test_model_path(tmp_path):
 
     return str(model_path)
 
+
 def get_new_connection(db_path):
     """Helper function to get a new database connection."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def test_create_model_record(create_test_db, test_model_path, monkeypatch):
     """Test that a model record can be created in the database."""
@@ -121,7 +135,7 @@ def test_create_model_record(create_test_db, test_model_path, monkeypatch):
         created_at=created_at,
         metadata=metadata,
         is_active=False,
-        connection=conn
+        connection=conn,
     )
 
     # Verification uses the same connection
@@ -136,6 +150,7 @@ def test_create_model_record(create_test_db, test_model_path, monkeypatch):
     assert record["is_active"] == 0
     assert json.loads(record["metadata"]) == metadata
 
+
 def test_activate_model(create_test_db, test_model_path, monkeypatch):
     """Test that a model can be activated and other models deactivated."""
     conn = create_test_db  # Use the connection from the fixture
@@ -147,7 +162,7 @@ def test_activate_model(create_test_db, test_model_path, monkeypatch):
     models = [
         {"model_id": "model_1", "is_active": False},
         {"model_id": "model_2", "is_active": False},
-        {"model_id": "model_3", "is_active": False}
+        {"model_id": "model_3", "is_active": False},
     ]
 
     job_id = "test_job_id"
@@ -162,7 +177,7 @@ def test_activate_model(create_test_db, test_model_path, monkeypatch):
             created_at=created_at,
             metadata={"test": "test"},
             is_active=model["is_active"],
-            connection=conn
+            connection=conn,
         )
 
     # Activate model_2 with the same connection
@@ -176,15 +191,18 @@ def test_activate_model(create_test_db, test_model_path, monkeypatch):
 
     # Check other models are inactive
     cursor = conn.cursor()
-    cursor.execute("SELECT model_id, is_active FROM models WHERE model_id != ?", ("model_2",))
+    cursor.execute(
+        "SELECT model_id, is_active FROM models WHERE model_id != ?", ("model_2",)
+    )
     other_models = cursor.fetchall()
 
     for model in other_models:
         assert model["is_active"] == 0
 
+
 def test_get_best_model_by_metric(create_test_db, test_model_path, monkeypatch):
     """Test retrieving the best model based on a metric."""
-    conn = create_test_db # Use the connection from the fixture
+    conn = create_test_db  # Use the connection from the fixture
 
     # Mock get_db_connection to return the yielded connection
     monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
@@ -196,7 +214,7 @@ def test_get_best_model_by_metric(create_test_db, test_model_path, monkeypatch):
     models = [
         {"model_id": "model_1", "metric_value": 0.8},
         {"model_id": "model_2", "metric_value": 0.9},  # Best model
-        {"model_id": "model_3", "metric_value": 0.7}
+        {"model_id": "model_3", "metric_value": 0.7},
     ]
 
     job_id = "test_job_id"
@@ -212,7 +230,7 @@ def test_get_best_model_by_metric(create_test_db, test_model_path, monkeypatch):
             created_at=created_at,
             metadata={"test": "test"},
             is_active=False,
-            connection=conn
+            connection=conn,
         )
 
         # Create training result with the same connection
@@ -226,21 +244,24 @@ def test_get_best_model_by_metric(create_test_db, test_model_path, monkeypatch):
                 f"result_{model['model_id']}",
                 job_id,
                 model["model_id"],
-                json.dumps({"accuracy": model["metric_value"]})
-            )
+                json.dumps({"accuracy": model["metric_value"]}),
+            ),
         )
         conn.commit()
 
     # Get the best model by accuracy with the same connection
-    best_model = get_best_model_by_metric("accuracy", higher_is_better=True, connection=conn)
+    best_model = get_best_model_by_metric(
+        "accuracy", higher_is_better=True, connection=conn
+    )
 
     assert best_model is not None
     assert best_model["model_id"] == "model_2"
     assert best_model["metrics"]["accuracy"] == 0.9
 
+
 def test_get_recent_models(create_test_db, test_model_path, monkeypatch):
     """Test retrieving recent models."""
-    conn = create_test_db # Use the connection from the fixture
+    conn = create_test_db  # Use the connection from the fixture
 
     # Mock get_db_connection to return the yielded connection
     monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
@@ -252,7 +273,7 @@ def test_get_recent_models(create_test_db, test_model_path, monkeypatch):
     models = [
         {"model_id": "model_3", "created_at": now, "is_active": False},
         {"model_id": "model_2", "created_at": now, "is_active": False},
-        {"model_id": "model_1", "created_at": now, "is_active": True}
+        {"model_id": "model_1", "created_at": now, "is_active": True},
     ]
 
     job_id = "test_job_id"
@@ -267,20 +288,21 @@ def test_get_recent_models(create_test_db, test_model_path, monkeypatch):
             created_at=datetime.now(),  # Use current time, not the initial time
             metadata={"test": "test"},
             is_active=model["is_active"],
-            connection=conn
+            connection=conn,
         )
 
     # Get recent models (limit 2) with the same connection
     recent_models = get_recent_models(limit=2, connection=conn)
 
     assert len(recent_models) == 2
-    model_ids = [model['model_id'] for model in recent_models]
+    model_ids = [model["model_id"] for model in recent_models]
     assert "model_1" in model_ids, f"Expected model_1 in {model_ids}"
     assert "model_2" in model_ids, f"Expected model_2 in {model_ids}"
 
+
 def test_delete_model_record_and_file(create_test_db, test_model_path, monkeypatch):
     """Test deleting a model record and its file."""
-    conn = create_test_db # Use the connection from the fixture
+    conn = create_test_db  # Use the connection from the fixture
 
     # Mock get_db_connection to return the yielded connection
     monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
@@ -297,7 +319,7 @@ def test_delete_model_record_and_file(create_test_db, test_model_path, monkeypat
         created_at=created_at,
         metadata={"test": "test"},
         is_active=False,
-        connection=conn
+        connection=conn,
     )
 
     # Verify model exists with the same connection
@@ -318,9 +340,10 @@ def test_delete_model_record_and_file(create_test_db, test_model_path, monkeypat
     cursor.execute("SELECT 1 FROM models WHERE model_id = ?", (model_id,))
     assert cursor.fetchone() is None
 
+
 def test_model_registration_workflow(create_test_db, test_model_path, monkeypatch):
     """Test the entire model registration workflow."""
-    conn = create_test_db # Use the connection from the fixture
+    conn = create_test_db  # Use the connection from the fixture
 
     # Mock get_db_connection to return the yielded connection
     monkeypatch.setattr("deployment.app.db.database.get_db_connection", lambda: conn)
@@ -330,8 +353,16 @@ def test_model_registration_workflow(create_test_db, test_model_path, monkeypatc
 
     # 1. Create model records
     models = [
-        {"model_id": "workflow_model_1", "created_at": datetime.now(), "metric_value": 0.75},
-        {"model_id": "workflow_model_2", "created_at": datetime.now(), "metric_value": 0.85}
+        {
+            "model_id": "workflow_model_1",
+            "created_at": datetime.now(),
+            "metric_value": 0.75,
+        },
+        {
+            "model_id": "workflow_model_2",
+            "created_at": datetime.now(),
+            "metric_value": 0.85,
+        },
     ]
 
     job_id = "test_job_id"
@@ -345,7 +376,7 @@ def test_model_registration_workflow(create_test_db, test_model_path, monkeypatc
             created_at=model["created_at"],
             metadata={"size_bytes": 1000},
             is_active=False,
-            connection=conn
+            connection=conn,
         )
 
         # Create training result with the same connection
@@ -359,18 +390,20 @@ def test_model_registration_workflow(create_test_db, test_model_path, monkeypatc
                 f"result_{model['model_id']}",
                 job_id,
                 model["model_id"],
-                json.dumps({"accuracy": model["metric_value"]})
-            )
+                json.dumps({"accuracy": model["metric_value"]}),
+            ),
         )
         conn.commit()
 
     # 2. Verify both models exist with the same connection
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM models")
-    assert cursor.fetchone()['COUNT(*)'] == 2
+    assert cursor.fetchone()["COUNT(*)"] == 2
 
     # 3. Get the best model by metric with the same connection
-    best_model = get_best_model_by_metric("accuracy", higher_is_better=True, connection=conn)
+    best_model = get_best_model_by_metric(
+        "accuracy", higher_is_better=True, connection=conn
+    )
     assert best_model["model_id"] == "workflow_model_2"
 
     # 4. Activate the best model with the same connection
@@ -393,6 +426,6 @@ def test_model_registration_workflow(create_test_db, test_model_path, monkeypatc
     # 8. Verify only one model remains with the same connection
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM models")
-    assert cursor.fetchone()['COUNT(*)'] == 1
+    assert cursor.fetchone()["COUNT(*)"] == 1
     cursor.execute("SELECT model_id FROM models")
-    assert cursor.fetchone()['model_id'] == "workflow_model_2"
+    assert cursor.fetchone()["model_id"] == "workflow_model_2"

@@ -37,6 +37,7 @@ from deployment.app.models.api_models import JobStatus, JobType
 def pyfakefs_file_wrapper_for_aiofiles(pyfakefs_file_obj, *, loop=None, executor=None):
     return AsyncBufferedIOBase(pyfakefs_file_obj, loop=loop, executor=executor)
 
+
 wrap.register(FakeFileWrapper)(pyfakefs_file_wrapper_for_aiofiles)
 TEST_X_API_KEY = "test_x_api_key_conftest"
 
@@ -50,7 +51,10 @@ class TestDataUploadEndpoint:
     @patch("deployment.app.api.jobs.validate_sales_file", return_value=(True, None))
     @patch("deployment.app.api.jobs.validate_stock_file", return_value=(True, None))
     @patch("deployment.app.api.jobs.validate_excel_file_upload", new_callable=AsyncMock)
-    @patch("deployment.app.api.jobs.validate_date_format", return_value=(True, "2022-09-30"))
+    @patch(
+        "deployment.app.api.jobs.validate_date_format",
+        return_value=(True, "2022-09-30"),
+    )
     @patch("deployment.app.config.get_settings")
     async def test_create_data_upload_job_success(
         self,
@@ -62,7 +66,8 @@ class TestDataUploadEndpoint:
         mock_create_job,
         mock_add_task,
         mock_sync_open,
-        client, fs
+        client,
+        fs,
     ):
         """Test successful creation of a data upload job."""
         # Arrange
@@ -79,9 +84,30 @@ class TestDataUploadEndpoint:
         sales_content2 = b"sales data 2"
 
         files = [
-            ("stock_file", ("stock.xlsx", BytesIO(stock_content), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
-            ("sales_files", ("sales1.xlsx", BytesIO(sales_content1), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
-            ("sales_files", ("sales2.xlsx", BytesIO(sales_content2), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+            (
+                "stock_file",
+                (
+                    "stock.xlsx",
+                    BytesIO(stock_content),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            ),
+            (
+                "sales_files",
+                (
+                    "sales1.xlsx",
+                    BytesIO(sales_content1),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            ),
+            (
+                "sales_files",
+                (
+                    "sales2.xlsx",
+                    BytesIO(sales_content2),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            ),
         ]
         data = {"cutoff_date": "30.09.2022"}
 
@@ -91,7 +117,12 @@ class TestDataUploadEndpoint:
         mock_sync_open.side_effect = sync_open_side_effect
 
         # Act
-        response = client.post("/api/v1/jobs/data-upload", files=files, data=data, headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.post(
+            "/api/v1/jobs/data-upload",
+            files=files,
+            data=data,
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
 
         # Assert
         assert response.status_code == 200
@@ -105,14 +136,24 @@ class TestDataUploadEndpoint:
         get_settings.cache_clear()
 
     @patch("deployment.app.api.jobs.validate_date_format", return_value=(False, None))
-    async def test_create_data_upload_job_invalid_date(self, _mock_validate_date, client):
+    async def test_create_data_upload_job_invalid_date(
+        self, _mock_validate_date, client
+    ):
         """Test data upload job creation fails with invalid date format."""
         # Arrange
-        files = {"stock_file": ("stock.xlsx", b"data"), "sales_files": ("sales.xlsx", b"data")}
+        files = {
+            "stock_file": ("stock.xlsx", b"data"),
+            "sales_files": ("sales.xlsx", b"data"),
+        }
         data = {"cutoff_date": "30-09-2022"}
 
         # Act
-        response = client.post("/api/v1/jobs/data-upload", files=files, data=data, headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.post(
+            "/api/v1/jobs/data-upload",
+            files=files,
+            data=data,
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
 
         # Assert
         assert response.status_code == 400
@@ -125,15 +166,22 @@ class TestTrainingJobEndpoint:
     @patch("deployment.app.api.jobs.create_job")
     @patch("deployment.app.api.jobs.BackgroundTasks.add_task")
     @patch("deployment.app.api.jobs.get_effective_config")
-    def test_create_training_job_success(self, mock_get_effective_config, mock_add_task, mock_create_job, client):
+    def test_create_training_job_success(
+        self, mock_get_effective_config, mock_add_task, mock_create_job, client
+    ):
         """Test successful creation of a training job."""
         # Arrange
         job_id = str(uuid.uuid4())
         mock_create_job.return_value = job_id
-        mock_get_effective_config.return_value = {"config_id": "test-config", "config": {}}
+        mock_get_effective_config.return_value = {
+            "config_id": "test-config",
+            "config": {},
+        }
 
         # Act
-        response = client.post("/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.post(
+            "/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY}
+        )
 
         # Assert
         assert response.status_code == 200
@@ -145,26 +193,40 @@ class TestTrainingJobEndpoint:
 
     @patch("deployment.app.api.jobs.create_job", side_effect=DatabaseError("DB error"))
     @patch("deployment.app.api.jobs.get_effective_config")
-    def test_create_training_job_db_error(self, mock_get_effective_config, mock_create_job, client):
+    def test_create_training_job_db_error(
+        self, mock_get_effective_config, mock_create_job, client
+    ):
         """Test training job creation fails with a database error."""
         # Arrange
-        mock_get_effective_config.return_value = {"config_id": "test-config", "config": {}}
+        mock_get_effective_config.return_value = {
+            "config_id": "test-config",
+            "config": {},
+        }
 
         # Act
-        response = client.post("/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.post(
+            "/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY}
+        )
 
         # Assert
         assert response.status_code == 500
         # The training endpoint uses HTTPException which gets processed by http_exception_handler
         response_data = response.json()
         assert response_data["error"]["code"] == "http_500"
-        assert response_data["error"]["message"] == "An unexpected internal server error occurred while initiating the job."
+        assert (
+            response_data["error"]["message"]
+            == "An unexpected internal server error occurred while initiating the job."
+        )
 
     @patch("deployment.app.api.jobs.get_effective_config", return_value=None)
-    def test_create_training_job_no_active_config(self, mock_get_effective_config, client):
+    def test_create_training_job_no_active_config(
+        self, mock_get_effective_config, client
+    ):
         """Test training job creation fails with 400 if no active config is found."""
         # Act
-        response = client.post("/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.post(
+            "/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY}
+        )
 
         # Assert
         assert response.status_code == 400
@@ -185,11 +247,13 @@ class TestReportJobEndpoint:
         mock_create_job.return_value = job_id
         params = {
             "report_type": "prediction_report",
-            "prediction_month": "2023-01-01T00:00:00Z"
+            "prediction_month": "2023-01-01T00:00:00Z",
         }
 
         # Act
-        response = client.post("/api/v1/jobs/reports", json=params, headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.post(
+            "/api/v1/jobs/reports", json=params, headers={"X-API-Key": TEST_X_API_KEY}
+        )
 
         # Assert
         assert response.status_code == 200
@@ -200,10 +264,12 @@ class TestReportJobEndpoint:
         # Assert create_job was called with processed data
         mock_create_job.assert_called_once()
         call_args, call_kwargs = mock_create_job.call_args
-        assert call_kwargs['job_type'] == JobType.REPORT
-        called_params = call_kwargs['parameters']
-        assert called_params['report_type'] == params['report_type']
-        assert called_params['prediction_month'] == datetime.fromisoformat(params['prediction_month'].replace('Z', '+00:00'))
+        assert call_kwargs["job_type"] == JobType.REPORT
+        called_params = call_kwargs["parameters"]
+        assert called_params["report_type"] == params["report_type"]
+        assert called_params["prediction_month"] == datetime.fromisoformat(
+            params["prediction_month"].replace("Z", "+00:00")
+        )
         mock_add_task.assert_called_once()
 
 
@@ -221,25 +287,33 @@ class TestJobStatusEndpoint:
             "parameters": {},
             "progress": 1.0 if status == JobStatus.COMPLETED else 0.0,
             "result_id": "res-123" if status == JobStatus.COMPLETED else None,
-            "error_message": "An error occurred" if status == JobStatus.FAILED else None
+            "error_message": "An error occurred"
+            if status == JobStatus.FAILED
+            else None,
         }
 
     @patch("deployment.app.api.jobs.get_job")
     @patch("deployment.app.api.jobs.get_training_result")
-    def test_get_job_status_training_completed(self, mock_get_result, mock_get_job, client):
+    def test_get_job_status_training_completed(
+        self, mock_get_result, mock_get_job, client
+    ):
         """Test getting status of a completed training job."""
         # Arrange
         job_id = "job-123"
-        mock_get_job.return_value = self.get_full_mock_job_data(job_id, JobType.TRAINING, JobStatus.COMPLETED)
+        mock_get_job.return_value = self.get_full_mock_job_data(
+            job_id, JobType.TRAINING, JobStatus.COMPLETED
+        )
         mock_get_result.return_value = {
             "model_id": "model-abc",
             "metrics": json.dumps({"accuracy": 0.95}),
             "parameters": json.dumps({"param": "value"}),
-            "duration": 120
+            "duration": 120,
         }
 
         # Act
-        response = client.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get(
+            f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY}
+        )
 
         # Assert
         assert response.status_code == 200
@@ -254,10 +328,14 @@ class TestJobStatusEndpoint:
         """Test getting status of a pending job."""
         # Arrange
         job_id = "job-456"
-        mock_get_job.return_value = self.get_full_mock_job_data(job_id, JobType.DATA_UPLOAD, JobStatus.PENDING)
+        mock_get_job.return_value = self.get_full_mock_job_data(
+            job_id, JobType.DATA_UPLOAD, JobStatus.PENDING
+        )
 
         # Act
-        response = client.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get(
+            f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY}
+        )
 
         # Assert
         assert response.status_code == 200
@@ -269,15 +347,24 @@ class TestJobStatusEndpoint:
         assert data["result"] is None
 
     @patch("deployment.app.api.jobs.get_job")
-    @patch("deployment.app.api.jobs.get_prediction_result", side_effect=DatabaseError("Result error"))
-    def test_get_job_status_result_db_error(self, mock_get_result, mock_get_job, client):
+    @patch(
+        "deployment.app.api.jobs.get_prediction_result",
+        side_effect=DatabaseError("Result error"),
+    )
+    def test_get_job_status_result_db_error(
+        self, mock_get_result, mock_get_job, client
+    ):
         """Test job status handles database errors when fetching results."""
         # Arrange
         job_id = "job-789"
-        mock_get_job.return_value = self.get_full_mock_job_data(job_id, JobType.PREDICTION, JobStatus.COMPLETED)
+        mock_get_job.return_value = self.get_full_mock_job_data(
+            job_id, JobType.PREDICTION, JobStatus.COMPLETED
+        )
 
         # Act
-        response = client.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get(
+            f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY}
+        )
 
         # Assert
         assert response.status_code == 500
@@ -290,7 +377,9 @@ class TestJobStatusEndpoint:
         job_id = "non-existent"
 
         # Act
-        response = client.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get(
+            f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY}
+        )
 
         # Assert
         assert response.status_code == 404
@@ -311,7 +400,7 @@ class TestJobListingEndpoint:
                 "created_at": "2023-01-01T10:00:00",
                 "updated_at": "2023-01-01T10:30:00",
                 "progress": 1.0,
-                "error_message": None
+                "error_message": None,
             },
             {
                 "job_id": "job2",
@@ -320,8 +409,8 @@ class TestJobListingEndpoint:
                 "created_at": "2023-01-01T11:00:00",
                 "updated_at": "2023-01-01T11:30:00",
                 "progress": 0.5,
-                "error_message": None
-            }
+                "error_message": None,
+            },
         ]
         mock_list_jobs.return_value = mock_jobs
 
@@ -340,21 +429,23 @@ class TestJobListingEndpoint:
     def test_list_jobs_with_filters(self, mock_list_jobs, client):
         """Test listing jobs with filters applied."""
         # Arrange
-        mock_jobs = [{
-            "job_id": "job3",
-            "job_type": JobType.TRAINING,
-            "status": JobStatus.COMPLETED,
-            "created_at": "2023-01-01T10:00:00",
-            "updated_at": "2023-01-01T10:30:00",
-            "progress": 1.0,
-            "error_message": None
-        }]
+        mock_jobs = [
+            {
+                "job_id": "job3",
+                "job_type": JobType.TRAINING,
+                "status": JobStatus.COMPLETED,
+                "created_at": "2023-01-01T10:00:00",
+                "updated_at": "2023-01-01T10:30:00",
+                "progress": 1.0,
+                "error_message": None,
+            }
+        ]
         mock_list_jobs.return_value = mock_jobs
 
         # Act
         response = client.get(
             "/api/v1/jobs?job_type=training&status=completed&limit=10",
-            headers={"X-API-Key": TEST_X_API_KEY}
+            headers={"X-API-Key": TEST_X_API_KEY},
         )
 
         # Assert
@@ -383,7 +474,11 @@ class TestAuthenticationScenarios:
     def test_create_data_upload_job_unauthorized_missing_key(self, client):
         """Test data upload job fails with 401 if X-API-Key header is missing."""
         # Act
-        response = client.post("/api/v1/jobs/data-upload", files={"f": "f"}, data={"cutoff_date": "30.09.2022"})
+        response = client.post(
+            "/api/v1/jobs/data-upload",
+            files={"f": "f"},
+            data={"cutoff_date": "30.09.2022"},
+        )
 
         # Assert
         assert response.status_code == 401
@@ -395,13 +490,15 @@ class TestAuthenticationScenarios:
             "/api/v1/jobs/data-upload",
             files={"f": "f"},
             data={"cutoff_date": "30.09.2022"},
-            headers={"X-API-Key": "wrong_key"}
+            headers={"X-API-Key": "wrong_key"},
         )
 
         # Assert
         assert response.status_code == 401
 
-    def test_create_data_upload_job_server_key_not_configured(self, client, mock_x_api_key):
+    def test_create_data_upload_job_server_key_not_configured(
+        self, client, mock_x_api_key
+    ):
         """Test data upload job fails with 500 if server X-API-Key is not configured."""
         # Arrange
         mock_x_api_key(None)
@@ -411,12 +508,15 @@ class TestAuthenticationScenarios:
             "/api/v1/jobs/data-upload",
             files={"f": "f"},
             data={"cutoff_date": "30.09.2022"},
-            headers={"X-API-Key": "any_key"}
+            headers={"X-API-Key": "any_key"},
         )
 
         # Assert
         assert response.status_code == 500
-        assert "X-API-Key authentication is not configured" in response.json()['error']['message']
+        assert (
+            "X-API-Key authentication is not configured"
+            in response.json()["error"]["message"]
+        )
 
 
 class TestValidationScenarios:
@@ -425,7 +525,9 @@ class TestValidationScenarios:
     def test_invalid_job_id_format(self, client):
         """Test endpoints handle invalid job ID formats gracefully."""
         # Act
-        response = client.get("/api/v1/jobs/invalid-id-format", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get(
+            "/api/v1/jobs/invalid-id-format", headers={"X-API-Key": TEST_X_API_KEY}
+        )
 
         # Assert
         # The endpoint should handle this gracefully, either as 404 or validation error
@@ -436,7 +538,7 @@ class TestValidationScenarios:
         # Act
         response = client.get(
             "/api/v1/jobs?job_type=invalid_type&status=invalid_status",
-            headers={"X-API-Key": TEST_X_API_KEY}
+            headers={"X-API-Key": TEST_X_API_KEY},
         )
 
         # Assert
@@ -451,7 +553,8 @@ class TestIntegration:
         """Test that the jobs API module can be imported without errors."""
         # Act & Assert
         from deployment.app.api import jobs
-        assert hasattr(jobs, 'router')
+
+        assert hasattr(jobs, "router")
 
     def test_constants_defined(self):
         """Test that all expected constants and dependencies are defined."""
@@ -472,12 +575,9 @@ class TestIntegration:
 
         # Verify router has expected routes
         route_paths = [route.path for route in router.routes]
-        expected_paths = [
-            "/data-upload",
-            "/training",
-            "/reports",
-            "/{job_id}"
-        ]
+        expected_paths = ["/data-upload", "/training", "/reports", "/{job_id}"]
 
         for expected_path in expected_paths:
-            assert any(expected_path in path for path in route_paths), f"Expected path {expected_path} not found in routes"
+            assert any(expected_path in path for path in route_paths), (
+                f"Expected path {expected_path} not found in routes"
+            )

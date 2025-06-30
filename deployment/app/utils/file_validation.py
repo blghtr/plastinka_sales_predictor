@@ -8,8 +8,12 @@ from deployment.app.utils.validation import ValidationError
 logger = logging.getLogger("plastinka.file_validation")
 
 # Default size limits
-DEFAULT_MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE", "10485760"))  # 10MB by default
-MAX_EXCEL_FILE_SIZE = int(os.environ.get("MAX_EXCEL_FILE_SIZE", "5242880"))  # 5MB for Excel files
+DEFAULT_MAX_FILE_SIZE = int(
+    os.environ.get("MAX_FILE_SIZE", "10485760")
+)  # 10MB by default
+MAX_EXCEL_FILE_SIZE = int(
+    os.environ.get("MAX_EXCEL_FILE_SIZE", "5242880")
+)  # 5MB for Excel files
 
 # Valid content types
 VALID_EXCEL_CONTENT_TYPES = [
@@ -20,8 +24,7 @@ VALID_EXCEL_CONTENT_TYPES = [
 
 
 async def validate_file_size(
-    file: UploadFile,
-    max_size: int = DEFAULT_MAX_FILE_SIZE
+    file: UploadFile, max_size: int = DEFAULT_MAX_FILE_SIZE
 ) -> tuple[bool, str | None]:
     """
     Validate that the file size is within allowed limits.
@@ -53,8 +56,7 @@ async def validate_file_size(
 
 
 async def validate_content_type(
-    file: UploadFile,
-    valid_types: list[str]
+    file: UploadFile, valid_types: list[str]
 ) -> tuple[bool, str | None]:
     """
     Validate that the file's content type is allowed.
@@ -93,14 +95,13 @@ async def validate_excel_file_upload(file: UploadFile) -> None:
         file: The Excel file to validate
     """
     # Check content type
-    is_valid_type, type_error = await validate_content_type(file, VALID_EXCEL_CONTENT_TYPES)
+    is_valid_type, type_error = await validate_content_type(
+        file, VALID_EXCEL_CONTENT_TYPES
+    )
     if not is_valid_type:
         raise ValidationError(
             message=f"Invalid Excel file: {type_error}",
-            details={
-                "filename": file.filename,
-                "content_type": file.content_type
-            }
+            details={"filename": file.filename, "content_type": file.content_type},
         )
 
     # Check file size
@@ -110,6 +111,6 @@ async def validate_excel_file_upload(file: UploadFile) -> None:
             message=f"Excel file too large: {size_error}",
             details={
                 "filename": file.filename,
-                "max_size_mb": MAX_EXCEL_FILE_SIZE / (1024 * 1024)
-            }
+                "max_size_mb": MAX_EXCEL_FILE_SIZE / (1024 * 1024),
+            },
         )

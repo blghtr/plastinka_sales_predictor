@@ -2,6 +2,7 @@
 Central configuration module for the Plastinka Sales Predictor API.
 Loads configuration from environment variables or config files.
 """
+
 import json
 import logging  # Added
 import os
@@ -39,7 +40,9 @@ def _get_default_data_root_dir() -> str:
         # Primary approach: use user home directory
         return str(Path("~/.plastinka_sales_predictor").expanduser())
     except (RuntimeError, OSError) as e:
-        logger.warning(f"Could not determine home directory ({e}), using temporary directory fallback")
+        logger.warning(
+            f"Could not determine home directory ({e}), using temporary directory fallback"
+        )
         try:
             # Fallback for test environments: use system temp directory
             temp_root = tempfile.gettempdir()
@@ -49,8 +52,11 @@ def _get_default_data_root_dir() -> str:
         except Exception as fallback_error:
             # Final fallback: current working directory
             fallback_path = os.path.join(os.getcwd(), ".plastinka_data")
-            logger.warning(f"Temp directory fallback failed ({fallback_error}), using current directory: {fallback_path}")
+            logger.warning(
+                f"Temp directory fallback failed ({fallback_error}), using current directory: {fallback_path}"
+            )
             return fallback_path
+
 
 def load_config_file(file_path: str) -> dict[str, Any]:
     """
@@ -66,9 +72,9 @@ def load_config_file(file_path: str) -> dict[str, Any]:
         return {}
 
     with open(file_path) as f:
-        if file_path.endswith('.json'):
+        if file_path.endswith(".json"):
             return json.load(f)
-        elif file_path.endswith(('.yaml', '.yml')):
+        elif file_path.endswith((".yaml", ".yml")):
             return yaml.safe_load(f)
         else:
             raise ValueError(f"Unsupported config file format: {file_path}")
@@ -113,7 +119,11 @@ def get_data_retention_config() -> dict[str, Any]:
 def get_app_config() -> dict[str, Any]:
     """Get application-level configuration."""
     config = get_config_values()
-    return {k: v for k, v in config.items() if k not in ("api", "db", "datasphere", "data_retention")}
+    return {
+        k: v
+        for k, v in config.items()
+        if k not in ("api", "db", "datasphere", "data_retention")
+    }
 
 
 # Общий валидатор для создания директорий
@@ -132,7 +142,7 @@ def ensure_directory_exists(path_value: str) -> str:
 
     # Если это путь к файлу, создаем родительскую директорию
     path = Path(path_value)
-    if '.' in path.name and not path.name.endswith(('/', '\\')):
+    if "." in path.name and not path.name.endswith(("/", "\\")):
         # Вероятно это файл - создаем родительскую директорию
         path.parent.mkdir(parents=True, exist_ok=True)
     else:
@@ -144,36 +154,21 @@ def ensure_directory_exists(path_value: str) -> str:
 
 class APISettings(BaseSettings):
     """API specific settings."""
-    host: str = Field(
-        default="0.0.0.0",
-        description="Host to run the API server on"
-    )
-    port: int = Field(
-        default=8000,
-        description="Port to run the API server on"
-    )
-    debug: bool = Field(
-        default=False,
-        description="Run in debug mode"
-    )
+
+    host: str = Field(default="0.0.0.0", description="Host to run the API server on")
+    port: int = Field(default=8000, description="Port to run the API server on")
+    debug: bool = Field(default=False, description="Run in debug mode")
     allowed_origins: list[str] = Field(
         default=["http://localhost:3000"],
-        description="List of allowed origins for CORS"
+        description="List of allowed origins for CORS",
     )
-    api_key: str = Field(
-        default="",
-        description="API key for authentication"
-    )
+    api_key: str = Field(default="", description="API key for authentication")
     x_api_key: str = Field(
-        default="",
-        description="API key for X-API-Key header authentication"
+        default="", description="API key for X-API-Key header authentication"
     )
-    log_level: str = Field(
-        default="INFO",
-        description="Log level"
-    )
+    log_level: str = Field(default="INFO", description="Log level")
 
-    @field_validator('allowed_origins', mode='before')
+    @field_validator("allowed_origins", mode="before")
     @classmethod
     def validate_allowed_origins(cls, v):
         """Validate and parse allowed origins."""
@@ -186,7 +181,7 @@ class APISettings(BaseSettings):
     @classmethod
     def settings_customise_sources(
         cls: type[BaseSettings],  # Changed from settings_cls to cls
-        settings_cls_arg: type[BaseSettings], # Added settings_cls_arg
+        settings_cls_arg: type[BaseSettings],  # Added settings_cls_arg
         init_settings: InitSettingsSource,
         env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
@@ -198,7 +193,7 @@ class APISettings(BaseSettings):
         """
         config_file_data: dict[str, Any] = {}
         # Use cls consistently
-        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+        if hasattr(cls, "_config_loader_func") and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
             loaded_data = loader_func()
             if isinstance(loaded_data, dict):
@@ -228,11 +223,12 @@ class APISettings(BaseSettings):
 
 class DatabaseSettings(BaseSettings):
     """Database specific settings."""
+
     # These paths will be computed automatically from data_root_dir in AppSettings
     # Removing static defaults that reference deployment/data
     filename: str = Field(
         default="plastinka.db",
-        description="SQLite database filename (path will be computed from data_root_dir)"
+        description="SQLite database filename (path will be computed from data_root_dir)",
     )
 
     # Database directory creation is handled in AppSettings computed properties
@@ -253,7 +249,7 @@ class DatabaseSettings(BaseSettings):
         Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
         """
         config_file_data: dict[str, Any] = {}
-        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+        if hasattr(cls, "_config_loader_func") and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
             loaded_data = loader_func()
             if isinstance(loaded_data, dict):
@@ -284,11 +280,12 @@ class DatabaseSettings(BaseSettings):
 
 class TrainJobSettings(BaseSettings):
     """Settings specific to the DataSphere training job submission."""
+
     # Removed input_dir, output_dir, job_config_path - these are now computed properties in AppSettings
     # Keeping only job-specific timeouts
     wheel_build_timeout_seconds: int = Field(
-        default=300, # Default 5 minutes
-        description="Timeout for building the project wheel in seconds"
+        default=300,  # Default 5 minutes
+        description="Timeout for building the project wheel in seconds",
     )
 
     # Removed validators for input_dir, output_dir, job_config_path - these are handled in AppSettings
@@ -296,7 +293,9 @@ class TrainJobSettings(BaseSettings):
     @classmethod
     def settings_customise_sources(
         cls: type[BaseSettings],
-        settings_cls_arg: type[BaseSettings], # Parameter to accept Pydantic's settings_cls kwarg
+        settings_cls_arg: type[
+            BaseSettings
+        ],  # Parameter to accept Pydantic's settings_cls kwarg
         init_settings: InitSettingsSource,
         env_settings: EnvSettingsSource,
         dotenv_settings: DotEnvSettingsSource,
@@ -307,7 +306,7 @@ class TrainJobSettings(BaseSettings):
         # Environment variables should be picked up by env_settings.
         return (
             init_settings,
-            env_settings, # Ensure env_settings is explicitly included
+            env_settings,  # Ensure env_settings is explicitly included
             dotenv_settings,
             file_secret_settings,
         )
@@ -317,28 +316,22 @@ class TrainJobSettings(BaseSettings):
         env_file=".env",
         extra="ignore",
         env_nested_delimiter="__",
-        customize_sources=settings_customise_sources, # Added customize_sources
+        customize_sources=settings_customise_sources,  # Added customize_sources
     )
 
 
 class DataSphereSettings(BaseSettings):
     """DataSphere specific settings."""
+
     # Client settings
-    project_id: str = Field(
-        default="",
-        description="ID of the DataSphere project"
-    )
-    folder_id: str = Field(
-        default="",
-        description="Yandex Cloud folder ID"
-    )
+    project_id: str = Field(default="", description="ID of the DataSphere project")
+    folder_id: str = Field(default="", description="Yandex Cloud folder ID")
     oauth_token: str | None = Field(
         default=None,
         description="Yandex Cloud OAuth token (optional, uses profile/env if None)",
     )
     yc_profile: str | None = Field(
-        default=None,
-        description="Yandex Cloud CLI profile name (optional)"
+        default=None, description="Yandex Cloud CLI profile name (optional)"
     )
 
     # Nested Train Job Settings
@@ -346,39 +339,38 @@ class DataSphereSettings(BaseSettings):
 
     # Polling configuration
     max_polls: int = Field(
-        default=72,
-        description="Maximum number of times to poll DataSphere job status"
+        default=72, description="Maximum number of times to poll DataSphere job status"
     )
     poll_interval: float = Field(
-        default=300.,
-        description="Interval in seconds between polling DataSphere job status"
+        default=300.0,
+        description="Interval in seconds between polling DataSphere job status",
     )
 
     # Add the new setting here
     download_diagnostics_on_success: bool = Field(
         default=False,
-        description="Whether to download logs/diagnostics for successful DataSphere jobs"
+        description="Whether to download logs/diagnostics for successful DataSphere jobs",
     )
 
     client_init_timeout_seconds: int = Field(
         default=60,
-        description="Timeout for DataSphere client initialization in seconds"
+        description="Timeout for DataSphere client initialization in seconds",
     )
     client_submit_timeout_seconds: int = Field(
         default=3600,
-        description="Timeout for DataSphere client job submission in seconds"
+        description="Timeout for DataSphere client job submission in seconds",
     )
     client_status_timeout_seconds: int = Field(
         default=30,
-        description="Timeout for DataSphere client job status checks in seconds"
+        description="Timeout for DataSphere client job status checks in seconds",
     )
     client_download_timeout_seconds: int = Field(
         default=600,
-        description="Timeout for DataSphere client results download in seconds"
+        description="Timeout for DataSphere client results download in seconds",
     )
     client_cancel_timeout_seconds: int = Field(
         default=60,
-        description="Timeout for DataSphere client job cancellation in seconds"
+        description="Timeout for DataSphere client job cancellation in seconds",
     )
 
     @property
@@ -388,7 +380,7 @@ class DataSphereSettings(BaseSettings):
             "project_id": self.project_id,
             "folder_id": self.folder_id,
             "oauth_token": self.oauth_token,
-            "yc_profile": self.yc_profile
+            "yc_profile": self.yc_profile,
         }
 
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_datasphere_config
@@ -407,7 +399,7 @@ class DataSphereSettings(BaseSettings):
         Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
         """
         config_file_data: dict[str, Any] = {}
-        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+        if hasattr(cls, "_config_loader_func") and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
             loaded_data = loader_func()
             if isinstance(loaded_data, dict):
@@ -436,45 +428,44 @@ class DataSphereSettings(BaseSettings):
 
 class DataRetentionSettings(BaseSettings):
     """Data retention specific settings."""
+
     # Retention periods (in days)
     sales_retention_days: int = Field(
         default=730,  # ~2 years
-        description="Retention period for sales data in days"
+        description="Retention period for sales data in days",
     )
     stock_retention_days: int = Field(
         default=730,  # ~2 years
-        description="Retention period for stock data in days"
+        description="Retention period for stock data in days",
     )
     prediction_retention_days: int = Field(
         default=365,  # ~1 year
-        description="Retention period for prediction data in days"
+        description="Retention period for prediction data in days",
     )
 
     # Model management
     models_to_keep: int = Field(
-        default=5,
-        description="Number of models to keep per parameter set"
+        default=5, description="Number of models to keep per parameter set"
     )
     inactive_model_retention_days: int = Field(
         default=90,  # ~3 months
-        description="Retention period for inactive models in days"
+        description="Retention period for inactive models in days",
     )
 
     # Execution settings
     cleanup_enabled: bool = Field(
-        default=True,
-        description="Enable automatic data cleanup"
+        default=True, description="Enable automatic data cleanup"
     )
     cleanup_schedule: str = Field(
         default="0 3 * * 0",  # 3:00 AM every Sunday
-        description="Cleanup schedule in cron format"
+        description="Cleanup schedule in cron format",
     )
 
     model_config = SettingsConfigDict(
         env_prefix="RETENTION_",
         env_file=".env",
         extra="ignore",
-        env_nested_delimiter="__"
+        env_nested_delimiter="__",
     )
 
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_data_retention_config
@@ -493,7 +484,7 @@ class DataRetentionSettings(BaseSettings):
         Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
         """
         config_file_data: dict[str, Any] = {}
-        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+        if hasattr(cls, "_config_loader_func") and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
             loaded_data = loader_func()
             if isinstance(loaded_data, dict):
@@ -519,12 +510,13 @@ class DataRetentionSettings(BaseSettings):
         env_file=".env",
         extra="ignore",
         env_nested_delimiter="__",
-        customize_sources=settings_customise_sources, # Added
+        customize_sources=settings_customise_sources,  # Added
     )
 
 
 class AppSettings(BaseSettings):
     """Main application settings container."""
+
     # Explicitly declare API and DB settings as fields
     api: APISettings = Field(default_factory=APISettings)
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -533,63 +525,61 @@ class AppSettings(BaseSettings):
 
     env: str = Field(
         default="development",
-        description="Application environment (development, testing, production)"
+        description="Application environment (development, testing, production)",
     )
     callback_base_url: str = Field(
         default="http://localhost:8000",
-        description="Base URL for cloud function callbacks"
+        description="Base URL for cloud function callbacks",
     )
     callback_route: str = Field(
         default="/api/v1/cloud/callback",
-        description="Route for cloud function callbacks"
+        description="Route for cloud function callbacks",
     )
     callback_auth_token: str = Field(
-        default="",
-        description="Authentication token for cloud function callbacks"
+        default="", description="Authentication token for cloud function callbacks"
     )
     max_upload_size: int = Field(
         default=50 * 1024 * 1024,  # 50 MB default
-        description="Maximum upload size in bytes"
+        description="Maximum upload size in bytes",
     )
     temp_upload_dir: str = Field(
-        default="./temp_uploads",
-        description="Directory for temporary file uploads"
+        default="./temp_uploads", description="Directory for temporary file uploads"
     )
     max_models_to_keep: int = Field(
         default=5,
-        description="Maximum number of trained model artifacts to keep locally"
+        description="Maximum number of trained model artifacts to keep locally",
     )
     file_storage_dir: str = Field(
         default="./uploads",
-        description="Base directory for storing uploaded files (models, reports, etc.)"
+        description="Base directory for storing uploaded files (models, reports, etc.)",
     )
 
     # Model and parameters selection settings
     default_metric: str = Field(
         default="val_MIC",
-        description="Default metric name to use for selecting best models/parameters"
+        description="Default metric name to use for selecting best models/parameters",
     )
     default_metric_higher_is_better: bool = Field(
         default=True,
-        description="Whether higher values of the default metric are better"
+        description="Whether higher values of the default metric are better",
     )
     auto_select_best_configs: bool = Field(
         default=True,
-        description="Whether to automatically select the best parameter set as active"
+        description="Whether to automatically select the best parameter set as active",
     )
     auto_select_best_model: bool = Field(
         default=True,
-        description="Whether to automatically select the best model as active"
+        description="Whether to automatically select the best model as active",
     )
     project_root_dir: str = Field(
         default=str(Path(__file__).resolve().parents[2]),
-        description="Absolute path to the project root directory."
+        description="Absolute path to the project root directory.",
     )
 
     # New smart data directory configuration
     data_root_dir: str = Field(
         default=_get_default_data_root_dir(),
-        description="Root directory for all application data, models, logs, etc."
+        description="Root directory for all application data, models, logs, etc.",
     )
 
     # Smart computed properties for all data paths
@@ -650,7 +640,9 @@ class AppSettings(BaseSettings):
     @property
     def datasphere_job_dir(self) -> str:
         """Directory containing DataSphere job scripts."""
-        return os.path.join(self.project_root_dir, "plastinka_sales_predictor", "datasphere_job")
+        return os.path.join(
+            self.project_root_dir, "plastinka_sales_predictor", "datasphere_job"
+        )
 
     @property
     def datasphere_job_config_path(self) -> str:
@@ -673,7 +665,7 @@ class AppSettings(BaseSettings):
         return path
 
     # Валидатор для создания базовой директории данных
-    @field_validator('data_root_dir', mode='after')
+    @field_validator("data_root_dir", mode="after")
     @classmethod
     def ensure_data_root_exists(cls, v: str) -> str:
         """Проверяет существование корневой директории данных и создает её при необходимости."""
@@ -681,9 +673,7 @@ class AppSettings(BaseSettings):
 
     # Use SettingsConfigDict for Pydantic v2 settings configuration
     model_config = SettingsConfigDict(
-        env_file=".env",
-        extra="ignore",
-        env_nested_delimiter="__"
+        env_file=".env", extra="ignore", env_nested_delimiter="__"
     )
 
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_app_config
@@ -702,9 +692,9 @@ class AppSettings(BaseSettings):
         Order: __init__ args > config file dict > env vars > .env file > secrets > defaults.
         """
         config_file_data: dict[str, Any] = {}
-        if hasattr(cls, '_config_loader_func') and cls._config_loader_func is not None:
+        if hasattr(cls, "_config_loader_func") and cls._config_loader_func is not None:
             loader_func = cls._config_loader_func
-            loaded_data = loader_func() # For AppSettings, this loads its direct fields
+            loaded_data = loader_func()  # For AppSettings, this loads its direct fields
             if isinstance(loaded_data, dict):
                 config_file_data = loaded_data
 
@@ -723,13 +713,13 @@ class AppSettings(BaseSettings):
 
     # model_config is inherited or defined in AppSettings if needed
     model_config = SettingsConfigDict(
-        env_file=".env", # AppSettings might not have its own prefix for direct fields
+        env_file=".env",  # AppSettings might not have its own prefix for direct fields
         extra="ignore",
-        env_nested_delimiter="__", # For nested models if their env vars are prefixed by AppSettings field names
-        customize_sources=settings_customise_sources, # Added
+        env_nested_delimiter="__",  # For nested models if their env vars are prefixed by AppSettings field names
+        customize_sources=settings_customise_sources,  # Added
     )
 
-    @field_validator('project_root_dir', mode='before')
+    @field_validator("project_root_dir", mode="before")
     @classmethod
     def _resolve_project_root(cls, v):
         if v:
@@ -767,6 +757,7 @@ class AppSettings(BaseSettings):
 # Create a global instance of the settings
 # settings = AppSettings()
 
+
 @lru_cache
 def get_settings() -> AppSettings:
     """
@@ -774,4 +765,3 @@ def get_settings() -> AppSettings:
     The settings are loaded once and cached.
     """
     return AppSettings()
-

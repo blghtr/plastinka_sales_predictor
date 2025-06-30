@@ -61,9 +61,12 @@ def temp_db():
                 # Now try to delete the file
                 Path(tmp.name).unlink(missing_ok=True)
             except PermissionError:
-                print(f"Warning: Could not delete temporary file {tmp.name}, it may still be in use")
+                print(
+                    f"Warning: Could not delete temporary file {tmp.name}, it may still be in use"
+                )
             except Exception as e:
                 print(f"Warning: Error cleaning up temporary file: {e}")
+
 
 def test_foreign_key_constraint(temp_db):
     """Test that foreign key constraints are enforced."""
@@ -74,20 +77,20 @@ def test_foreign_key_constraint(temp_db):
     # Insert a job
     conn.execute(
         "INSERT INTO jobs (job_id, created_at, updated_at, status) VALUES (?, ?, ?, ?)",
-        ("test_job", "2021-01-01", "2021-01-01", "running")
+        ("test_job", "2021-01-01", "2021-01-01", "running"),
     )
 
     # Insert a job status history entry with a valid job_id
     conn.execute(
         "INSERT INTO job_status_history (job_id, status, progress, created_at) VALUES (?, ?, ?, ?)",
-        ("test_job", "running", 50, "2021-01-01")
+        ("test_job", "running", 50, "2021-01-01"),
     )
 
     # Try to insert a job status history entry with an invalid job_id
     with pytest.raises(sqlite3.IntegrityError) as excinfo:
         conn.execute(
             "INSERT INTO job_status_history (job_id, status, progress, created_at) VALUES (?, ?, ?, ?)",
-            ("nonexistent_job", "running", 50, "2021-01-01")
+            ("nonexistent_job", "running", 50, "2021-01-01"),
         )
 
     # Check that the error message mentions foreign key constraint

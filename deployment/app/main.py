@@ -29,19 +29,20 @@ from deployment.app.utils.error_handling import configure_error_handlers
 configure_logging()
 
 # Configure logging
-logger = logging.getLogger(__name__) # Use __name__ for module-specific logger
+logger = logging.getLogger(__name__)  # Use __name__ for module-specific logger
+
 
 # Lifespan context manager for application startup and shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Perform environment checks
-    '''
+    """
     env_health = "healthy" # check_environment()
 
     if env_health.status != "healthy":
         logger.warning(f"Missing environment variables: {env_health.details.get('missing_variables')}")
         logger.warning("The application may not function correctly. See docs/environment_variables.md for details.")
-    '''
+    """
     settings = get_settings()
     # Initialize database
     db_initialized_successfully = init_db(db_path=settings.database_path)
@@ -52,17 +53,19 @@ async def lifespan(app: FastAPI):
     # Only start debugger if not running tests
     if not os.environ.get("PYTEST_CURRENT_TEST"):
         import debugpy
+
         debugpy.listen(5678)
         debugpy.wait_for_client()
 
     yield
+
 
 # Create FastAPI application with lifespan
 app = FastAPI(
     title="Plastinka Sales Predictor API",
     description="API for predicting vinyl record sales",
     version="0.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Add CORS middleware with restricted origins
@@ -83,22 +86,25 @@ app.include_router(health_router)
 app.include_router(models_params_router)
 app.include_router(admin_router)
 
+
 # Root endpoint
 @app.get("/")
 async def root():
     return {
         "message": "Plastinka Sales Predictor API",
         "docs": "/docs",
-        "version": "0.1.0"
+        "version": "0.1.0",
     }
+
 
 # Run the application with uvicorn
 if __name__ == "__main__":
     import uvicorn
+
     settings = get_settings()
     uvicorn.run(
         "app.main:app",
         host=settings.api.host,
         port=settings.api.port,
-        reload=settings.api.debug
+        reload=settings.api.debug,
     )

@@ -144,6 +144,7 @@ from deployment.app.db.database import (
 # Tests for core database functions
 # =============================================
 
+
 def test_get_db_connection(temp_db):
     """Test that get_db_connection returns a valid connection"""
     # Use the actual function to get a connection
@@ -160,16 +161,17 @@ def test_get_db_connection(temp_db):
     cursor.execute("SELECT sqlite_version()")
     version_row = cursor.fetchone()
     assert version_row is not None
-    version = version_row['sqlite_version()']
+    version = version_row["sqlite_version()"]
     assert version is not None
 
     # Close the connection
     conn.close()
 
+
 def test_get_db_connection_error():
     """Test that get_db_connection raises DatabaseError when connection fails"""
     # Patch Path.mkdir to raise an exception
-    with patch('pathlib.Path.mkdir', side_effect=Exception("Forced error")):
+    with patch("pathlib.Path.mkdir", side_effect=Exception("Forced error")):
         # Verify that the function raises DatabaseError
         with pytest.raises(DatabaseError) as exc_info:
             get_db_connection()
@@ -178,12 +180,15 @@ def test_get_db_connection_error():
         assert "Database connection failed" in str(exc_info.value)
         assert exc_info.value.original_error is not None
 
+
 def test_dict_factory():
     """Test that dict_factory correctly converts rows to dictionaries"""
     # Create a mock cursor
     mock_cursor = MagicMock()
-    mock_cursor.description = [("id", None, None, None, None, None, None),
-                              ("name", None, None, None, None, None, None)]
+    mock_cursor.description = [
+        ("id", None, None, None, None, None, None),
+        ("name", None, None, None, None, None, None),
+    ]
 
     # Create a mock row
     row = (1, "test")
@@ -196,18 +201,23 @@ def test_dict_factory():
     assert result["id"] == 1
     assert result["name"] == "test"
 
+
 def test_execute_query_select(in_memory_db):
     """Test execute_query with a SELECT statement"""
     conn = in_memory_db["conn"]
 
     # Add some test data
     cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY, name TEXT)")
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY, name TEXT)"
+    )
     cursor.execute("INSERT INTO test_table (name) VALUES (?)", ("test_name",))
     conn.commit()
 
     # Test execute_query with SELECT
-    result = execute_query("SELECT * FROM test_table WHERE name = ?", ("test_name",), connection=conn)
+    result = execute_query(
+        "SELECT * FROM test_table WHERE name = ?", ("test_name",), connection=conn
+    )
 
     # Verify result
     assert result is not None
@@ -218,26 +228,28 @@ def test_execute_query_select(in_memory_db):
     assert len(results) == 1
     assert results[0]["name"] == "test_name"
 
+
 def test_execute_query_insert(in_memory_db):
     """Test execute_query with an INSERT statement"""
     conn = in_memory_db["conn"]
 
     # Create test table
     cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY, name TEXT)")
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY, name TEXT)"
+    )
 
     # Use execute_query for INSERT
     execute_query(
-        "INSERT INTO test_table (name) VALUES (?)",
-        ("new_record",),
-        connection=conn
+        "INSERT INTO test_table (name) VALUES (?)", ("new_record",), connection=conn
     )
 
     # Verify the record was inserted
     cursor.execute("SELECT * FROM test_table WHERE name = ?", ("new_record",))
     result = cursor.fetchone()
     assert result is not None
-    assert result['name'] == "new_record" # Access by column name due to dict_factory
+    assert result["name"] == "new_record"  # Access by column name due to dict_factory
+
 
 def test_execute_query_error(in_memory_db):
     """Test that execute_query raises DatabaseError on SQL errors"""
@@ -253,39 +265,37 @@ def test_execute_query_error(in_memory_db):
     assert exc_info.value.params == ()
     assert exc_info.value.original_error is not None
 
+
 def test_execute_many(in_memory_db):
     """Test execute_many with multiple parameter sets"""
     conn = in_memory_db["conn"]
 
     # Create test table
     cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY, name TEXT)")
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY, name TEXT)"
+    )
 
     # Define parameter sets
-    params_list = [
-        ("name1",),
-        ("name2",),
-        ("name3",)
-    ]
+    params_list = [("name1",), ("name2",), ("name3",)]
 
     # Use execute_many
     execute_many(
-        "INSERT INTO test_table (name) VALUES (?)",
-        params_list,
-        connection=conn
+        "INSERT INTO test_table (name) VALUES (?)", params_list, connection=conn
     )
 
     # Verify all records were inserted
     cursor.execute("SELECT COUNT(*) FROM test_table")
     count_result = cursor.fetchone()
     assert count_result is not None
-    count = count_result['COUNT(*)'] # Access by column name (alias)
+    count = count_result["COUNT(*)"]  # Access by column name (alias)
     assert count == len(params_list)
 
     # Verify specific records
     cursor.execute("SELECT name FROM test_table ORDER BY id")
-    names = [row['name'] for row in cursor.fetchall()]
+    names = [row["name"] for row in cursor.fetchall()]
     assert names == ["name1", "name2", "name3"]
+
 
 def test_execute_many_error(in_memory_db):
     """Test that execute_many raises DatabaseError on SQL errors"""
@@ -295,24 +305,33 @@ def test_execute_many_error(in_memory_db):
     params_list = [("name1",), ("name2",)]
 
     with pytest.raises(DatabaseError) as exc_info:
-        execute_many("INSERT INTO nonexistent_table (name) VALUES (?)", params_list, connection=conn)
+        execute_many(
+            "INSERT INTO nonexistent_table (name) VALUES (?)",
+            params_list,
+            connection=conn,
+        )
 
     # Verify error details
     assert "Batch database operation failed" in str(exc_info.value)
     assert exc_info.value.query == "INSERT INTO nonexistent_table (name) VALUES (?)"
     assert exc_info.value.original_error is not None
 
+
 def test_execute_many_empty_params(in_memory_db):
     """Test that execute_many handles empty params lists gracefully"""
     conn = in_memory_db["conn"]
 
     # Call with empty params list - should return without error
-    result = execute_many("INSERT INTO test_table (name) VALUES (?)", [], connection=conn)
+    result = execute_many(
+        "INSERT INTO test_table (name) VALUES (?)", [], connection=conn
+    )
     assert result is None
+
 
 # =============================================
 # Tests for job-related functions
 # =============================================
+
 
 def test_generate_id():
     """Test that generate_id produces unique IDs"""
@@ -326,6 +345,7 @@ def test_generate_id():
     for id in ids:
         assert len(id) == 36  # UUID string length
         assert isinstance(uuid.UUID(id), uuid.UUID)  # Valid UUID format
+
 
 def test_create_job(in_memory_db):
     """Test creating a job record"""
@@ -355,15 +375,14 @@ def test_create_job(in_memory_db):
     stored_params = json.loads(job["parameters"])
     assert stored_params == parameters
 
+
 def test_update_job_status(in_memory_db, sample_job_data):
     """Test updating job status"""
     conn = in_memory_db["conn"]
 
     # Create a job first
     job_id = create_job(
-        sample_job_data["job_type"],
-        sample_job_data["parameters"],
-        connection=conn
+        sample_job_data["job_type"], sample_job_data["parameters"], connection=conn
     )
 
     # Update job status
@@ -372,7 +391,7 @@ def test_update_job_status(in_memory_db, sample_job_data):
         status="running",
         progress=50,
         status_message="Halfway there",
-        connection=conn
+        connection=conn,
     )
 
     # Verify job was updated
@@ -390,6 +409,7 @@ def test_update_job_status(in_memory_db, sample_job_data):
     assert history["progress"] == 50
     assert history["status_message"] == "Halfway there"
 
+
 def test_get_job_nonexistent(in_memory_db):
     """Test getting a non-existent job"""
     conn = in_memory_db["conn"]
@@ -400,6 +420,7 @@ def test_get_job_nonexistent(in_memory_db):
 
     # Should return None
     assert result is None
+
 
 def test_list_jobs(in_memory_db):
     """Test listing jobs with filters"""
@@ -434,9 +455,11 @@ def test_list_jobs(in_memory_db):
     assert len(filtered_jobs) == 1
     assert filtered_jobs[0]["job_id"] == job_3
 
+
 # =============================================
 # Tests for model and parameter set management
 # =============================================
+
 
 def test_create_model_record(in_memory_db, sample_model_data):
     """Test creating a model record"""
@@ -459,7 +482,7 @@ def test_create_model_record(in_memory_db, sample_model_data):
         created_at=created_at,
         metadata=metadata,
         is_active=True,
-        connection=conn  # Pass the connection explicitly
+        connection=conn,  # Pass the connection explicitly
     )
 
     # Verify model was created
@@ -476,6 +499,7 @@ def test_create_model_record(in_memory_db, sample_model_data):
     # Verify metadata was stored correctly
     stored_metadata = json.loads(model["metadata"])
     assert stored_metadata == metadata
+
 
 def test_get_active_model(in_memory_db, sample_model_data):
     """Test getting the active model"""
@@ -496,8 +520,7 @@ def test_get_active_model(in_memory_db, sample_model_data):
         """INSERT INTO models
            (model_id, job_id, model_path, created_at, metadata, is_active)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (model_id, job_id, model_path, created_at.isoformat(),
-         json.dumps(metadata), 1)
+        (model_id, job_id, model_path, created_at.isoformat(), json.dumps(metadata), 1),
     )
     conn.commit()
 
@@ -509,6 +532,7 @@ def test_get_active_model(in_memory_db, sample_model_data):
     assert active_model["model_id"] == model_id
     assert active_model["model_path"] == model_path
     assert active_model["metadata"] == metadata
+
 
 def test_set_model_active(in_memory_db):
     """Test setting a model as active"""
@@ -525,11 +549,11 @@ def test_set_model_active(in_memory_db):
 
     cursor.execute(
         "INSERT INTO models (model_id, job_id, model_path, created_at, is_active) VALUES (?, ?, ?, ?, ?)",
-        (model_id_1, job_id, "/path/to/model1.onnx", now, 0)
+        (model_id_1, job_id, "/path/to/model1.onnx", now, 0),
     )
     cursor.execute(
         "INSERT INTO models (model_id, job_id, model_path, created_at, is_active) VALUES (?, ?, ?, ?, ?)",
-        (model_id_2, job_id, "/path/to/model2.onnx", now, 0)
+        (model_id_2, job_id, "/path/to/model2.onnx", now, 0),
     )
     conn.commit()
 
@@ -541,14 +565,22 @@ def test_set_model_active(in_memory_db):
     cursor.execute("SELECT is_active FROM models WHERE model_id = ?", (model_id_1,))
     is_active_1_row = cursor.fetchone()
     # Handle both sqlite.Row and tuple
-    is_active_1 = is_active_1_row['is_active'] if hasattr(is_active_1_row, 'keys') else is_active_1_row[0]
+    is_active_1 = (
+        is_active_1_row["is_active"]
+        if hasattr(is_active_1_row, "keys")
+        else is_active_1_row[0]
+    )
     assert is_active_1 == 1
 
     # Verify second model is inactive
     cursor.execute("SELECT is_active FROM models WHERE model_id = ?", (model_id_2,))
     is_active_2_row = cursor.fetchone()
     # Handle both sqlite.Row and tuple
-    is_active_2 = is_active_2_row['is_active'] if hasattr(is_active_2_row, 'keys') else is_active_2_row[0]
+    is_active_2 = (
+        is_active_2_row["is_active"]
+        if hasattr(is_active_2_row, "keys")
+        else is_active_2_row[0]
+    )
     assert is_active_2 == 0
 
     # Set the second model as active
@@ -559,33 +591,46 @@ def test_set_model_active(in_memory_db):
     cursor.execute("SELECT is_active FROM models WHERE model_id = ?", (model_id_1,))
     is_active_1_row = cursor.fetchone()
     # Handle both sqlite.Row and tuple
-    is_active_1 = is_active_1_row['is_active'] if hasattr(is_active_1_row, 'keys') else is_active_1_row[0]
+    is_active_1 = (
+        is_active_1_row["is_active"]
+        if hasattr(is_active_1_row, "keys")
+        else is_active_1_row[0]
+    )
     assert is_active_1 == 0
 
     # Verify second model is now active
     cursor.execute("SELECT is_active FROM models WHERE model_id = ?", (model_id_2,))
     is_active_2_row = cursor.fetchone()
     # Handle both sqlite.Row and tuple
-    is_active_2 = is_active_2_row['is_active'] if hasattr(is_active_2_row, 'keys') else is_active_2_row[0]
+    is_active_2 = (
+        is_active_2_row["is_active"]
+        if hasattr(is_active_2_row, "keys")
+        else is_active_2_row[0]
+    )
     assert is_active_2 == 1
+
 
 def test_create_or_get_config(in_memory_db, sample_config):
     """Test creating a config record"""
     # Test creating a new config
-    config_id = create_or_get_config(sample_config, is_active=True, connection=in_memory_db["conn"])
+    config_id = create_or_get_config(
+        sample_config, is_active=True, connection=in_memory_db["conn"]
+    )
     assert config_id is not None
 
     retrieved_config = execute_query(
         "SELECT * FROM configs WHERE config_id = ?",
         (config_id,),
-        connection=in_memory_db["conn"]
+        connection=in_memory_db["conn"],
     )
     assert retrieved_config is not None
-    assert json.loads(retrieved_config['config']) == sample_config
-    assert retrieved_config['is_active'] == 1
+    assert json.loads(retrieved_config["config"]) == sample_config
+    assert retrieved_config["is_active"] == 1
 
     # Test idempotency: calling with same config should return same ID
-    same_config_id = create_or_get_config(sample_config, connection=in_memory_db["conn"])
+    same_config_id = create_or_get_config(
+        sample_config, connection=in_memory_db["conn"]
+    )
     assert same_config_id == config_id
 
     # Test creating a new config with is_active=True deactivates others
@@ -597,43 +642,53 @@ def test_create_or_get_config(in_memory_db, sample_config):
         "dropout": 0.3,
         "batch_size": 64,
         "max_epochs": 20,
-        "learning_rate": 0.0005
+        "learning_rate": 0.0005,
     }
-    new_config_id = create_or_get_config(new_config_data, is_active=True, connection=in_memory_db["conn"])
+    new_config_id = create_or_get_config(
+        new_config_data, is_active=True, connection=in_memory_db["conn"]
+    )
 
     old_config = execute_query(
         "SELECT is_active FROM configs WHERE config_id = ?",
         (config_id,),
-        connection=in_memory_db["conn"]
+        connection=in_memory_db["conn"],
     )
-    assert old_config['is_active'] == 0 # Old config should be inactive
+    assert old_config["is_active"] == 0  # Old config should be inactive
 
     new_config = execute_query(
         "SELECT is_active FROM configs WHERE config_id = ?",
         (new_config_id,),
-        connection=in_memory_db["conn"]
+        connection=in_memory_db["conn"],
     )
-    assert new_config['is_active'] == 1 # New config should be active
+    assert new_config["is_active"] == 1  # New config should be active
+
 
 def test_get_active_config(in_memory_db, sample_config):
     """Test retrieving the active config"""
     # Create a config and set it active
-    config_id = create_or_get_config(sample_config, is_active=True, connection=in_memory_db["conn"])
+    config_id = create_or_get_config(
+        sample_config, is_active=True, connection=in_memory_db["conn"]
+    )
 
     active_config = get_active_config(connection=in_memory_db["conn"])
     assert active_config is not None
-    assert active_config['config_id'] == config_id
-    assert active_config['config'] == sample_config
+    assert active_config["config_id"] == config_id
+    assert active_config["config"] == sample_config
 
     # Test no active config
     execute_query("UPDATE configs SET is_active = 0", connection=in_memory_db["conn"])
     assert get_active_config(connection=in_memory_db["conn"]) is None
 
+
 def test_set_config_active(in_memory_db, sample_config):
     """Test setting a config as active"""
     # Create two configs
-    config_id1 = create_or_get_config(sample_config, is_active=False, connection=in_memory_db["conn"])
-    config_id2 = create_or_get_config({"key": "value"}, is_active=False, connection=in_memory_db["conn"])
+    config_id1 = create_or_get_config(
+        sample_config, is_active=False, connection=in_memory_db["conn"]
+    )
+    config_id2 = create_or_get_config(
+        {"key": "value"}, is_active=False, connection=in_memory_db["conn"]
+    )
 
     # Set config1 active
     success = set_config_active(config_id1, connection=in_memory_db["conn"])
@@ -642,15 +697,15 @@ def test_set_config_active(in_memory_db, sample_config):
     cfg1 = execute_query(
         "SELECT is_active FROM configs WHERE config_id = ?",
         (config_id1,),
-        connection=in_memory_db["conn"]
+        connection=in_memory_db["conn"],
     )
     cfg2 = execute_query(
         "SELECT is_active FROM configs WHERE config_id = ?",
         (config_id2,),
-        connection=in_memory_db["conn"]
+        connection=in_memory_db["conn"],
     )
-    assert cfg1['is_active'] == 1
-    assert cfg2['is_active'] == 0
+    assert cfg1["is_active"] == 1
+    assert cfg2["is_active"] == 0
 
     # Set config2 active, deactivating config1
     success = set_config_active(config_id2, connection=in_memory_db["conn"])
@@ -659,23 +714,25 @@ def test_set_config_active(in_memory_db, sample_config):
     cfg1 = execute_query(
         "SELECT is_active FROM configs WHERE config_id = ?",
         (config_id1,),
-        connection=in_memory_db["conn"]
+        connection=in_memory_db["conn"],
     )
     cfg2 = execute_query(
         "SELECT is_active FROM configs WHERE config_id = ?",
         (config_id2,),
-        connection=in_memory_db["conn"]
+        connection=in_memory_db["conn"],
     )
-    assert cfg1['is_active'] == 0
-    assert cfg2['is_active'] == 1
+    assert cfg1["is_active"] == 0
+    assert cfg2["is_active"] == 1
 
     # Test setting non-existent config active
     success = set_config_active("nonexistent-id", connection=in_memory_db["conn"])
     assert success is False
 
+
 # =============================================
 # Tests for result-related functions
 # =============================================
+
 
 def test_create_data_upload_result(in_memory_db):
     """Test creating a data upload result"""
@@ -690,7 +747,7 @@ def test_create_data_upload_result(in_memory_db):
         status="completed",
         cutoff_date="2023-01-01",
         source_files="file1.csv,file2.csv",
-        connection=conn
+        connection=conn,
     )
 
     # Create data upload result
@@ -702,12 +759,14 @@ def test_create_data_upload_result(in_memory_db):
         records_processed=records_processed,
         features_generated=features_generated,
         processing_run_id=run_id,
-        connection=conn
+        connection=conn,
     )
 
     # Verify result was created
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM data_upload_results WHERE result_id = ?", (result_id,))
+    cursor.execute(
+        "SELECT * FROM data_upload_results WHERE result_id = ?", (result_id,)
+    )
     result = cursor.fetchone()
 
     assert result is not None
@@ -718,6 +777,7 @@ def test_create_data_upload_result(in_memory_db):
     # Verify features_generated was stored as JSON
     stored_features = json.loads(result["features_generated"])
     assert stored_features == features_generated
+
 
 def test_create_prediction_result(in_memory_db):
     """Test creating a prediction result"""
@@ -732,7 +792,7 @@ def test_create_prediction_result(in_memory_db):
 
     cursor.execute(
         "INSERT INTO models (model_id, job_id, model_path, created_at) VALUES (?, ?, ?, ?)",
-        (model_id, job_id, "/path/to/model.onnx", now)
+        (model_id, job_id, "/path/to/model.onnx", now),
     )
     conn.commit()
 
@@ -745,7 +805,7 @@ def test_create_prediction_result(in_memory_db):
         model_id=model_id,
         output_path=output_path,
         summary_metrics=summary_metrics,
-        connection=conn
+        connection=conn,
     )
 
     # Verify result was created
@@ -761,9 +821,11 @@ def test_create_prediction_result(in_memory_db):
     stored_metrics = json.loads(result["summary_metrics"])
     assert stored_metrics == summary_metrics
 
+
 # =============================================
 # Tests for processing runs
 # =============================================
+
 
 def test_create_and_update_processing_run(in_memory_db):
     """Test creating and updating a processing run"""
@@ -780,7 +842,7 @@ def test_create_and_update_processing_run(in_memory_db):
         status=status,
         cutoff_date=cutoff_date,
         source_files=source_files,
-        connection=conn
+        connection=conn,
     )
 
     # Verify run was created
@@ -798,10 +860,7 @@ def test_create_and_update_processing_run(in_memory_db):
     end_time = datetime.now()
 
     update_processing_run(
-        run_id=run_id,
-        status=new_status,
-        end_time=end_time,
-        connection=conn
+        run_id=run_id, status=new_status, end_time=end_time, connection=conn
     )
 
     # Verify run was updated
@@ -811,8 +870,10 @@ def test_create_and_update_processing_run(in_memory_db):
     assert updated_run["status"] == new_status
     assert updated_run["end_time"] == end_time.isoformat()
 
+
 def test_get_effective_config_active_and_best(in_memory_db, sample_config):
     """Test get_effective_config when an active config exists (should be prioritized)"""
+
     # Create a dummy settings object for the test
     class MockSettings:
         def __init__(self):
@@ -823,38 +884,49 @@ def test_get_effective_config_active_and_best(in_memory_db, sample_config):
 
     # Create a job and model first to satisfy FK constraints
     job_id = create_job("training", {}, connection=in_memory_db["conn"])
-    model_id = create_model_record(model_id="model1", job_id=job_id, model_path="/path/to/model", created_at=datetime.now(), connection=in_memory_db["conn"])
+    model_id = create_model_record(
+        model_id="model1",
+        job_id=job_id,
+        model_path="/path/to/model",
+        created_at=datetime.now(),
+        connection=in_memory_db["conn"],
+    )
 
     # Create a training result with metrics (so get_best_config_by_metric can find something)
     # First, create a config that will be "the best" by metric
     best_metric_config_data = {"key": "best_metric_config"}
-    best_metric_config_id = create_or_get_config(best_metric_config_data, connection=in_memory_db["conn"])
+    best_metric_config_id = create_or_get_config(
+        best_metric_config_data, connection=in_memory_db["conn"]
+    )
 
     create_training_result(
         job_id=job_id,
         model_id=model_id,
         config_id=best_metric_config_id,
-        metrics={
-            "mae": 0.5,
-            "rmse": 0.6
-        },
+        metrics={"mae": 0.5, "rmse": 0.6},
         config=best_metric_config_data,
         duration=100,
-        connection=in_memory_db["conn"]
+        connection=in_memory_db["conn"],
     )
 
     # Create an active config (this should be returned by get_effective_config)
-    active_config_data = sample_config # Use the sample_config for the active one
-    active_config_id = create_or_get_config(active_config_data, is_active=True, connection=in_memory_db["conn"])
+    active_config_data = sample_config  # Use the sample_config for the active one
+    active_config_id = create_or_get_config(
+        active_config_data, is_active=True, connection=in_memory_db["conn"]
+    )
 
-    effective_config = get_effective_config(mock_settings, logger=MagicMock(), connection=in_memory_db["conn"])
+    effective_config = get_effective_config(
+        mock_settings, logger=MagicMock(), connection=in_memory_db["conn"]
+    )
 
     assert effective_config is not None
-    assert effective_config['config_id'] == active_config_id
-    assert effective_config['config'] == active_config_data
+    assert effective_config["config_id"] == active_config_id
+    assert effective_config["config"] == active_config_data
+
 
 def test_get_effective_config_only_best(in_memory_db, sample_config):
     """Test get_effective_config when no active config, but a best by metric exists"""
+
     class MockSettings:
         def __init__(self):
             self.default_metric = "mae"
@@ -864,36 +936,47 @@ def test_get_effective_config_only_best(in_memory_db, sample_config):
 
     # Create a job and model first to satisfy FK constraints
     job_id = create_job("training", {}, connection=in_memory_db["conn"])
-    model_id = create_model_record(model_id="model2", job_id=job_id, model_path="/path/to/model", created_at=datetime.now(), connection=in_memory_db["conn"])
+    model_id = create_model_record(
+        model_id="model2",
+        job_id=job_id,
+        model_path="/path/to/model",
+        created_at=datetime.now(),
+        connection=in_memory_db["conn"],
+    )
 
     # No active config
     execute_query("UPDATE configs SET is_active = 0", connection=in_memory_db["conn"])
 
     # Create a training result with metrics (so get_best_config_by_metric can find something)
-    best_metric_config_data = sample_config # Use sample_config as the best metric config
-    best_metric_config_id = create_or_get_config(best_metric_config_data, connection=in_memory_db["conn"])
+    best_metric_config_data = (
+        sample_config  # Use sample_config as the best metric config
+    )
+    best_metric_config_id = create_or_get_config(
+        best_metric_config_data, connection=in_memory_db["conn"]
+    )
 
     create_training_result(
         job_id=job_id,
         model_id=model_id,
         config_id=best_metric_config_id,
-        metrics={
-            "mae": 0.1,
-            "rmse": 0.2
-        },
+        metrics={"mae": 0.1, "rmse": 0.2},
         config=best_metric_config_data,
         duration=120,
-        connection=in_memory_db["conn"]
+        connection=in_memory_db["conn"],
     )
 
-    effective_config = get_effective_config(mock_settings, logger=MagicMock(), connection=in_memory_db["conn"])
+    effective_config = get_effective_config(
+        mock_settings, logger=MagicMock(), connection=in_memory_db["conn"]
+    )
 
     assert effective_config is not None
-    assert effective_config['config_id'] == best_metric_config_id
-    assert effective_config['config'] == best_metric_config_data
+    assert effective_config["config_id"] == best_metric_config_id
+    assert effective_config["config"] == best_metric_config_data
+
 
 def test_get_effective_config_no_config(in_memory_db):
     """Test get_effective_config when no active or best config exists"""
+
     class MockSettings:
         def __init__(self):
             self.default_metric = "mae"
@@ -905,5 +988,9 @@ def test_get_effective_config_no_config(in_memory_db):
     execute_query("DELETE FROM configs", connection=in_memory_db["conn"])
     execute_query("DELETE FROM training_results", connection=in_memory_db["conn"])
 
-    with pytest.raises(ValueError, match="No active config and no best config by metric available"):
-        get_effective_config(mock_settings, logger=MagicMock(), connection=in_memory_db["conn"])
+    with pytest.raises(
+        ValueError, match="No active config and no best config by metric available"
+    ):
+        get_effective_config(
+            mock_settings, logger=MagicMock(), connection=in_memory_db["conn"]
+        )

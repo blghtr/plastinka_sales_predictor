@@ -13,10 +13,7 @@ from deployment.app.utils.validation import (
 def test_validate_excel_file_valid():
     """Test validation of a valid Excel file."""
     # Create a test Excel file in memory
-    df = pd.DataFrame({
-        "Column1": [1, 2, 3],
-        "Column2": ["A", "B", "C"]
-    })
+    df = pd.DataFrame({"Column1": [1, 2, 3], "Column2": ["A", "B", "C"]})
     buffer = io.BytesIO()
     df.to_excel(buffer, index=False)
     buffer.seek(0)
@@ -39,22 +36,23 @@ def test_validate_excel_file_invalid():
 def test_validate_excel_file_with_columns():
     """Test validation of an Excel file with specific columns."""
     # Create a test Excel file with specific columns
-    df = pd.DataFrame({
-        "Column1": [1, 2, 3],
-        "Column2": ["A", "B", "C"]
-    })
+    df = pd.DataFrame({"Column1": [1, 2, 3], "Column2": ["A", "B", "C"]})
     buffer = io.BytesIO()
     df.to_excel(buffer, index=False)
     buffer.seek(0)
 
     # Test with correct expected columns
-    is_valid, error = validate_excel_file(buffer.read(), expected_columns=["Column1", "Column2"])
+    is_valid, error = validate_excel_file(
+        buffer.read(), expected_columns=["Column1", "Column2"]
+    )
     assert is_valid
     assert error == ""
 
     # Test with incorrect expected columns
     buffer.seek(0)
-    is_valid, error = validate_excel_file(buffer.read(), expected_columns=["Column1", "Column3"])
+    is_valid, error = validate_excel_file(
+        buffer.read(), expected_columns=["Column1", "Column3"]
+    )
     assert not is_valid
     assert "Missing required columns" in error
 

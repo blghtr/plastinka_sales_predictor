@@ -1,4 +1,3 @@
-
 def test_root_endpoint(client):
     """Test the root endpoint returns a welcome message."""
     response = client.get("/")

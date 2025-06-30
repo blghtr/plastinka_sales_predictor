@@ -19,6 +19,7 @@ logger = logging.getLogger("plastinka.errors")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 INCLUDE_EXCEPTION_DETAILS = ENVIRONMENT.lower() in ["development", "testing"]
 
+
 def json_default_serializer(obj):
     """
     JSON serializer for objects not serializable by default json code
@@ -26,6 +27,7 @@ def json_default_serializer(obj):
     if isinstance(obj, datetime | date):
         return obj.isoformat()
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
 
 class RetryableError(Exception):
     """Exception class for errors that should be automatically retried."""
@@ -36,7 +38,7 @@ class RetryableError(Exception):
         code: str = "retryable_error",
         retry_after: int | None = None,
         max_retries: int | None = None,
-        original_exception: Exception | None = None
+        original_exception: Exception | None = None,
     ):
         self.message = message
         self.code = code
@@ -44,6 +46,7 @@ class RetryableError(Exception):
         self.max_retries = max_retries  # Maximum number of retries
         self.original_exception = original_exception
         super().__init__(message)
+
 
 class ErrorDetail:
     """Error detail model for consistent error responses."""
@@ -56,7 +59,7 @@ class ErrorDetail:
         details: dict[str, Any] | None = None,
         exception: Exception | None = None,
         request_id: str | None = None,
-        retry_info: dict[str, Any] | None = None
+        retry_info: dict[str, Any] | None = None,
     ):
         self.message = message
         self.code = code
@@ -73,7 +76,7 @@ class ErrorDetail:
                 "message": self.message,
                 "code": self.code,
                 "request_id": self.request_id,
-                "details": self.details
+                "details": self.details,
             }
         }
 
@@ -86,10 +89,10 @@ class ErrorDetail:
             error_dict["error"]["exception"] = {
                 "type": type(self.exception).__name__,
                 "traceback": traceback.format_exception(
-                    type(self.exception),
-                    self.exception,
-                    self.exception.__traceback__
-                ) if self.exception.__traceback__ else None
+                    type(self.exception), self.exception, self.exception.__traceback__
+                )
+                if self.exception.__traceback__
+                else None,
             }
 
         return error_dict
@@ -121,43 +124,51 @@ class ErrorDetail:
 
         # Use the custom JSON serializer for logging
         if self.status_code >= 500:
-            logger.error(json.dumps(log_data, default=json_default_serializer), exc_info=self.exception)
+            logger.error(
+                json.dumps(log_data, default=json_default_serializer),
+                exc_info=self.exception,
+            )
         elif self.status_code >= 400:
             logger.warning(json.dumps(log_data, default=json_default_serializer))
         else:
             logger.info(json.dumps(log_data, default=json_default_serializer))
 
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     """
     Handle validation errors from FastAPI.
     """
     error_details = []
 
     for error in exc.errors():
-        error_details.append({
-            "loc": error.get("loc", []),
-            "msg": error.get("msg", ""),
-            "type": error.get("type", "")
-        })
+        error_details.append(
+            {
+                "loc": error.get("loc", []),
+                "msg": error.get("msg", ""),
+                "type": error.get("type", ""),
+            }
+        )
 
     error = ErrorDetail(
         message="Validation error",
         code="validation_error",
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         details={"errors": error_details},
-        exception=exc
+        exception=exc,
     )
 
     error.log_error(request)
 
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content=error.to_dict()
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=error.to_dict()
     )
 
 
-async def app_validation_exception_handler(request: Request, exc: AppValidationError) -> JSONResponse:
+async def app_validation_exception_handler(
+    request: Request, exc: AppValidationError
+) -> JSONResponse:
     """
     Handle application-specific validation errors.
     """
@@ -166,14 +177,13 @@ async def app_validation_exception_handler(request: Request, exc: AppValidationE
         code="validation_error",
         status_code=status.HTTP_400_BAD_REQUEST,
         details=exc.details,
-        exception=exc
+        exception=exc,
     )
 
     error.log_error(request)
 
     return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content=error.to_dict()
+        status_code=status.HTTP_400_BAD_REQUEST, content=error.to_dict()
     )
 
 
@@ -192,15 +202,12 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
             message=str(detail),
             code=f"http_{status_code}",
             status_code=status_code,
-            exception=exc
+            exception=exc,
         )
 
         error.log_error(request)
 
-        response = JSONResponse(
-            status_code=status_code,
-            content=error.to_dict()
-        )
+        response = JSONResponse(status_code=status_code, content=error.to_dict())
 
         if headers:
             for name, value in headers.items():
@@ -221,18 +228,19 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
         code="internal_error",
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         details={"error": str(exc)},
-        exception=exc
+        exception=exc,
     )
 
     error.log_error(request)
 
     return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=error.to_dict()
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=error.to_dict()
     )
 
 
-async def retryable_exception_handler(request: Request, exc: RetryableError) -> JSONResponse:
+async def retryable_exception_handler(
+    request: Request, exc: RetryableError
+) -> JSONResponse:
     """
     Handle retryable errors.
     """
@@ -247,14 +255,13 @@ async def retryable_exception_handler(request: Request, exc: RetryableError) -> 
         code=exc.code,
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         exception=exc.original_exception or exc,
-        retry_info=retry_info
+        retry_info=retry_info,
     )
 
     error.log_error(request)
 
     response = JSONResponse(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        content=error.to_dict()
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=error.to_dict()
     )
 
     if exc.retry_after is not None:

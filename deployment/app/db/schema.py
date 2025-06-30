@@ -233,6 +233,7 @@ CREATE INDEX IF NOT EXISTS idx_training_results_config ON training_results(confi
 CREATE INDEX IF NOT EXISTS idx_training_results_model ON training_results(model_id);
 """
 
+
 def init_db(db_path: str = None, connection: sqlite3.Connection = None):
     """
     Initialize the database with schema.
@@ -258,14 +259,16 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
             # Parse SQLite URI scheme if present
             parsed_db_path = db_path
             if parsed_db_path.startswith("sqlite:///"):
-                parsed_db_path = parsed_db_path[len("sqlite:///"):]
+                parsed_db_path = parsed_db_path[len("sqlite:///") :]
             elif parsed_db_path.startswith("sqlite://"):
-                parsed_db_path = parsed_db_path[len("sqlite://"):]
+                parsed_db_path = parsed_db_path[len("sqlite://") :]
             elif parsed_db_path.startswith("sqlite:"):
-                parsed_db_path = parsed_db_path[len("sqlite:"):]
+                parsed_db_path = parsed_db_path[len("sqlite:") :]
 
             if not parsed_db_path:
-                raise ValueError(f"Database path became empty after parsing scheme from: {db_path}")
+                raise ValueError(
+                    f"Database path became empty after parsing scheme from: {db_path}"
+                )
 
             # Ensure directory exists
             actual_file_path = Path(parsed_db_path)
@@ -310,7 +313,10 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
             except Exception as close_e:
                 logger.error(f"Error closing database connection: {close_e}")
 
-def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connection = None):
+
+def migrate_add_prediction_month(
+    db_path: str = None, connection: sqlite3.Connection = None
+):
     """
     Migration to add prediction_month column to prediction_results table.
     This function is idempotent - running it multiple times is safe.
@@ -333,14 +339,16 @@ def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connec
             # Parse SQLite URI scheme if present
             parsed_db_path = db_path
             if parsed_db_path.startswith("sqlite:///"):
-                parsed_db_path = parsed_db_path[len("sqlite:///"):]
+                parsed_db_path = parsed_db_path[len("sqlite:///") :]
             elif parsed_db_path.startswith("sqlite://"):
-                parsed_db_path = parsed_db_path[len("sqlite://"):]
+                parsed_db_path = parsed_db_path[len("sqlite://") :]
             elif parsed_db_path.startswith("sqlite:"):
-                parsed_db_path = parsed_db_path[len("sqlite:"):]
+                parsed_db_path = parsed_db_path[len("sqlite:") :]
 
             if not parsed_db_path:
-                raise ValueError(f"Database path became empty after parsing scheme from: {db_path}")
+                raise ValueError(
+                    f"Database path became empty after parsing scheme from: {db_path}"
+                )
 
             # Ensure directory exists
             actual_file_path = Path(parsed_db_path)
@@ -363,18 +371,26 @@ def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connec
             cursor.execute("PRAGMA table_info(prediction_results)")
             columns = [row[1] for row in cursor.fetchall()]
 
-            if 'prediction_month' not in columns:
-                logger.info("Adding prediction_month column to prediction_results table")
-                cursor.execute("ALTER TABLE prediction_results ADD COLUMN prediction_month DATE")
+            if "prediction_month" not in columns:
+                logger.info(
+                    "Adding prediction_month column to prediction_results table"
+                )
+                cursor.execute(
+                    "ALTER TABLE prediction_results ADD COLUMN prediction_month DATE"
+                )
 
                 # Add the index
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_prediction_results_month ON prediction_results(prediction_month)")
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_prediction_results_month ON prediction_results(prediction_month)"
+                )
 
                 if conn_created:
                     conn.commit()
                 logger.info("Successfully added prediction_month column and index")
             else:
-                logger.info("prediction_month column already exists, skipping migration")
+                logger.info(
+                    "prediction_month column already exists, skipping migration"
+                )
 
             return True
         else:
@@ -397,6 +413,7 @@ def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connec
                 conn.close()
             except Exception as close_e:
                 logger.error(f"Error closing database connection: {close_e}")
+
 
 if __name__ == "__main__":
     init_db()

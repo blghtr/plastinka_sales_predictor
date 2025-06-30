@@ -35,7 +35,7 @@ class TestDataRetention(unittest.TestCase):
         os.makedirs(self.model_dir, exist_ok=True)
 
         # Create test settings patch
-        self.settings_patch = patch('deployment.app.db.data_retention.get_settings')
+        self.settings_patch = patch("deployment.app.db.data_retention.get_settings")
         self.mock_get_settings = self.settings_patch.start()
 
         # Configure mock settings
@@ -45,7 +45,7 @@ class TestDataRetention(unittest.TestCase):
             prediction_retention_days=30,
             models_to_keep=2,
             inactive_model_retention_days=15,
-            cleanup_enabled=True
+            cleanup_enabled=True,
         )
         # Create a mock object that simulates the AppSettings structure
         self.mock_settings_object = MagicMock()
@@ -149,11 +149,11 @@ class TestDataRetention(unittest.TestCase):
             ("model3.pt", now - timedelta(days=20)),
             ("model4.pt", now - timedelta(days=30)),
             ("inactive_model1.pt", now - timedelta(days=10)),
-            ("inactive_model2.pt", now - timedelta(days=20))
+            ("inactive_model2.pt", now - timedelta(days=20)),
         ]
 
         for filename, _ in model_files:
-            with open(os.path.join(self.model_dir, filename), 'w') as f:
+            with open(os.path.join(self.model_dir, filename), "w") as f:
                 f.write("Test model content")
 
         # Insert model records
@@ -164,30 +164,55 @@ class TestDataRetention(unittest.TestCase):
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
-                ("model1", "job1", os.path.join(self.model_dir, "model1.pt"),
-                 (now - timedelta(days=5)).strftime('%Y-%m-%d %H:%M:%S'),
-                 json.dumps({"size": 1000}), 1),
-
-                ("model2", "job2", os.path.join(self.model_dir, "model2.pt"),
-                 (now - timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S'),
-                 json.dumps({"size": 1000}), 1),
-
-                ("model3", "job3", os.path.join(self.model_dir, "model3.pt"),
-                 (now - timedelta(days=20)).strftime('%Y-%m-%d %H:%M:%S'),
-                 json.dumps({"size": 1000}), 1),
-
-                ("model4", "job4", os.path.join(self.model_dir, "model4.pt"),
-                 (now - timedelta(days=30)).strftime('%Y-%m-%d %H:%M:%S'),
-                 json.dumps({"size": 1000}), 1),
-
-                ("inactive_model1", "job5", os.path.join(self.model_dir, "inactive_model1.pt"),
-                 (now - timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S'),
-                 json.dumps({"size": 1000}), 0),
-
-                ("inactive_model2", "job6", os.path.join(self.model_dir, "inactive_model2.pt"),
-                 (now - timedelta(days=20)).strftime('%Y-%m-%d %H:%M:%S'),
-                 json.dumps({"size": 1000}), 0)
-            ]
+                (
+                    "model1",
+                    "job1",
+                    os.path.join(self.model_dir, "model1.pt"),
+                    (now - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S"),
+                    json.dumps({"size": 1000}),
+                    1,
+                ),
+                (
+                    "model2",
+                    "job2",
+                    os.path.join(self.model_dir, "model2.pt"),
+                    (now - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S"),
+                    json.dumps({"size": 1000}),
+                    1,
+                ),
+                (
+                    "model3",
+                    "job3",
+                    os.path.join(self.model_dir, "model3.pt"),
+                    (now - timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S"),
+                    json.dumps({"size": 1000}),
+                    1,
+                ),
+                (
+                    "model4",
+                    "job4",
+                    os.path.join(self.model_dir, "model4.pt"),
+                    (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S"),
+                    json.dumps({"size": 1000}),
+                    1,
+                ),
+                (
+                    "inactive_model1",
+                    "job5",
+                    os.path.join(self.model_dir, "inactive_model1.pt"),
+                    (now - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S"),
+                    json.dumps({"size": 1000}),
+                    0,
+                ),
+                (
+                    "inactive_model2",
+                    "job6",
+                    os.path.join(self.model_dir, "inactive_model2.pt"),
+                    (now - timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S"),
+                    json.dumps({"size": 1000}),
+                    0,
+                ),
+            ],
         )
 
         # Create config set
@@ -197,8 +222,12 @@ class TestDataRetention(unittest.TestCase):
             (config_id, config, created_at, is_active)
             VALUES (?, ?, ?, ?)
             """,
-            ("config1", json.dumps({"epochs": 100}),
-             now.strftime('%Y-%m-%d %H:%M:%S'), 1)
+            (
+                "config1",
+                json.dumps({"epochs": 100}),
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+                1,
+            ),
         )
 
         # Associate models with config set and add metrics
@@ -209,18 +238,43 @@ class TestDataRetention(unittest.TestCase):
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                ("result1", "job1", "model1", "config1",
-                 json.dumps({"val_MIC": 0.95}), json.dumps({"epochs": 100}), 3600),
-
-                ("result2", "job2", "model2", "config1",
-                 json.dumps({"val_MIC": 0.90}), json.dumps({"epochs": 100}), 3600),
-
-                ("result3", "job3", "model3", "config1",
-                 json.dumps({"val_MIC": 0.85}), json.dumps({"epochs": 100}), 3600),
-
-                ("result4", "job4", "model4", "config1",
-                 json.dumps({"val_MIC": 0.80}), json.dumps({"epochs": 100}), 3600)
-            ]
+                (
+                    "result1",
+                    "job1",
+                    "model1",
+                    "config1",
+                    json.dumps({"val_MIC": 0.95}),
+                    json.dumps({"epochs": 100}),
+                    3600,
+                ),
+                (
+                    "result2",
+                    "job2",
+                    "model2",
+                    "config1",
+                    json.dumps({"val_MIC": 0.90}),
+                    json.dumps({"epochs": 100}),
+                    3600,
+                ),
+                (
+                    "result3",
+                    "job3",
+                    "model3",
+                    "config1",
+                    json.dumps({"val_MIC": 0.85}),
+                    json.dumps({"epochs": 100}),
+                    3600,
+                ),
+                (
+                    "result4",
+                    "job4",
+                    "model4",
+                    "config1",
+                    json.dumps({"val_MIC": 0.80}),
+                    json.dumps({"epochs": 100}),
+                    3600,
+                ),
+            ],
         )
 
         self.conn.commit()
@@ -235,18 +289,38 @@ class TestDataRetention(unittest.TestCase):
         # Recent predictions (within retention period)
         for i in range(10):
             date = now - timedelta(days=i)
-            predictions.append((
-                i+1, date.strftime('%Y-%m-%d'), "result1", "model1",
-                10.5, 15.2, 20.1, 25.8, 30.3, now.strftime('%Y-%m-%d %H:%M:%S')
-            ))
+            predictions.append(
+                (
+                    i + 1,
+                    date.strftime("%Y-%m-%d"),
+                    "result1",
+                    "model1",
+                    10.5,
+                    15.2,
+                    20.1,
+                    25.8,
+                    30.3,
+                    now.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+            )
 
         # Old predictions (beyond retention period)
         for i in range(10):
-            date = now - timedelta(days=40+i)
-            predictions.append((
-                i+100, date.strftime('%Y-%m-%d'), "result2", "model2",
-                11.5, 16.2, 21.1, 26.8, 31.3, now.strftime('%Y-%m-%d %H:%M:%S')
-            ))
+            date = now - timedelta(days=40 + i)
+            predictions.append(
+                (
+                    i + 100,
+                    date.strftime("%Y-%m-%d"),
+                    "result2",
+                    "model2",
+                    11.5,
+                    16.2,
+                    21.1,
+                    26.8,
+                    31.3,
+                    now.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+            )
 
         self.cursor.executemany(
             """
@@ -255,7 +329,7 @@ class TestDataRetention(unittest.TestCase):
              quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            predictions
+            predictions,
         )
 
         self.conn.commit()
@@ -272,51 +346,51 @@ class TestDataRetention(unittest.TestCase):
 
         # Recent data (within 1 year)
         for i in range(10):
-            date = now - timedelta(days=i*30)  # Roughly monthly
-            date_str = date.strftime('%Y-%m-%d')
+            date = now - timedelta(days=i * 30)  # Roughly monthly
+            date_str = date.strftime("%Y-%m-%d")
 
             # Add multiple records for each date (different products)
             for j in range(5):
                 multiindex_id = j + 1
 
                 sales_data.append((multiindex_id, date_str, 10 + j))
-                stock_data.append((multiindex_id, date_str, 100 + j*10))
+                stock_data.append((multiindex_id, date_str, 100 + j * 10))
                 prices_data.append((multiindex_id, date_str, 25.99 + j))
                 changes_data.append((multiindex_id, date_str, -5 + j))
 
         # Old data (over 2 years old)
         for i in range(10):
-            date = now - timedelta(days=800+i*30)  # Beyond the retention period
-            date_str = date.strftime('%Y-%m-%d')
+            date = now - timedelta(days=800 + i * 30)  # Beyond the retention period
+            date_str = date.strftime("%Y-%m-%d")
 
             # Add multiple records for each date
             for j in range(5):
                 multiindex_id = j + 1
 
                 sales_data.append((multiindex_id, date_str, 5 + j))
-                stock_data.append((multiindex_id, date_str, 50 + j*10))
+                stock_data.append((multiindex_id, date_str, 50 + j * 10))
                 prices_data.append((multiindex_id, date_str, 19.99 + j))
                 changes_data.append((multiindex_id, date_str, -2 + j))
 
         # Insert data into tables
         self.cursor.executemany(
             "INSERT INTO fact_sales (multiindex_id, data_date, quantity) VALUES (?, ?, ?)",
-            sales_data
+            sales_data,
         )
 
         self.cursor.executemany(
             "INSERT INTO fact_stock (multiindex_id, data_date, quantity) VALUES (?, ?, ?)",
-            stock_data
+            stock_data,
         )
 
         self.cursor.executemany(
             "INSERT INTO fact_prices (multiindex_id, data_date, price) VALUES (?, ?, ?)",
-            prices_data
+            prices_data,
         )
 
         self.cursor.executemany(
             "INSERT INTO fact_stock_changes (multiindex_id, data_date, quantity_change) VALUES (?, ?, ?)",
-            changes_data
+            changes_data,
         )
 
         self.conn.commit()
@@ -345,10 +419,12 @@ class TestDataRetention(unittest.TestCase):
         # Check that only recent predictions remain
         self.cursor.execute(
             "SELECT COUNT(*) FROM fact_predictions WHERE prediction_date < ?",
-            ((datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'),)
+            ((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),),
         )
         old_remaining = self.cursor.fetchone()[0]
-        self.assertEqual(old_remaining, 0, "Should have no predictions older than 30 days")
+        self.assertEqual(
+            old_remaining, 0, "Should have no predictions older than 30 days"
+        )
 
     def test_cleanup_old_historical_data(self):
         """Test cleaning up old historical data"""
@@ -368,16 +444,22 @@ class TestDataRetention(unittest.TestCase):
         self.cursor.execute("SELECT COUNT(*) FROM fact_stock_changes")
         changes_before = self.cursor.fetchone()[0]
 
-        self.assertEqual(sales_before, 100, "Should have 100 sales records before cleanup")
-        self.assertEqual(stock_before, 100, "Should have 100 stock records before cleanup")
-        self.assertEqual(prices_before, 100, "Should have 100 price records before cleanup")
-        self.assertEqual(changes_before, 100, "Should have 100 change records before cleanup")
+        self.assertEqual(
+            sales_before, 100, "Should have 100 sales records before cleanup"
+        )
+        self.assertEqual(
+            stock_before, 100, "Should have 100 stock records before cleanup"
+        )
+        self.assertEqual(
+            prices_before, 100, "Should have 100 price records before cleanup"
+        )
+        self.assertEqual(
+            changes_before, 100, "Should have 100 change records before cleanup"
+        )
 
         # Run cleanup function with 1-year retention
         result = cleanup_old_historical_data(
-            sales_days_to_keep=365,
-            stock_days_to_keep=365,
-            conn=self.conn
+            sales_days_to_keep=365, stock_days_to_keep=365, conn=self.conn
         )
 
         # Count data after cleanup
@@ -397,7 +479,9 @@ class TestDataRetention(unittest.TestCase):
         self.assertEqual(result["sales"], 50, "Should have removed 50 sales records")
         self.assertEqual(result["stock"], 50, "Should have removed 50 stock records")
         self.assertEqual(result["prices"], 50, "Should have removed 50 price records")
-        self.assertEqual(result["stock_changes"], 50, "Should have removed 50 change records")
+        self.assertEqual(
+            result["stock_changes"], 50, "Should have removed 50 change records"
+        )
 
         self.assertEqual(sales_after, 50, "Should have 50 sales records remaining")
         self.assertEqual(stock_after, 50, "Should have 50 stock records remaining")
@@ -405,36 +489,39 @@ class TestDataRetention(unittest.TestCase):
         self.assertEqual(changes_after, 50, "Should have 50 change records remaining")
 
         # Check that only recent records remain
-        one_year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        one_year_ago = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
 
         self.cursor.execute(
-            "SELECT COUNT(*) FROM fact_sales WHERE data_date < ?",
-            (one_year_ago,)
+            "SELECT COUNT(*) FROM fact_sales WHERE data_date < ?", (one_year_ago,)
         )
         old_sales = self.cursor.fetchone()[0]
 
         self.cursor.execute(
-            "SELECT COUNT(*) FROM fact_stock WHERE data_date < ?",
-            (one_year_ago,)
+            "SELECT COUNT(*) FROM fact_stock WHERE data_date < ?", (one_year_ago,)
         )
         old_stock = self.cursor.fetchone()[0]
 
         self.cursor.execute(
-            "SELECT COUNT(*) FROM fact_prices WHERE data_date < ?",
-            (one_year_ago,)
+            "SELECT COUNT(*) FROM fact_prices WHERE data_date < ?", (one_year_ago,)
         )
         old_prices = self.cursor.fetchone()[0]
 
         self.cursor.execute(
             "SELECT COUNT(*) FROM fact_stock_changes WHERE data_date < ?",
-            (one_year_ago,)
+            (one_year_ago,),
         )
         old_stock_changes = self.cursor.fetchone()[0]
 
         self.assertEqual(old_sales, 0, "Should have no sales records older than 1 year")
         self.assertEqual(old_stock, 0, "Should have no stock records older than 1 year")
-        self.assertEqual(old_prices, 0, "Should have no price records older than 1 year")
-        self.assertEqual(old_stock_changes, 0, "Should have no stock change records older than 1 year")
+        self.assertEqual(
+            old_prices, 0, "Should have no price records older than 1 year"
+        )
+        self.assertEqual(
+            old_stock_changes,
+            0,
+            "Should have no stock change records older than 1 year",
+        )
 
     def test_cleanup_old_models(self):
         """Test cleaning up old models"""
@@ -447,7 +534,9 @@ class TestDataRetention(unittest.TestCase):
         self.assertEqual(before_count, 6, "Should have 6 models before cleanup")
 
         # Run cleanup function keeping 2 models and 15-day retention for inactive
-        deleted_model_ids = cleanup_old_models(models_to_keep=2, inactive_days_to_keep=15, conn=self.conn)
+        deleted_model_ids = cleanup_old_models(
+            models_to_keep=2, inactive_days_to_keep=15, conn=self.conn
+        )
 
         # Count models after cleanup
         self.cursor.execute("SELECT COUNT(*) FROM models")
@@ -460,20 +549,36 @@ class TestDataRetention(unittest.TestCase):
         # Check that the correct models were retained
         self.cursor.execute("SELECT model_id FROM models")
         remaining_models = [row[0] for row in self.cursor.fetchall()]
-        self.assertIn("model1", remaining_models, "model1 should be retained (active, best metric)")
-        self.assertIn("model2", remaining_models, "model2 should be retained (active, second-best metric)")
-        self.assertIn("inactive_model1", remaining_models, "inactive_model1 should be retained (within retention period)")
+        self.assertIn(
+            "model1",
+            remaining_models,
+            "model1 should be retained (active, best metric)",
+        )
+        self.assertIn(
+            "model2",
+            remaining_models,
+            "model2 should be retained (active, second-best metric)",
+        )
+        self.assertIn(
+            "inactive_model1",
+            remaining_models,
+            "inactive_model1 should be retained (within retention period)",
+        )
 
         # Check that deleted models are actually deleted from filesystem
         for model_id in deleted_model_ids:
-            self.cursor.execute("SELECT model_path FROM models WHERE model_id = ?", (model_id,))
+            self.cursor.execute(
+                "SELECT model_path FROM models WHERE model_id = ?", (model_id,)
+            )
             result = self.cursor.fetchone()
             self.assertIsNone(result, f"{model_id} should be deleted from database")
 
-    @patch('deployment.app.db.data_retention.cleanup_old_predictions')
-    @patch('deployment.app.db.data_retention.cleanup_old_models')
-    @patch('deployment.app.db.data_retention.cleanup_old_historical_data')
-    def test_run_cleanup_job(self, mock_cleanup_historical, mock_cleanup_models, mock_cleanup_predictions):
+    @patch("deployment.app.db.data_retention.cleanup_old_predictions")
+    @patch("deployment.app.db.data_retention.cleanup_old_models")
+    @patch("deployment.app.db.data_retention.cleanup_old_historical_data")
+    def test_run_cleanup_job(
+        self, mock_cleanup_historical, mock_cleanup_models, mock_cleanup_predictions
+    ):
         """Test running the complete cleanup job"""
         # Setup return values
         mock_cleanup_predictions.return_value = 10
@@ -482,7 +587,7 @@ class TestDataRetention(unittest.TestCase):
             "sales": 50,
             "stock": 50,
             "stock_changes": 50,
-            "prices": 50
+            "prices": 50,
         }
 
         # Run the complete cleanup job
@@ -494,5 +599,5 @@ class TestDataRetention(unittest.TestCase):
         mock_cleanup_historical.assert_called_once()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

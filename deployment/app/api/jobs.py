@@ -68,16 +68,21 @@ async def _save_uploaded_file(uploaded_file: UploadFile, directory: Path) -> Pat
     """Helper function to save UploadFile asynchronously."""
     file_path = directory / uploaded_file.filename
     try:
-        async with aiofiles.open(file_path, 'wb') as out_file:
+        async with aiofiles.open(file_path, "wb") as out_file:
             while content := await uploaded_file.read(1024 * 1024):  # Read in chunks
                 await out_file.write(content)
-        await uploaded_file.seek(0) # Reset pointer if needed elsewhere (though likely not)
+        await uploaded_file.seek(
+            0
+        )  # Reset pointer if needed elsewhere (though likely not)
     except Exception as e:
-        logger.error(f"Failed to save file {uploaded_file.filename} to {directory}: {e}", exc_info=True)
+        logger.error(
+            f"Failed to save file {uploaded_file.filename} to {directory}: {e}",
+            exc_info=True,
+        )
         # Optionally remove partially saved file
         if file_path.exists():
             os.remove(file_path)
-        raise # Re-raise the exception to be caught by the main handler
+        raise  # Re-raise the exception to be caught by the main handler
     return file_path
 
 
@@ -86,9 +91,13 @@ async def create_data_upload_job(
     request: Request,
     background_tasks: BackgroundTasks,
     stock_file: UploadFile = File(..., description="Excel file with stock data"),
-    sales_files: list[UploadFile] = File(..., description="Excel files with sales data"),
-    cutoff_date: str = Form("30.09.2022", description="Cutoff date for data processing (DD.MM.YYYY)"),
-    api_key: bool = Depends(get_current_api_key_validated)
+    sales_files: list[UploadFile] = File(
+        ..., description="Excel files with sales data"
+    ),
+    cutoff_date: str = Form(
+        "30.09.2022", description="Cutoff date for data processing (DD.MM.YYYY)"
+    ),
+    api_key: bool = Depends(get_current_api_key_validated),
 ):
     """
     Submit a job to process data files.
@@ -108,7 +117,7 @@ async def create_data_upload_job(
         if not is_valid_date:
             raise ValidationError(
                 message="Invalid cutoff date format. Expected format: DD.MM.YYYY",
-                details={"cutoff_date": cutoff_date}
+                details={"cutoff_date": cutoff_date},
             )
 
         # Validate stock file format and size
@@ -120,7 +129,7 @@ async def create_data_upload_job(
         if not is_valid_stock:
             raise ValidationError(
                 message=f"Invalid stock file: {stock_error}",
-                details={"filename": stock_file.filename}
+                details={"filename": stock_file.filename},
             )
 
         # Reset file position
@@ -137,7 +146,7 @@ async def create_data_upload_job(
             if not is_valid_sales:
                 raise ValidationError(
                     message=f"Invalid sales file ({sales_file.filename}): {sales_error}",
-                    details={"filename": sales_file.filename, "index": i}
+                    details={"filename": sales_file.filename, "index": i},
                 )
             # Reset file position
             await sales_file.seek(0)
@@ -148,16 +157,18 @@ async def create_data_upload_job(
             parameters={
                 "stock_file": stock_file.filename,
                 "sales_files": [f.filename for f in sales_files],
-                "cutoff_date": cutoff_date
-            }
+                "cutoff_date": cutoff_date,
+            },
         )
 
         # Создаем уникальную временную директорию для этого задания
         # Используем базовую директорию из настроек
         base_temp_dir = Path(get_settings().temp_upload_dir)
-        base_temp_dir.mkdir(parents=True, exist_ok=True) # Убедимся, что базовая директория существует
+        base_temp_dir.mkdir(
+            parents=True, exist_ok=True
+        )  # Убедимся, что базовая директория существует
         temp_job_dir = base_temp_dir / job_id
-        temp_job_dir.mkdir(exist_ok=False) # Создаем уникальную директорию задания
+        temp_job_dir.mkdir(exist_ok=False)  # Создаем уникальную директорию задания
 
         # Создаем поддиректорию для файлов продаж
         sales_dir = temp_job_dir / "sales"
@@ -177,10 +188,12 @@ async def create_data_upload_job(
             stock_file_path=str(saved_stock_path),
             sales_files_paths=saved_sales_paths,
             cutoff_date=cutoff_date,
-            temp_dir_path=str(temp_job_dir) # Передаем путь для очистки
+            temp_dir_path=str(temp_job_dir),  # Передаем путь для очистки
         )
 
-        logger.info(f"Created data upload job {job_id} with files: {stock_file.filename} and {len(sales_files)} sales files")
+        logger.info(
+            f"Created data upload job {job_id} with files: {stock_file.filename} and {len(sales_files)} sales files"
+        )
         return DataUploadResponse(job_id=job_id, status=JobStatus.PENDING)
 
     except ValidationError:
@@ -192,63 +205,85 @@ async def create_data_upload_job(
             message="Failed to create data upload job due to database error",
             code="database_error",
             status_code=500,
-            details={"error": str(e)}
+            details={"error": str(e)},
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
     except FileExistsError as e:
         # temp_job_dir and job_id are guaranteed to be set if error is from temp_job_dir.mkdir()
-        detailed_error_reason = f"Path {temp_job_dir} for job {job_id} already exists. Original error: {e}"
-        logger.error(f"FileExistsError for job {job_id}: Initial error for path {temp_job_dir}. Original: {e}", exc_info=True)
+        detailed_error_reason = (
+            f"Path {temp_job_dir} for job {job_id} already exists. Original error: {e}"
+        )
+        logger.error(
+            f"FileExistsError for job {job_id}: Initial error for path {temp_job_dir}. Original: {e}",
+            exc_info=True,
+        )
 
-        if temp_job_dir.is_dir(): # Check if the conflicting path is a directory
+        if temp_job_dir.is_dir():  # Check if the conflicting path is a directory
             try:
                 dir_contents = os.listdir(temp_job_dir)
                 if not dir_contents:
-                    detailed_error_reason = (f"Temporary directory {temp_job_dir} for job {job_id} already existed but was empty. "
-                                             "This might be a quick retry or incomplete cleanup.")
+                    detailed_error_reason = (
+                        f"Temporary directory {temp_job_dir} for job {job_id} already existed but was empty. "
+                        "This might be a quick retry or incomplete cleanup."
+                    )
                     logger.warning(detailed_error_reason)
                 else:
                     # Log only the first few items to prevent overly long log messages
                     preview_contents = dir_contents[:5]
                     has_more_items = "..." if len(dir_contents) > 5 else ""
-                    detailed_error_reason = (f"Temporary directory {temp_job_dir} for job {job_id} already existed and was NOT empty "
-                                             f"(contains {len(dir_contents)} items: {preview_contents}{has_more_items}). This indicates a conflict.")
+                    detailed_error_reason = (
+                        f"Temporary directory {temp_job_dir} for job {job_id} already existed and was NOT empty "
+                        f"(contains {len(dir_contents)} items: {preview_contents}{has_more_items}). This indicates a conflict."
+                    )
                     logger.error(detailed_error_reason)
             except Exception as list_dir_exc:
-                detailed_error_reason = (f"Temporary directory {temp_job_dir} for job {job_id} existed, "
-                                         f"but an error occurred while checking its contents: {list_dir_exc}.")
+                detailed_error_reason = (
+                    f"Temporary directory {temp_job_dir} for job {job_id} existed, "
+                    f"but an error occurred while checking its contents: {list_dir_exc}."
+                )
                 logger.error(detailed_error_reason, exc_info=True)
         elif temp_job_dir.is_file():
             detailed_error_reason = f"Path {temp_job_dir} for job {job_id} already existed as a FILE, not a directory."
             logger.error(detailed_error_reason)
-        else: # Exists but is not a dir or file (e.g. broken symlink) or check failed
-             detailed_error_reason = (f"Path {temp_job_dir} for job {job_id} already existed, but it's not a regular file or directory, "
-                                      f"or its status is inaccessible. Original error: {e}")
-             logger.error(detailed_error_reason)
+        else:  # Exists but is not a dir or file (e.g. broken symlink) or check failed
+            detailed_error_reason = (
+                f"Path {temp_job_dir} for job {job_id} already existed, but it's not a regular file or directory, "
+                f"or its status is inaccessible. Original error: {e}"
+            )
+            logger.error(detailed_error_reason)
 
         # Fail the job with the detailed reason
         if job_id:
-            update_job_status(job_id, JobStatus.FAILED.value, error_message=detailed_error_reason)
+            update_job_status(
+                job_id, JobStatus.FAILED.value, error_message=detailed_error_reason
+            )
 
         error = ErrorDetail(
             message="Failed to initialize job resources: A path conflict occurred.",
-            code="job_resource_conflict", # More specific error code
+            code="job_resource_conflict",  # More specific error code
             status_code=500,
             details={
                 "job_id": job_id,
                 "path": str(temp_job_dir),
                 "reason": detailed_error_reason,
-                "original_exception": str(e)
-            }
+                "original_exception": str(e),
+            },
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
     except Exception as e:
-        logger.error(f"Unexpected error in data-upload for job {job_id or 'unknown'}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Unexpected error in data-upload for job {job_id or 'unknown'}: {str(e)}",
+            exc_info=True,
+        )
         # Если ошибка произошла после создания задания, помечаем его как FAILED
-        if job_id and not get_job(job_id)['status'] == JobStatus.FAILED.value:
-             update_job_status(job_id, JobStatus.FAILED.value, error_message=f"Unexpected error during setup: {str(e)}")
+        if job_id and not get_job(job_id)["status"] == JobStatus.FAILED.value:
+            update_job_status(
+                job_id,
+                JobStatus.FAILED.value,
+                error_message=f"Unexpected error during setup: {str(e)}",
+            )
         # Очищаем временную директорию, если она была создана
         if temp_job_dir and temp_job_dir.exists():
             shutil.rmtree(temp_job_dir, ignore_errors=True)
@@ -259,7 +294,7 @@ async def create_data_upload_job(
             code="internal_error",
             status_code=500,
             details={"error": str(e)},
-            exception=e
+            exception=e,
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
@@ -271,7 +306,7 @@ async def create_training_job(
     background_tasks: BackgroundTasks,
     dataset_start_date: str | None = None,
     dataset_end_date: str | None = None,
-    api_key: bool = Depends(get_current_api_key_validated)
+    api_key: bool = Depends(get_current_api_key_validated),
 ):
     """
     Submit a job to train a model using the active parameter set.
@@ -293,20 +328,24 @@ async def create_training_job(
         parsed_end_date = None
 
         if dataset_start_date:
-            is_valid, parsed_start_date = validate_date_format(dataset_start_date, format_str="%d.%m.%Y")
+            is_valid, parsed_start_date = validate_date_format(
+                dataset_start_date, format_str="%d.%m.%Y"
+            )
             if not is_valid:
                 logger.warning(f"Invalid start date format: {dataset_start_date}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid start date format. Expected DD.MM.YYYY."
+                    detail="Invalid start date format. Expected DD.MM.YYYY.",
                 )
         if dataset_end_date:
-            is_valid, parsed_end_date = validate_date_format(dataset_end_date, format_str="%d.%m.%Y")
+            is_valid, parsed_end_date = validate_date_format(
+                dataset_end_date, format_str="%d.%m.%Y"
+            )
             if not is_valid:
                 logger.warning(f"Invalid end date format: {dataset_end_date}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid end date format. Expected DD.MM.YYYY."
+                    detail="Invalid end date format. Expected DD.MM.YYYY.",
                 )
 
         # 2. Логическая валидация диапазона дат (если обе даты заданы)
@@ -317,8 +356,7 @@ async def create_training_job(
             if not is_valid:
                 logger.warning(f"Invalid date range: {error_msg}")
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=error_msg
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg
                 )
 
         # 3. Получение конфига
@@ -326,63 +364,61 @@ async def create_training_job(
         if config is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No active config and no best config by metric available"
+                detail="No active config and no best config by metric available",
             )
         logger.info(f"Using configuration: {config['config_id']}")
 
         # 4. Создание задания в БД
-        job_params = {
-            "config_id": config['config_id']
-        }
+        job_params = {"config_id": config["config_id"]}
         if parsed_start_date:
             job_params["dataset_start_date"] = parsed_start_date
         if parsed_end_date:
             job_params["dataset_end_date"] = parsed_end_date
 
-        job_id = create_job(
-            JobType.TRAINING,
-            parameters=job_params
-        )
+        job_id = create_job(JobType.TRAINING, parameters=job_params)
         logger.info(f"Job record created with ID: {job_id}")
 
         # 5. Запуск фоновой задачи
         background_tasks.add_task(
             run_job,
             job_id=job_id,
-            training_config=config['config'],
-            config_id=config['config_id'],
+            training_config=config["config"],
+            config_id=config["config_id"],
             dataset_start_date=parsed_start_date,
-            dataset_end_date=parsed_end_date
+            dataset_end_date=parsed_end_date,
         )
         logger.info(f"Background task added for job ID: {job_id}")
 
         return TrainingResponse(
             job_id=job_id,
             status=JobStatus.PENDING,
-            parameter_set_id=config['config_id'],
-            using_active_parameters=True
+            parameter_set_id=config["config_id"],
+            using_active_parameters=True,
         )
 
     except HTTPException as e:
         # Re-raise HTTPExceptions that were intentionally raised (e.g., from get_effective_config)
-        logger.warning(f"HTTPException caught in create_training_job: {e.status_code} - {e.detail}")
+        logger.warning(
+            f"HTTPException caught in create_training_job: {e.status_code} - {e.detail}"
+        )
         raise e
     except ValueError as e:
         # Catch ValueErrors, potentially from date parsing issues before the function signature,
         # or custom validation added inside.
         logger.error(f"ValueError in create_training_job: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid input data: {e}"
-        )
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid input data: {e}"
+        ) from e
     # Assuming DatabaseError is a specific exception type raised by your database layer functions
-    except Exception as e: # Catching general Exception for database or other unexpected errors during sync part
+    except Exception as e:  # Catching general Exception for database or other unexpected errors during sync part
         # Log any other unexpected errors with traceback
-        logger.error(f"An unexpected error occurred in create_training_job: {e}", exc_info=True)
+        logger.error(
+            f"An unexpected error occurred in create_training_job: {e}", exc_info=True
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected internal server error occurred while initiating the job."
-        )
+            detail="An unexpected internal server error occurred while initiating the job.",
+        ) from e
 
 
 @router.post("/prediction", response_model=PredictionResponse)
@@ -390,7 +426,7 @@ async def create_prediction_job(
     request: Request,
     params: PredictionParams,
     background_tasks: BackgroundTasks,
-    api_key: bool = Depends(get_current_api_key_validated)
+    api_key: bool = Depends(get_current_api_key_validated),
 ):
     """
     Submit a job to generate predictions.
@@ -406,23 +442,27 @@ async def create_prediction_job(
         raise NotImplementedError("Prediction job is not implemented yet")
 
     except DatabaseError as e:
-        logger.error(f"Database error in prediction job creation: {str(e)}", exc_info=True)
+        logger.error(
+            f"Database error in prediction job creation: {str(e)}", exc_info=True
+        )
         error = ErrorDetail(
             message="Failed to create prediction job due to database error",
             code="database_error",
             status_code=500,
-            details={"error": str(e)}
+            details={"error": str(e)},
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
     except Exception as e:
-        logger.error(f"Unexpected error in prediction job creation: {str(e)}", exc_info=True)
+        logger.error(
+            f"Unexpected error in prediction job creation: {str(e)}", exc_info=True
+        )
         error = ErrorDetail(
             message="Failed to create prediction job",
             code="internal_error",
             status_code=500,
             details={"error": str(e)},
-            exception=e
+            exception=e,
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
@@ -433,7 +473,7 @@ async def create_prediction_report_job(
     request: Request,
     params: ReportParams,
     background_tasks: BackgroundTasks,
-    api_key: bool = Depends(get_current_api_key_validated)
+    api_key: bool = Depends(get_current_api_key_validated),
 ):
     """
     Submit a job to generate a prediction report.
@@ -445,13 +485,12 @@ async def create_prediction_report_job(
     Returns a job ID that can be used to check the job status.
     """
     try:
-        logger.info(f"Received request to generate report for month: {params.prediction_month.strftime('%Y-%m')}")
+        logger.info(
+            f"Received request to generate report for month: {params.prediction_month.strftime('%Y-%m')}"
+        )
 
         # Create a job record
-        job_id = create_job(
-            job_type=JobType.REPORT,
-            parameters=params.model_dump()
-        )
+        job_id = create_job(job_type=JobType.REPORT, parameters=params.model_dump())
 
         # Add the report generation to background tasks
         background_tasks.add_task(run_report_job, job_id=job_id, params=params)
@@ -463,12 +502,16 @@ async def create_prediction_report_job(
         logger.error(f"Failed to create report job: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create report job"
-        )
+            detail="Failed to create report job",
+        ) from e
 
 
 @router.get("/{job_id}", response_model=JobDetails)
-async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(get_current_api_key_validated)):
+async def get_job_status(
+    request: Request,
+    job_id: str,
+    api_key: bool = Depends(get_current_api_key_validated),
+):
     """
     Get the status and details of a job.
 
@@ -478,7 +521,9 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
         job = get_job(job_id)
 
         if not job:
-            raise HTTPException(status_code=404, detail=f"Job with ID {job_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"Job with ID {job_id} not found"
+            )
 
         # Build basic response
         response = JobDetails(
@@ -488,7 +533,7 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
             created_at=datetime.fromisoformat(job["created_at"]),
             updated_at=datetime.fromisoformat(job["updated_at"]),
             progress=job["progress"] or 0.0,
-            error=job["error_message"]
+            error=job["error_message"],
         )
 
         # Add result data if job is completed and has a result
@@ -500,8 +545,10 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
                 if data_result:
                     result = {
                         "records_processed": data_result["records_processed"],
-                        "features_generated": json.loads(data_result["features_generated"]),
-                        "processing_run_id": data_result["processing_run_id"]
+                        "features_generated": json.loads(
+                            data_result["features_generated"]
+                        ),
+                        "processing_run_id": data_result["processing_run_id"],
                     }
 
             elif job["job_type"] == JobType.TRAINING.value:
@@ -511,7 +558,7 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
                         "model_id": training_result["model_id"],
                         "metrics": json.loads(training_result["metrics"]),
                         "parameters": json.loads(training_result["parameters"]),
-                        "duration": training_result["duration"]
+                        "duration": training_result["duration"],
                     }
 
             elif job["job_type"] == JobType.PREDICTION.value:
@@ -521,7 +568,9 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
                         "model_id": prediction_result["model_id"],
                         "prediction_date": prediction_result["prediction_date"],
                         "output_path": prediction_result["output_path"],
-                        "summary_metrics": json.loads(prediction_result["summary_metrics"])
+                        "summary_metrics": json.loads(
+                            prediction_result["summary_metrics"]
+                        ),
                     }
 
             elif job["job_type"] == JobType.REPORT.value:
@@ -530,7 +579,7 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
                     result = {
                         "report_type": report_result["report_type"],
                         "parameters": json.loads(report_result["parameters"]),
-                        "output_path": report_result["output_path"]
+                        "output_path": report_result["output_path"],
                     }
 
             response.result = result
@@ -541,24 +590,30 @@ async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(
         # Let built-in handlers deal with HTTP exceptions
         raise
     except DatabaseError as e:
-        logger.error(f"Database error in get_job_status for job {job_id}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Database error in get_job_status for job {job_id}: {str(e)}",
+            exc_info=True,
+        )
         error = ErrorDetail(
             message=f"Failed to retrieve job {job_id}",
             code="internal_error",
             status_code=500,
             details={"error": str(e)},
-            exception=e
+            exception=e,
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
     except Exception as e:
-        logger.error(f"Unexpected error in get_job_status for job {job_id}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Unexpected error in get_job_status for job {job_id}: {str(e)}",
+            exc_info=True,
+        )
         error = ErrorDetail(
             message=f"Failed to retrieve job {job_id}",
             code="internal_error",
             status_code=500,
             details={"error": str(e)},
-            exception=e
+            exception=e,
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
@@ -570,7 +625,7 @@ async def list_all_jobs(
     job_type: JobType | None = None,
     status: JobStatus | None = None,
     limit: int = Query(100, ge=1, le=1000),
-    api_key: bool = Depends(get_current_api_key_validated)
+    api_key: bool = Depends(get_current_api_key_validated),
 ):
     """
     List all jobs with optional filtering by type and status.
@@ -579,7 +634,7 @@ async def list_all_jobs(
         jobs_data = list_jobs(
             job_type=job_type.value if job_type else None,
             status=status.value if status else None,
-            limit=limit
+            limit=limit,
         )
 
         # Convert job data to JobDetails objects
@@ -592,7 +647,7 @@ async def list_all_jobs(
                 created_at=datetime.fromisoformat(job["created_at"]),
                 updated_at=datetime.fromisoformat(job["updated_at"]),
                 progress=job["progress"] or 0.0,
-                error=job["error_message"]
+                error=job["error_message"],
             )
             jobs.append(job_details)
 
@@ -605,7 +660,7 @@ async def list_all_jobs(
             code="internal_error",
             status_code=500,
             details={"error": str(e)},
-            exception=e
+            exception=e,
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())
@@ -616,7 +671,7 @@ async def list_all_jobs(
             code="internal_error",
             status_code=500,
             details={"error": str(e)},
-            exception=e
+            exception=e,
         )
         error.log_error(request)
         return JSONResponse(status_code=500, content=error.to_dict())

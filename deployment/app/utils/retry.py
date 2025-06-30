@@ -2,6 +2,7 @@
 Utility functions for implementing retry logic.
 Provides decorators and functions for retrying operations with proper backoff and jitter.
 """
+
 import asyncio
 import functools
 import logging
@@ -23,8 +24,8 @@ from deployment.app.utils.retry_monitor import record_retry
 logger = logging.getLogger(__name__)
 
 # Type variables for function signatures
-T = TypeVar('T')
-R = TypeVar('R')
+T = TypeVar("T")
+R = TypeVar("R")
 
 
 def is_retryable_http_error(exception: Exception) -> bool:
@@ -41,13 +42,20 @@ def is_retryable_http_error(exception: Exception) -> bool:
         # Only retry on server errors (5xx) or specific retryable client errors
         status_code = exception.response.status_code
         return (
-            status_code >= 500 or  # Server errors
-            status_code == 429 or  # Too Many Requests
-            status_code == 408      # Request Timeout
+            status_code >= 500  # Server errors
+            or status_code == 429  # Too Many Requests
+            or status_code == 408  # Request Timeout
         )
     elif isinstance(exception, requests.RequestException):
         # Retry network errors like connection errors, timeouts
-        return not isinstance(exception, requests.exceptions.InvalidURL | requests.exceptions.InvalidSchema | requests.exceptions.MissingSchema | requests.exceptions.InvalidHeader | requests.exceptions.InvalidProxyURL)
+        return not isinstance(
+            exception,
+            requests.exceptions.InvalidURL
+            | requests.exceptions.InvalidSchema
+            | requests.exceptions.MissingSchema
+            | requests.exceptions.InvalidHeader
+            | requests.exceptions.InvalidProxyURL,
+        )
 
     return False
 
@@ -63,62 +71,59 @@ def is_retryable_cloud_error(exception: Exception) -> bool:
         True if the error is retryable, False otherwise
     """
     if isinstance(exception, ClientError):
-        error_code = exception.response.get('Error', {}).get('Code', '')
-        status_code = exception.response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0)
+        error_code = exception.response.get("Error", {}).get("Code", "")
+        status_code = exception.response.get("ResponseMetadata", {}).get(
+            "HTTPStatusCode", 0
+        )
 
         # Common retryable cloud service errors
         retryable_codes = {
             # AWS/Generic cloud errors
-            'ThrottlingException',
-            'Throttling',
-            'TooManyRequestsException',
-            'RequestLimitExceeded',
-            'RequestThrottled',
-            'ProvisionedThroughputExceededException',
-            'RequestTimeout',
-            'SlowDown',
-            'InternalServerError',
-            'ServiceUnavailable',
-            'ServerUnavailable',
-            'ServiceFailure',
-            'InternalFailure',
-
+            "ThrottlingException",
+            "Throttling",
+            "TooManyRequestsException",
+            "RequestLimitExceeded",
+            "RequestThrottled",
+            "ProvisionedThroughputExceededException",
+            "RequestTimeout",
+            "SlowDown",
+            "InternalServerError",
+            "ServiceUnavailable",
+            "ServerUnavailable",
+            "ServiceFailure",
+            "InternalFailure",
             # Yandex.Cloud specific errors
-            'RESOURCE_EXHAUSTED',
-            'UNAVAILABLE',
-            'DEADLINE_EXCEEDED',
-            'INTERNAL',
-            'UNAUTHENTICATED',
-            'SERVICE_UNAVAILABLE',
-            'TIMEOUT',
-            'CONNECTION_FAILURE',
-            'TOO_MANY_REQUESTS',
-            'INSTANCE_UNAVAILABLE',
-            'THROTTLING'
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "DEADLINE_EXCEEDED",
+            "INTERNAL",
+            "UNAUTHENTICATED",
+            "SERVICE_UNAVAILABLE",
+            "TIMEOUT",
+            "CONNECTION_FAILURE",
+            "TOO_MANY_REQUESTS",
+            "INSTANCE_UNAVAILABLE",
+            "THROTTLING",
         }
 
-        return (
-            error_code in retryable_codes or
-            status_code >= 500 or
-            status_code == 429
-        )
+        return error_code in retryable_codes or status_code >= 500 or status_code == 429
 
     # Check for Yandex.Cloud SDK exceptions (assuming specific exception types)
     # These would be different from AWS ClientError
-    if hasattr(exception, 'code') and hasattr(exception, 'message'):
+    if hasattr(exception, "code") and hasattr(exception, "message"):
         # Common pattern in many cloud SDKs
-        error_code = getattr(exception, 'code', '')
+        error_code = getattr(exception, "code", "")
 
         yandex_retryable_codes = {
-            'RESOURCE_EXHAUSTED',
-            'UNAVAILABLE',
-            'DEADLINE_EXCEEDED',
-            'INTERNAL',
-            'UNAUTHENTICATED',
-            'SERVICE_UNAVAILABLE',
-            'TIMEOUT',
-            'CONNECTION_FAILURE',
-            'TOO_MANY_REQUESTS'
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "DEADLINE_EXCEEDED",
+            "INTERNAL",
+            "UNAUTHENTICATED",
+            "SERVICE_UNAVAILABLE",
+            "TIMEOUT",
+            "CONNECTION_FAILURE",
+            "TOO_MANY_REQUESTS",
         }
 
         return error_code in yandex_retryable_codes
@@ -128,8 +133,12 @@ def is_retryable_cloud_error(exception: Exception) -> bool:
     return False
 
 
-def calculate_backoff(retry_attempt: int, base_delay: float = 1.0,
-                     max_delay: float = 60.0, jitter: bool = True) -> float:
+def calculate_backoff(
+    retry_attempt: int,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    jitter: bool = True,
+) -> float:
     """
     Calculate exponential backoff with jitter.
 
@@ -143,7 +152,7 @@ def calculate_backoff(retry_attempt: int, base_delay: float = 1.0,
         Delay in seconds before next retry
     """
     # Calculate exponential backoff
-    delay = min(max_delay, base_delay * (2 ** retry_attempt))
+    delay = min(max_delay, base_delay * (2**retry_attempt))
 
     # Add jitter if enabled (up to 25% in either direction)
     if jitter:
@@ -158,7 +167,7 @@ def retry_with_backoff(
     max_delay: float = 30.0,
     retryable_exceptions: tuple[type[Exception], ...] | None = None,
     giveup_func: Callable[[Exception], bool] | None = None,
-    component: str = "generic"
+    component: str = "generic",
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
     Decorator for retrying functions with exponential backoff.
@@ -200,7 +209,7 @@ def retry_with_backoff(
                             max_attempts=max_tries,
                             successful=True,
                             component=component,
-                            duration_ms=duration_ms
+                            duration_ms=duration_ms,
                         )
 
                     return result
@@ -209,8 +218,9 @@ def retry_with_backoff(
                     duration_ms = int((time.time() - start_time) * 1000)
 
                     # Check if we should give up
-                    if (attempt >= max_tries or
-                        (giveup_func is not None and giveup_func(e))):
+                    if attempt >= max_tries or (
+                        giveup_func is not None and giveup_func(e)
+                    ):
                         logger.warning(
                             f"Giving up on {func.__name__} after {attempt} attempts. "
                             f"Last error: {str(e)}"
@@ -224,7 +234,7 @@ def retry_with_backoff(
                             max_attempts=max_tries,
                             successful=False,
                             component=component,
-                            duration_ms=duration_ms
+                            duration_ms=duration_ms,
                         )
 
                         raise
@@ -233,7 +243,7 @@ def retry_with_backoff(
                     delay = calculate_backoff(
                         retry_attempt=attempt - 1,
                         base_delay=base_delay,
-                        max_delay=max_delay
+                        max_delay=max_delay,
                     )
 
                     logger.info(
@@ -249,7 +259,7 @@ def retry_with_backoff(
                         max_attempts=max_tries,
                         successful=False,  # Not yet successful
                         component=component,
-                        duration_ms=duration_ms
+                        duration_ms=duration_ms,
                     )
 
                     time.sleep(delay)
@@ -265,8 +275,10 @@ async def retry_async_with_backoff(
     max_delay: float = 30.0,
     retryable_exceptions: tuple[type[Exception], ...] | None = None,
     giveup_func: Callable[[Exception], bool] | None = None,
-    component: str = "async"
-) -> Callable[[Callable[..., Coroutine[Any, Any, T]]], Callable[..., Coroutine[Any, Any, T]]]:
+    component: str = "async",
+) -> Callable[
+    [Callable[..., Coroutine[Any, Any, T]]], Callable[..., Coroutine[Any, Any, T]]
+]:
     """
     Decorator for retrying async functions with exponential backoff.
 
@@ -284,7 +296,9 @@ async def retry_async_with_backoff(
     if retryable_exceptions is None:
         retryable_exceptions = (Exception,)
 
-    def decorator(func: Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., Coroutine[Any, Any, T]]:
+    def decorator(
+        func: Callable[..., Coroutine[Any, Any, T]],
+    ) -> Callable[..., Coroutine[Any, Any, T]]:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> T:
             operation = func.__name__
@@ -307,7 +321,7 @@ async def retry_async_with_backoff(
                             max_attempts=max_tries,
                             successful=True,
                             component=component,
-                            duration_ms=duration_ms
+                            duration_ms=duration_ms,
                         )
 
                     return result
@@ -316,8 +330,9 @@ async def retry_async_with_backoff(
                     duration_ms = int((time.time() - start_time) * 1000)
 
                     # Check if we should give up
-                    if (attempt >= max_tries or
-                        (giveup_func is not None and giveup_func(e))):
+                    if attempt >= max_tries or (
+                        giveup_func is not None and giveup_func(e)
+                    ):
                         logger.warning(
                             f"Giving up on {func.__name__} after {attempt} attempts. "
                             f"Last error: {str(e)}"
@@ -331,7 +346,7 @@ async def retry_async_with_backoff(
                             max_attempts=max_tries,
                             successful=False,
                             component=component,
-                            duration_ms=duration_ms
+                            duration_ms=duration_ms,
                         )
 
                         raise
@@ -340,7 +355,7 @@ async def retry_async_with_backoff(
                     delay = calculate_backoff(
                         retry_attempt=attempt - 1,
                         base_delay=base_delay,
-                        max_delay=max_delay
+                        max_delay=max_delay,
                     )
 
                     logger.info(
@@ -356,7 +371,7 @@ async def retry_async_with_backoff(
                         max_attempts=max_tries,
                         successful=False,  # Not yet successful
                         component=component,
-                        duration_ms=duration_ms
+                        duration_ms=duration_ms,
                     )
 
                     await asyncio.sleep(delay)
@@ -368,7 +383,13 @@ async def retry_async_with_backoff(
 
 # Pre-configured retry decorators for common use cases
 
-def retry_http_request(max_tries: int = 3, base_delay: float = 2.0, max_delay: float = 30.0, component: str = "http"):
+
+def retry_http_request(
+    max_tries: int = 3,
+    base_delay: float = 2.0,
+    max_delay: float = 30.0,
+    component: str = "http",
+):
     """
     Decorator specifically for retrying HTTP requests.
 
@@ -387,11 +408,16 @@ def retry_http_request(max_tries: int = 3, base_delay: float = 2.0, max_delay: f
         max_delay=max_delay,
         retryable_exceptions=(RequestException,),
         giveup_func=lambda e: not is_retryable_http_error(e),
-        component=component
+        component=component,
     )
 
 
-def retry_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max_delay: float = 60.0, component: str = "cloud"):
+def retry_cloud_operation(
+    max_tries: int = 5,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    component: str = "cloud",
+):
     """
     Decorator specifically for retrying cloud operations.
 
@@ -409,12 +435,19 @@ def retry_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max_delay
         base_delay=base_delay,
         max_delay=max_delay,
         retryable_exceptions=(ClientError, RequestException),
-        giveup_func=lambda e: not (is_retryable_cloud_error(e) or is_retryable_http_error(e)),
-        component=component
+        giveup_func=lambda e: not (
+            is_retryable_cloud_error(e) or is_retryable_http_error(e)
+        ),
+        component=component,
     )
 
 
-def retry_async_http_request(max_tries: int = 3, base_delay: float = 2.0, max_delay: float = 30.0, component: str = "async_http"):
+def retry_async_http_request(
+    max_tries: int = 3,
+    base_delay: float = 2.0,
+    max_delay: float = 30.0,
+    component: str = "async_http",
+):
     """
     Decorator specifically for retrying async HTTP requests.
 
@@ -433,11 +466,16 @@ def retry_async_http_request(max_tries: int = 3, base_delay: float = 2.0, max_de
         max_delay=max_delay,
         retryable_exceptions=(RequestException,),
         giveup_func=lambda e: not is_retryable_http_error(e),
-        component=component
+        component=component,
     )
 
 
-def retry_async_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max_delay: float = 60.0, component: str = "async_cloud"):
+def retry_async_cloud_operation(
+    max_tries: int = 5,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    component: str = "async_cloud",
+):
     """
     Decorator specifically for retrying async cloud operations.
 
@@ -455,8 +493,10 @@ def retry_async_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max
         base_delay=base_delay,
         max_delay=max_delay,
         retryable_exceptions=(ClientError, RequestException),
-        giveup_func=lambda e: not (is_retryable_cloud_error(e) or is_retryable_http_error(e)),
-        component=component
+        giveup_func=lambda e: not (
+            is_retryable_cloud_error(e) or is_retryable_http_error(e)
+        ),
+        component=component,
     )
 
 
@@ -487,7 +527,7 @@ class RetryContext:
         giveup_func: Callable[[Exception], bool] | None = None,
         on_give_up: Callable[[Exception, int], None] | None = None,
         component: str = "context",
-        operation: str | None = None
+        operation: str | None = None,
     ):
         """
         Initialize retry context.
@@ -517,14 +557,14 @@ class RetryContext:
         self._succeeded = False
         self._start_time = time.time()
 
-    def __enter__(self) -> 'RetryContext':
+    def __enter__(self) -> "RetryContext":
         return self
 
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: TracebackType | None
+        exc_tb: TracebackType | None,
     ) -> bool:
         if exc_type and issubclass(exc_type, self.exceptions):
             self._last_error = exc_val
@@ -560,9 +600,9 @@ class RetryContext:
         duration_ms = int((time.time() - self._start_time) * 1000)
 
         # Check if we should give up
-        if (self._attempt >= self.max_tries or
-            (self.giveup_func and self.giveup_func(exception))):
-
+        if self._attempt >= self.max_tries or (
+            self.giveup_func and self.giveup_func(exception)
+        ):
             self._exhausted = True
 
             # Record failed retry in monitoring
@@ -573,7 +613,7 @@ class RetryContext:
                 max_attempts=self.max_tries,
                 successful=False,
                 component=self.component,
-                duration_ms=duration_ms
+                duration_ms=duration_ms,
             )
 
             if self.on_give_up:
@@ -589,7 +629,7 @@ class RetryContext:
             max_attempts=self.max_tries,
             successful=False,  # Not yet successful
             component=self.component,
-            duration_ms=duration_ms
+            duration_ms=duration_ms,
         )
 
         # Calculate and sleep for backoff delay
@@ -609,7 +649,7 @@ class RetryContext:
                 max_attempts=self.max_tries,
                 successful=True,
                 component=self.component,
-                duration_ms=duration_ms
+                duration_ms=duration_ms,
             )
 
     def _delay(self) -> None:
@@ -617,7 +657,7 @@ class RetryContext:
         delay = calculate_backoff(
             retry_attempt=self._attempt - 1,
             base_delay=self.base_delay,
-            max_delay=self.max_delay
+            max_delay=self.max_delay,
         )
 
         logger.info(
@@ -650,12 +690,12 @@ class RetryContext:
             frame = frames[LIKELY_CALLER_FRAME]
 
             # Capture information from frame
-            module_name = frame.frame.f_globals.get('__name__', 'unknown_module')
+            module_name = frame.frame.f_globals.get("__name__", "unknown_module")
             function_name = frame.function
 
             # Check if frame has 'self' in locals (instance method)
-            if 'self' in frame.frame.f_locals:
-                instance = frame.frame.f_locals['self']
+            if "self" in frame.frame.f_locals:
+                instance = frame.frame.f_locals["self"]
                 try:
                     class_name = instance.__class__.__name__
                     return f"{module_name}.{class_name}.{function_name}"

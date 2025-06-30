@@ -1,6 +1,7 @@
 """
 Основные фикстуры для тестирования на уровне deployment/app.
 """
+
 import json
 import os
 import sqlite3
@@ -29,6 +30,7 @@ def json_default_serializer(obj):
         return obj.isoformat()
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
+
 @pytest.fixture
 def mock_active_config():
     """
@@ -49,30 +51,22 @@ def mock_active_config():
                 "batch_size": 32,
                 "dropout": 0.2,
                 "use_reversible_instance_norm": True,
-                "use_layer_norm": True
+                "use_layer_norm": True,
             },
-            "optimizer_config": {
-                "lr": 0.001,
-                "weight_decay": 0.0001
-            },
-            "lr_shed_config": {
-                "T_0": 10,
-                "T_mult": 2
-            },
-            "train_ds_config": {
-                "alpha": 0.05,
-                "span": 12
-            },
+            "optimizer_config": {"lr": 0.001, "weight_decay": 0.0001},
+            "lr_shed_config": {"T_0": 10, "T_mult": 2},
+            "train_ds_config": {"alpha": 0.05, "span": 12},
             "lags": 12,
             "quantiles": [0.05, 0.25, 0.5, 0.75, 0.95],
             "model_id": "default_model",
             "additional_params": {
                 "dataset_start_date": "2022-01-01",
-                "dataset_end_date": "2022-12-31"
-            }
-        }
+                "dataset_end_date": "2022-12-31",
+            },
+        },
     }
     return valid_training_params
+
 
 @pytest.fixture
 def sample_model_data():
@@ -84,11 +78,9 @@ def sample_model_data():
         "job_id": str(uuid.uuid4()),
         "model_path": "/path/to/model.onnx",
         "created_at": datetime.now(),
-        "metadata": {
-            "framework": "pytorch",
-            "version": "1.9.0"
-        }
+        "metadata": {"framework": "pytorch", "version": "1.9.0"},
     }
+
 
 @pytest.fixture
 def sample_config():
@@ -103,8 +95,9 @@ def sample_config():
         "dropout": 0.2,
         "batch_size": 32,
         "max_epochs": 10,
-        "learning_rate": 0.001
+        "learning_rate": 0.001,
     }
+
 
 @pytest.fixture
 def in_memory_db():
@@ -113,11 +106,12 @@ def in_memory_db():
     Создает и инициализирует схему БД в оперативной памяти (':memory:').
     Используется для быстрых unit-тестов.
     """
-    conn = sqlite3.connect(':memory:')
+    conn = sqlite3.connect(":memory:")
     init_db(connection=conn)
     conn.row_factory = dict_factory
     yield {"conn": conn}
     conn.close()
+
 
 @pytest.fixture
 def file_based_db():
@@ -126,7 +120,7 @@ def file_based_db():
     Создает полнофункциональную БД с несколькими моделями, конфигами и результатами.
     """
     temp_dir = tempfile.TemporaryDirectory()
-    db_path = os.path.join(temp_dir.name, 'test.db')
+    db_path = os.path.join(temp_dir.name, "test.db")
     init_db(db_path)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -134,48 +128,48 @@ def file_based_db():
 
     try:
         # --- Параметр-сеты (configs) ---
-        config_id_1 = 'param-1'
-        config_id_2 = 'param-2'
+        config_id_1 = "param-1"
+        config_id_2 = "param-2"
         config_data_1 = TrainingConfig(
             model_config=ModelConfig(num_encoder_layers=2, batch_size=32),
             optimizer_config=OptimizerConfig(lr=0.01),
             lr_shed_config=LRSchedulerConfig(T_0=10),
-            train_ds_config=TrainingDatasetConfig(alpha=0.1)
-        ).model_dump(mode='json')
+            train_ds_config=TrainingDatasetConfig(alpha=0.1),
+        ).model_dump(mode="json")
         config_data_2 = TrainingConfig(
             model_config=ModelConfig(num_encoder_layers=4, batch_size=64),
             optimizer_config=OptimizerConfig(lr=0.005),
             lr_shed_config=LRSchedulerConfig(T_0=20),
-            train_ds_config=TrainingDatasetConfig(alpha=0.05)
-        ).model_dump(mode='json')
+            train_ds_config=TrainingDatasetConfig(alpha=0.05),
+        ).model_dump(mode="json")
 
         cursor.execute(
             """INSERT INTO configs (config_id, parameters, is_active, created_at) VALUES (?, ?, ?, ?)""",
-            (config_id_1, json.dumps(config_data_1), 1, datetime.now().isoformat())
+            (config_id_1, json.dumps(config_data_1), 1, datetime.now().isoformat()),
         )
         cursor.execute(
             """INSERT INTO configs (config_id, parameters, is_active, created_at) VALUES (?, ?, ?, ?)""",
-            (config_id_2, json.dumps(config_data_2), 0, datetime.now().isoformat())
+            (config_id_2, json.dumps(config_data_2), 0, datetime.now().isoformat()),
         )
 
         # --- Модели ---
-        job_id = 'job-test'
-        model_id_1 = 'model-1'
-        model_id_2 = 'model-2'
-        model_path_1 = os.path.join(temp_dir.name, 'model_1.onnx')
-        model_path_2 = os.path.join(temp_dir.name, 'model_2.onnx')
-        with open(model_path_1, 'w') as f:
-            f.write('dummy model 1')
-        with open(model_path_2, 'w') as f:
-            f.write('dummy model 2')
+        job_id = "job-test"
+        model_id_1 = "model-1"
+        model_id_2 = "model-2"
+        model_path_1 = os.path.join(temp_dir.name, "model_1.onnx")
+        model_path_2 = os.path.join(temp_dir.name, "model_2.onnx")
+        with open(model_path_1, "w") as f:
+            f.write("dummy model 1")
+        with open(model_path_2, "w") as f:
+            f.write("dummy model 2")
 
         cursor.execute(
             """INSERT INTO models (model_id, job_id, model_path, created_at, is_active) VALUES (?, ?, ?, ?, ?)""",
-            (model_id_1, job_id, model_path_1, datetime.now().isoformat(), 1)
+            (model_id_1, job_id, model_path_1, datetime.now().isoformat(), 1),
         )
         cursor.execute(
             """INSERT INTO models (model_id, job_id, model_path, created_at, is_active) VALUES (?, ?, ?, ?, ?)""",
-            (model_id_2, job_id, model_path_2, datetime.now().isoformat(), 0)
+            (model_id_2, job_id, model_path_2, datetime.now().isoformat(), 0),
         )
 
         # --- Результаты тренировки (для метрик) ---
@@ -185,17 +179,35 @@ def file_based_db():
         metrics_data_2 = {"mape": 9.8, "val_loss": 0.03}
         cursor.execute(
             """INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics) VALUES (?, ?, ?, ?, ?)""",
-            (result_id_1, job_id, model_id_1, config_id_1, json.dumps(metrics_data_1, default=json_default_serializer))
+            (
+                result_id_1,
+                job_id,
+                model_id_1,
+                config_id_1,
+                json.dumps(metrics_data_1, default=json_default_serializer),
+            ),
         )
         cursor.execute(
             """INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics) VALUES (?, ?, ?, ?, ?)""",
-            (result_id_2, job_id, model_id_2, config_id_2, json.dumps(metrics_data_2, default=json_default_serializer))
+            (
+                result_id_2,
+                job_id,
+                model_id_2,
+                config_id_2,
+                json.dumps(metrics_data_2, default=json_default_serializer),
+            ),
         )
 
         # --- Запись о job ---
         cursor.execute(
             """INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)""",
-            (job_id, "training", "completed", datetime.now().isoformat(), datetime.now().isoformat())
+            (
+                job_id,
+                "training",
+                "completed",
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ),
         )
 
         conn.commit()
@@ -223,6 +235,7 @@ def file_based_db():
         except Exception:
             pass
 
+
 @pytest.fixture
 def sample_job_data():
     """
@@ -231,8 +244,5 @@ def sample_job_data():
     return {
         "job_id": str(uuid.uuid4()),
         "job_type": "training",
-        "parameters": {
-            "batch_size": 32,
-            "learning_rate": 0.001
-        }
+        "parameters": {"batch_size": 32, "learning_rate": 0.001},
     }

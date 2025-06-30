@@ -41,5 +41,5 @@ __all__ = [
     "trial_name_creator",
     "flatten_config",
     "load_fixed_params",
-    "extract_early_stopping_callback"
+    "extract_early_stopping_callback",
 ]

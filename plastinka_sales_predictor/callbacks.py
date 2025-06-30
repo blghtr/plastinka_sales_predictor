@@ -17,9 +17,7 @@ class DartsCheckpointCallback(ModelCheckpoint):
         filepath_elems = Path(filepath).parts[-3:]
         with tempfile.TemporaryDirectory() as tmpdir:
             tempdir = Path(tmpdir)
-            super()._save_checkpoint(
-                trainer, tempdir / str(Path(*filepath_elems))
-            )
+            super()._save_checkpoint(trainer, tempdir / str(Path(*filepath_elems)))
 
             if trainer.sanity_checking:
                 return
@@ -49,8 +47,7 @@ class DartsCheckpointCallback(ModelCheckpoint):
                     report_dict[key] = trainer.callback_metrics[metric].item()
                 else:
                     print(
-                        f"Metric {metric} does not exist in "
-                        "`trainer.callback_metrics."
+                        f"Metric {metric} does not exist in `trainer.callback_metrics."
                     )
 
         return report_dict

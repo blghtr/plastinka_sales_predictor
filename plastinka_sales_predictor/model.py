@@ -1,4 +1,3 @@
-
 import torch
 from darts.models import TiDEModel
 from darts.models.forecasting.tide_model import _TideModule  # type: ignore
@@ -69,12 +68,17 @@ class _MultiSampleTideModule(_TideModule):
         # Build prediction tensor of shape (N, S)
         if self.likelihood is not None:
             # Draw multiple samples from the likelihood
-            samples = [self.likelihood.sample(output) for _ in range(self.num_samples_for_metrics)]
+            samples = [
+                self.likelihood.sample(output)
+                for _ in range(self.num_samples_for_metrics)
+            ]
             pred = torch.stack(samples, dim=-1)  # (*batch_dims, S)
         else:
             # Deterministic model – repeat the single output S times
-            pred = output.squeeze(dim=-1).unsqueeze(-1).repeat_interleave(
-                self.num_samples_for_metrics, dim=-1
+            pred = (
+                output.squeeze(dim=-1)
+                .unsqueeze(-1)
+                .repeat_interleave(self.num_samples_for_metrics, dim=-1)
             )
 
         # Flatten everything except sample dimension so metrics receive (N, S)
@@ -160,9 +164,13 @@ class CustomTiDEModel(TiDEModel):
             )
         )
         output_dim = future_target.shape[1]
-        future_cov_dim = future_covariates.shape[1] if future_covariates is not None else 0
+        future_cov_dim = (
+            future_covariates.shape[1] if future_covariates is not None else 0
+        )
         static_cov_dim = (
-            static_covariates.shape[0] * static_covariates.shape[1] if static_covariates is not None else 0
+            static_covariates.shape[0] * static_covariates.shape[1]
+            if static_covariates is not None
+            else 0
         )
         nr_params = 1 if self.likelihood is None else self.likelihood.num_parameters
 
@@ -189,6 +197,7 @@ class CustomTiDEModel(TiDEModel):
 
     # convenience alias
     MultiSampleModule = _MultiSampleTideModule
+
 
 # Public re-export for easier imports
 tiDEModelWithMultiSample = CustomTiDEModel

@@ -2,14 +2,14 @@ import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
 
-DEFAULT_LOG_FILE = 'logs/train.log'
-DEFAULT_LOGGER_NAME = 'plastinka_sales_predictor'
+DEFAULT_LOG_FILE = "logs/train.log"
+DEFAULT_LOGGER_NAME = "plastinka_sales_predictor"
 
 
 def configure_logger(
-        logger_name: str | None = None,
-        child_logger_name: str | None = None,
-        log_file: str | None = None
+    logger_name: str | None = None,
+    child_logger_name: str | None = None,
+    log_file: str | None = None,
 ) -> logging.Logger:
     """Configure logger with unique file for each run.
 
@@ -32,7 +32,7 @@ def configure_logger(
         logger.setLevel(logging.INFO)
 
         formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
 
         console_handler = logging.StreamHandler()
@@ -44,11 +44,7 @@ def configure_logger(
                 os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
             file_handler = TimedRotatingFileHandler(
-                log_file,
-                backupCount=5,
-                encoding='utf-8',
-                when='d',
-                interval=1
+                log_file, backupCount=5, encoding="utf-8", when="d", interval=1
             )
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)

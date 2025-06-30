@@ -74,14 +74,14 @@ class TestConnectionManagement:
         cursor.execute("SELECT sqlite_version()")
         version_row = cursor.fetchone()
         assert version_row is not None
-        version = version_row['sqlite_version()']
+        version = version_row["sqlite_version()"]
         assert version is not None
 
         conn.close()
 
     def test_get_db_connection_error_handling(self):
         """Test that get_db_connection raises DatabaseError when connection fails."""
-        with patch('pathlib.Path.mkdir', side_effect=Exception("Forced error")):
+        with patch("pathlib.Path.mkdir", side_effect=Exception("Forced error")):
             with pytest.raises(DatabaseError) as exc_info:
                 get_db_connection()
 
@@ -91,8 +91,10 @@ class TestConnectionManagement:
     def test_dict_factory(self):
         """Test that dict_factory correctly converts rows to dictionaries."""
         mock_cursor = MagicMock()
-        mock_cursor.description = [("id", None, None, None, None, None, None),
-                                  ("name", None, None, None, None, None, None)]
+        mock_cursor.description = [
+            ("id", None, None, None, None, None, None),
+            ("name", None, None, None, None, None, None),
+        ]
 
         row = (1, "test")
         result = dict_factory(mock_cursor, row)
@@ -110,12 +112,24 @@ class TestQueryExecution:
         conn = in_memory_db["conn"]
 
         # Insert test data
-        conn.execute("INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                     ("test-job", "training", "running", datetime.now().isoformat(), datetime.now().isoformat()))
+        conn.execute(
+            "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                "test-job",
+                "training",
+                "running",
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ),
+        )
         conn.commit()
 
         # Test SELECT query
-        result = execute_query("SELECT job_id, status FROM jobs WHERE job_id = ?", ("test-job",), connection=conn)
+        result = execute_query(
+            "SELECT job_id, status FROM jobs WHERE job_id = ?",
+            ("test-job",),
+            connection=conn,
+        )
 
         assert result is not None
         assert result["job_id"] == "test-job"
@@ -128,15 +142,23 @@ class TestQueryExecution:
         job_id = str(uuid.uuid4())
         result = execute_query(
             "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (job_id, "training", "pending", datetime.now().isoformat(), datetime.now().isoformat()),
-            connection=conn
+            (
+                job_id,
+                "training",
+                "pending",
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ),
+            connection=conn,
         )
 
         # For INSERT operations, result should be None
         assert result is None
 
         # Verify the record was inserted
-        verify_result = execute_query("SELECT job_id FROM jobs WHERE job_id = ?", (job_id,), connection=conn)
+        verify_result = execute_query(
+            "SELECT job_id FROM jobs WHERE job_id = ?", (job_id,), connection=conn
+        )
         assert verify_result["job_id"] == job_id
 
     def test_execute_query_error_handling(self, in_memory_db):
@@ -154,16 +176,34 @@ class TestQueryExecution:
 
         # Test data for batch insert
         jobs_data = [
-            (str(uuid.uuid4()), "training", "pending", datetime.now().isoformat(), datetime.now().isoformat()),
-            (str(uuid.uuid4()), "prediction", "pending", datetime.now().isoformat(), datetime.now().isoformat()),
-            (str(uuid.uuid4()), "training", "running", datetime.now().isoformat(), datetime.now().isoformat())
+            (
+                str(uuid.uuid4()),
+                "training",
+                "pending",
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ),
+            (
+                str(uuid.uuid4()),
+                "prediction",
+                "pending",
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ),
+            (
+                str(uuid.uuid4()),
+                "training",
+                "running",
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+            ),
         ]
 
         # Execute batch insert
         execute_many(
             "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
             jobs_data,
-            connection=conn
+            connection=conn,
         )
 
         # Verify all records were inserted
@@ -177,14 +217,14 @@ class TestQueryExecution:
         # Invalid parameter data (missing required fields)
         invalid_data = [
             ("job1", "training"),  # Missing required fields
-            ("job2", "prediction", "pending")  # Still missing fields
+            ("job2", "prediction", "pending"),  # Still missing fields
         ]
 
         with pytest.raises(DatabaseError):
             execute_many(
                 "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 invalid_data,
-                connection=conn
+                connection=conn,
             )
 
     def test_execute_many_empty_params(self, in_memory_db):
@@ -195,7 +235,7 @@ class TestQueryExecution:
         execute_many(
             "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
             [],
-            connection=conn
+            connection=conn,
         )
 
         # Verify no records were inserted
@@ -224,14 +264,16 @@ class TestCRUDOperations:
         job_id = create_job(
             job_type=sample_job_data["job_type"],
             parameters=sample_job_data["parameters"],
-            connection=conn
+            connection=conn,
         )
 
         assert isinstance(job_id, str)
         assert len(job_id) > 0
 
         # Verify job was created
-        result = execute_query("SELECT * FROM jobs WHERE job_id = ?", (job_id,), connection=conn)
+        result = execute_query(
+            "SELECT * FROM jobs WHERE job_id = ?", (job_id,), connection=conn
+        )
         assert result["job_type"] == sample_job_data["job_type"]
         assert json.loads(result["parameters"]) == sample_job_data["parameters"]
 
@@ -243,14 +285,18 @@ class TestCRUDOperations:
         job_id = create_job(
             job_type=sample_job_data["job_type"],
             parameters=sample_job_data["parameters"],
-            connection=conn
+            connection=conn,
         )
 
         # Update status (function returns None, not boolean)
         update_job_status(job_id, "completed", progress=100, connection=conn)
 
         # Verify update
-        job = execute_query("SELECT status, progress FROM jobs WHERE job_id = ?", (job_id,), connection=conn)
+        job = execute_query(
+            "SELECT status, progress FROM jobs WHERE job_id = ?",
+            (job_id,),
+            connection=conn,
+        )
         assert job["status"] == "completed"
         assert job["progress"] == 100
 
@@ -262,7 +308,7 @@ class TestCRUDOperations:
         job_id = create_job(
             job_type=sample_job_data["job_type"],
             parameters=sample_job_data["parameters"],
-            connection=conn
+            connection=conn,
         )
 
         # Retrieve job
@@ -286,9 +332,7 @@ class TestCRUDOperations:
         job_ids = []
         for i in range(3):
             job_id = create_job(
-                job_type="training",
-                parameters={"test": f"job_{i}"},
-                connection=conn
+                job_type="training", parameters={"test": f"job_{i}"}, connection=conn
             )
             job_ids.append(job_id)
 
@@ -319,12 +363,15 @@ class TestModelOperations:
             model_path=sample_model_data["model_path"],
             created_at=sample_model_data["created_at"],
             metadata=sample_model_data["metadata"],
-            connection=conn
+            connection=conn,
         )
 
         # Verify model was created
-        result = execute_query("SELECT * FROM models WHERE model_id = ?",
-                              (sample_model_data["model_id"],), connection=conn)
+        result = execute_query(
+            "SELECT * FROM models WHERE model_id = ?",
+            (sample_model_data["model_id"],),
+            connection=conn,
+        )
         assert result["model_id"] == sample_model_data["model_id"]
         assert result["job_id"] == sample_model_data["job_id"]
         assert result["model_path"] == sample_model_data["model_path"]
@@ -345,7 +392,7 @@ class TestModelOperations:
             created_at=sample_model_data["created_at"],
             metadata=sample_model_data["metadata"],
             is_active=True,
-            connection=conn
+            connection=conn,
         )
 
         # Get active model
@@ -374,7 +421,7 @@ class TestModelOperations:
                 created_at=datetime.now(),
                 metadata={},
                 is_active=False,
-                connection=conn
+                connection=conn,
             )
             model_ids.append(model_id)
 
@@ -400,7 +447,9 @@ class TestConfigurationOperations:
         assert len(config_id) > 0
 
         # Verify config was created
-        result = execute_query("SELECT * FROM configs WHERE config_id = ?", (config_id,), connection=conn)
+        result = execute_query(
+            "SELECT * FROM configs WHERE config_id = ?", (config_id,), connection=conn
+        )
         assert result is not None
         assert json.loads(result["config"]) == sample_config
 
@@ -450,21 +499,23 @@ class TestTransactionHandling:
         cursor = conn.cursor()
 
         # Create test table
-        cursor.execute("CREATE TABLE test_transactions (id INTEGER PRIMARY KEY, value TEXT)")
+        cursor.execute(
+            "CREATE TABLE test_transactions (id INTEGER PRIMARY KEY, value TEXT)"
+        )
         conn.commit()
 
         # Test transaction commit
         execute_query(
             "INSERT INTO test_transactions (value) VALUES (?)",
             ("test_value",),
-            connection=conn
+            connection=conn,
         )
 
         # Verify data was committed
         cursor.execute("SELECT value FROM test_transactions WHERE id = 1")
         result = cursor.fetchone()
         assert result is not None
-        value = result[0] if isinstance(result, tuple) else result['value']
+        value = result[0] if isinstance(result, tuple) else result["value"]
         assert value == "test_value"
 
         conn.close()
@@ -476,7 +527,9 @@ class TestTransactionHandling:
         cursor = conn.cursor()
 
         # Create test table
-        cursor.execute("CREATE TABLE test_rollback (id INTEGER PRIMARY KEY, value TEXT)")
+        cursor.execute(
+            "CREATE TABLE test_rollback (id INTEGER PRIMARY KEY, value TEXT)"
+        )
         conn.commit()
 
         # Start a transaction and cause an error
@@ -484,7 +537,7 @@ class TestTransactionHandling:
             execute_query(
                 "INSERT INTO test_rollback (id, value) VALUES (?, ?)",
                 (1,),  # Missing parameter - should cause error
-                connection=conn
+                connection=conn,
             )
         except DatabaseError:
             pass  # Expected error
@@ -492,7 +545,7 @@ class TestTransactionHandling:
         # Verify nothing was inserted due to rollback
         cursor.execute("SELECT COUNT(*) FROM test_rollback")
         result = cursor.fetchone()
-        count = result[0] if isinstance(result, tuple) else result['COUNT(*)']
+        count = result[0] if isinstance(result, tuple) else result["COUNT(*)"]
         assert count == 0
 
         conn.close()
@@ -509,7 +562,7 @@ class TestTransactionHandling:
                 job_id = create_job(
                     job_type="training",
                     parameters={"thread_id": thread_id},
-                    connection=conn
+                    connection=conn,
                 )
                 results.append(job_id)
             finally:
@@ -560,7 +613,7 @@ class TestErrorHandling:
             message="Database operation failed",
             query=query,
             params=params,
-            original_error=original_error
+            original_error=original_error,
         )
 
         assert error.message == "Database operation failed"
@@ -572,14 +625,16 @@ class TestErrorHandling:
     def test_execute_query_connection_error(self):
         """Test that execute_query handles connection errors properly."""
         # Create a closed connection to simulate connection error
-        conn = sqlite3.connect(':memory:')
+        conn = sqlite3.connect(":memory:")
         conn.close()  # Close the connection to make it invalid
 
         # Using a closed connection should raise DatabaseError
         with pytest.raises(DatabaseError) as exc_info:
             execute_query("SELECT 1", connection=conn)
 
-        assert "Connection validation failed" in str(exc_info.value) or "Database operation failed" in str(exc_info.value)
+        assert "Connection validation failed" in str(
+            exc_info.value
+        ) or "Database operation failed" in str(exc_info.value)
 
     def test_create_job_duplicate_id(self, in_memory_db):
         """Test handling of duplicate job ID creation by inserting directly."""
@@ -592,12 +647,21 @@ class TestErrorHandling:
         with pytest.raises(DatabaseError) as exc_info:
             execute_query(
                 "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, progress) VALUES (?, ?, ?, ?, ?, ?)",
-                (job_id1, "prediction", "pending", datetime.now().isoformat(), datetime.now().isoformat(), 0),
-                connection=conn
+                (
+                    job_id1,
+                    "prediction",
+                    "pending",
+                    datetime.now().isoformat(),
+                    datetime.now().isoformat(),
+                    0,
+                ),
+                connection=conn,
             )
 
         # Check that it's a constraint violation
-        assert "UNIQUE constraint failed" in str(exc_info.value) or "PRIMARY KEY" in str(exc_info.value)
+        assert "UNIQUE constraint failed" in str(
+            exc_info.value
+        ) or "PRIMARY KEY" in str(exc_info.value)
 
     def test_update_job_status_nonexistent_job(self, in_memory_db):
         """Test updating status of non-existent job."""
@@ -606,7 +670,9 @@ class TestErrorHandling:
         # Function returns None (no return value) and logs warning for non-existent job
         update_job_status("nonexistent-job", "completed", connection=conn)
         # Verify job was not created
-        job = execute_query("SELECT * FROM jobs WHERE job_id = ?", ("nonexistent-job",), connection=conn)
+        job = execute_query(
+            "SELECT * FROM jobs WHERE job_id = ?", ("nonexistent-job",), connection=conn
+        )
         assert job is None
 
     def test_set_model_active_nonexistent_id(self, in_memory_db):
@@ -639,7 +705,7 @@ class TestForeignKeyConstraints:
             execute_query(
                 "INSERT INTO jobs_history (job_id, previous_status, new_status, changed_at) VALUES (?, ?, ?, ?)",
                 ("nonexistent-job", "pending", "running", datetime.now().isoformat()),
-                connection=conn
+                connection=conn,
             )
 
     def test_foreign_key_enforcement_training_results_model(self, in_memory_db):
@@ -653,11 +719,17 @@ class TestForeignKeyConstraints:
         with pytest.raises(DatabaseError):
             execute_query(
                 "INSERT INTO training_results (model_id, metrics, created_at) VALUES (?, ?, ?)",
-                ("nonexistent-model", json.dumps({"accuracy": 0.95}), datetime.now().isoformat()),
-                connection=conn
+                (
+                    "nonexistent-model",
+                    json.dumps({"accuracy": 0.95}),
+                    datetime.now().isoformat(),
+                ),
+                connection=conn,
             )
 
-    def test_foreign_key_enforcement_training_results_config(self, in_memory_db, sample_config):
+    def test_foreign_key_enforcement_training_results_config(
+        self, in_memory_db, sample_config
+    ):
         """Test foreign key constraint between training_results and configs."""
         conn = in_memory_db["conn"]
 
@@ -668,8 +740,12 @@ class TestForeignKeyConstraints:
         with pytest.raises(DatabaseError):
             execute_query(
                 "INSERT INTO training_results (config_id, metrics, created_at) VALUES (?, ?, ?)",
-                ("nonexistent-config", json.dumps({"accuracy": 0.95}), datetime.now().isoformat()),
-                connection=conn
+                (
+                    "nonexistent-config",
+                    json.dumps({"accuracy": 0.95}),
+                    datetime.now().isoformat(),
+                ),
+                connection=conn,
             )
 
     def test_foreign_key_cascade_delete_jobs(self, in_memory_db):
@@ -685,21 +761,28 @@ class TestForeignKeyConstraints:
         # Add job history entry (using correct table name)
         execute_query(
             "INSERT INTO job_status_history (job_id, status, status_message, updated_at) VALUES (?, ?, ?, ?)",
-            (job_id, "running", "Status changed to: running", datetime.now().isoformat()),
-            connection=conn
+            (
+                job_id,
+                "running",
+                "Status changed to: running",
+                datetime.now().isoformat(),
+            ),
+            connection=conn,
         )
 
         # Verify history entry exists
         history_before = execute_query(
             "SELECT COUNT(*) as count FROM job_status_history WHERE job_id = ?",
             (job_id,),
-            connection=conn
+            connection=conn,
         )
         assert history_before["count"] == 1
 
         # Delete job should fail due to foreign key constraint (schema doesn't use CASCADE)
         with pytest.raises(DatabaseError) as exc_info:
-            execute_query("DELETE FROM jobs WHERE job_id = ?", (job_id,), connection=conn)
+            execute_query(
+                "DELETE FROM jobs WHERE job_id = ?", (job_id,), connection=conn
+            )
 
         assert "FOREIGN KEY constraint failed" in str(exc_info.value)
 
@@ -707,11 +790,13 @@ class TestForeignKeyConstraints:
         history_after = execute_query(
             "SELECT COUNT(*) as count FROM job_status_history WHERE job_id = ?",
             (job_id,),
-            connection=conn
+            connection=conn,
         )
         assert history_after["count"] == 1
 
-    def test_successful_insert_with_valid_foreign_keys(self, in_memory_db, sample_config):
+    def test_successful_insert_with_valid_foreign_keys(
+        self, in_memory_db, sample_config
+    ):
         """Test successful insertion with valid foreign key references."""
         conn = in_memory_db["conn"]
 
@@ -730,21 +815,27 @@ class TestForeignKeyConstraints:
             model_path="/test/model.onnx",
             created_at=datetime.now(),
             metadata={},
-            connection=conn
+            connection=conn,
         )
 
         # Create training result with valid foreign keys (job_id is required in schema)
         execute_query(
             "INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics) VALUES (?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), job_id, model_id, config_id, json.dumps({"accuracy": 0.95})),
-            connection=conn
+            (
+                str(uuid.uuid4()),
+                job_id,
+                model_id,
+                config_id,
+                json.dumps({"accuracy": 0.95}),
+            ),
+            connection=conn,
         )
 
         # Verify insertion succeeded
         result = execute_query(
             "SELECT * FROM training_results WHERE model_id = ? AND config_id = ?",
             (model_id, config_id),
-            connection=conn
+            connection=conn,
         )
         assert result is not None
         assert result["model_id"] == model_id
@@ -760,12 +851,12 @@ class TestIntegration:
         from deployment.app.db import database
 
         # Verify key functions are available
-        assert hasattr(database, 'get_db_connection')
-        assert hasattr(database, 'execute_query')
-        assert hasattr(database, 'create_job')
-        assert hasattr(database, 'update_job_status')
-        assert hasattr(database, 'create_model_record')
-        assert hasattr(database, 'create_or_get_config')
+        assert hasattr(database, "get_db_connection")
+        assert hasattr(database, "execute_query")
+        assert hasattr(database, "create_job")
+        assert hasattr(database, "update_job_status")
+        assert hasattr(database, "create_model_record")
+        assert hasattr(database, "create_or_get_config")
 
     def test_constants_defined(self):
         """Test that all expected constants are defined."""
@@ -785,7 +876,7 @@ class TestIntegration:
         assert len(SCHEMA_SQL) > 0
 
         # Test that schema can be executed
-        conn = sqlite3.connect(':memory:')
+        conn = sqlite3.connect(":memory:")
         try:
             conn.executescript(SCHEMA_SQL)
             conn.commit()
@@ -795,7 +886,7 @@ class TestIntegration:
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = [row[0] for row in cursor.fetchall()]
 
-            expected_tables = ['jobs', 'models', 'configs', 'training_results']
+            expected_tables = ["jobs", "models", "configs", "training_results"]
             for table in expected_tables:
                 assert table in tables
         finally:
@@ -813,7 +904,9 @@ class TestIntegration:
         set_config_active(config_id, connection=conn)
 
         # 2. Create job
-        job_id = create_job(job_type="training", parameters=sample_config, connection=conn)
+        job_id = create_job(
+            job_type="training", parameters=sample_config, connection=conn
+        )
         assert job_id is not None
 
         # 3. Update job status
@@ -828,11 +921,13 @@ class TestIntegration:
             model_path="/test/model.onnx",
             created_at=datetime.now(),
             metadata={"accuracy": 0.95},
-            connection=conn
+            connection=conn,
         )
 
         # 5. Activate model
-        model_activated = set_model_active(model_id, deactivate_others=True, connection=conn)
+        model_activated = set_model_active(
+            model_id, deactivate_others=True, connection=conn
+        )
         assert model_activated is True
 
         # 6. Verify final state

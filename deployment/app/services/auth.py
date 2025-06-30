@@ -1,6 +1,7 @@
 """
 Authentication service for API security.
 """
+
 import logging
 from typing import Annotated, Any
 
@@ -15,11 +16,14 @@ logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer()
 
 # Define security scheme for X-API-Key header
-api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False) # auto_error=False to handle empty config case
+api_key_header_scheme = APIKeyHeader(
+    name="X-API-Key", auto_error=False
+)  # auto_error=False to handle empty config case
+
 
 async def get_admin_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
-    settings: AppSettings = Depends(get_settings)
+    settings: AppSettings = Depends(get_settings),
 ) -> dict[str, Any]:
     """
     Validate admin token and return user information.
@@ -37,7 +41,7 @@ async def get_admin_user(
     if not settings.api.api_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Admin API key not configured on server"
+            detail="Admin API key not configured on server",
         )
 
     if credentials.scheme.lower() != "bearer":
@@ -48,7 +52,9 @@ async def get_admin_user(
         )
 
     if credentials.credentials != settings.api.api_key:
-        logger.warning(f"[get_admin_user] Invalid Bearer token provided. Expected: {settings.api.api_key}, Got: {credentials.credentials}")
+        logger.warning(
+            f"[get_admin_user] Invalid Bearer token provided. Expected: {settings.api.api_key}, Got: {credentials.credentials}"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
@@ -59,12 +65,13 @@ async def get_admin_user(
     return {
         "user_type": "admin",
         "roles": ["admin"],
-        "permissions": ["manage_data_retention", "manage_models", "manage_jobs"]
+        "permissions": ["manage_data_retention", "manage_models", "manage_jobs"],
     }
+
 
 async def get_current_api_key_validated(
     api_key: str = Security(api_key_header_scheme),
-    settings: AppSettings = Depends(get_settings)
+    settings: AppSettings = Depends(get_settings),
 ) -> bool:
     """
     Validate X-API-Key header.
@@ -85,18 +92,19 @@ async def get_current_api_key_validated(
         # Consider logging a warning here in a real scenario.
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="X-API-Key authentication is not configured on the server."
+            detail="X-API-Key authentication is not configured on the server.",
         )
 
-    if not api_key: # This case is handled by auto_error=True in APIKeyHeader if we set it
+    if (
+        not api_key
+    ):  # This case is handled by auto_error=True in APIKeyHeader if we set it
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated: X-API-Key header is missing."
+            detail="Not authenticated: X-API-Key header is missing.",
         )
 
     if api_key != settings.api.x_api_key:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid X-API-Key."
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-API-Key."
         )
     return True

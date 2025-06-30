@@ -32,26 +32,19 @@ def create_sample_training_config():
             "batch_size": 32,
             "dropout": 0.2,
             "use_reversible_instance_norm": True,
-            "use_layer_norm": True
+            "use_layer_norm": True,
         },
-        "optimizer_config": {
-            "lr": 0.001,
-            "weight_decay": 0.0001
-        },
-        "lr_shed_config": {
-            "T_0": 10,
-            "T_mult": 2
-        },
-        "train_ds_config": {
-            "alpha": 0.05,
-            "span": 12
-        },
+        "optimizer_config": {"lr": 0.001, "weight_decay": 0.0001},
+        "lr_shed_config": {"T_0": 10, "T_mult": 2},
+        "train_ds_config": {"alpha": 0.05, "span": 12},
         "lags": 12,
-        "quantiles": [0.05, 0.25, 0.5, 0.75, 0.95]
+        "quantiles": [0.05, 0.25, 0.5, 0.75, 0.95],
     }
+
 
 # Удаляем дублирование кода - всё перенесено в conftest.py
 # Оставляем только сами тесты, использующие фикстуры из conftest.py
+
 
 @pytest.mark.asyncio
 async def test_end_to_end_datasphere_pipeline(mocked_db, mock_datasphere):
@@ -65,18 +58,18 @@ async def test_end_to_end_datasphere_pipeline(mocked_db, mock_datasphere):
     4. Корректное обновление статуса job
     """
     # Создаём job
-    job_id = mocked_db['create_job']('test-job-id')
+    job_id = mocked_db["create_job"]("test-job-id")
 
     # Create a model for the job to satisfy foreign key constraints
-    model_id = mocked_db['create_model'](job_id)
-    mock_datasphere['save_model_file_and_db'].return_value = model_id
+    model_id = mocked_db["create_model"](job_id)
+    mock_datasphere["save_model_file_and_db"].return_value = model_id
 
     # Создаем mock job с нужными полями
     mock_job = {
-        'job_id': job_id,
-        'status': JobStatus.COMPLETED.value,
-        'progress': 100,
-        'error_message': None
+        "job_id": job_id,
+        "status": JobStatus.COMPLETED.value,
+        "progress": 100,
+        "error_message": None,
     }
 
     # Create sample training config and config_id
@@ -84,12 +77,12 @@ async def test_end_to_end_datasphere_pipeline(mocked_db, mock_datasphere):
     config_id = "test-config-id"
 
     # Insert config record
-    cursor = mocked_db['conn'].cursor()
+    cursor = mocked_db["conn"].cursor()
     cursor.execute(
         "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        (config_id, json.dumps(training_config), datetime.now().isoformat())
+        (config_id, json.dumps(training_config), datetime.now().isoformat()),
     )
-    mocked_db['conn'].commit()
+    mocked_db["conn"].commit()
 
     # Generate a mock result_id for _process_job_results
     mock_result_id = str(uuid.uuid4())
@@ -98,30 +91,41 @@ async def test_end_to_end_datasphere_pipeline(mocked_db, mock_datasphere):
     async def mock_process_job_results(*args, **kwargs):
         # Manually call save_model_file_and_db to make the test pass
         # Check if the mock functions are coroutines (AsyncMock) and await them if needed
-        if asyncio.iscoroutinefunction(mock_datasphere['save_model_file_and_db']):
-            await mock_datasphere['save_model_file_and_db'](job_id, '/fake/path/model.onnx')
+        if asyncio.iscoroutinefunction(mock_datasphere["save_model_file_and_db"]):
+            await mock_datasphere["save_model_file_and_db"](
+                job_id, "/fake/path/model.onnx"
+            )
         else:
-            mock_datasphere['save_model_file_and_db'](job_id, '/fake/path/model.onnx')
+            mock_datasphere["save_model_file_and_db"](job_id, "/fake/path/model.onnx")
 
-        if asyncio.iscoroutinefunction(mock_datasphere['save_predictions_to_db']):
-            await mock_datasphere['save_predictions_to_db'](model_id, '/fake/path/predictions.csv')
+        if asyncio.iscoroutinefunction(mock_datasphere["save_predictions_to_db"]):
+            await mock_datasphere["save_predictions_to_db"](
+                model_id, "/fake/path/predictions.csv"
+            )
         else:
-            mock_datasphere['save_predictions_to_db'](model_id, '/fake/path/predictions.csv')
+            mock_datasphere["save_predictions_to_db"](
+                model_id, "/fake/path/predictions.csv"
+            )
 
         return mock_result_id
 
     # Патчим get_job для возврата наших моков
-    with patch('deployment.app.db.database.get_job', return_value=mock_job), \
-         patch('deployment.app.services.datasphere_service._process_job_results', side_effect=mock_process_job_results):
-
+    with (
+        patch("deployment.app.db.database.get_job", return_value=mock_job),
+        patch(
+            "deployment.app.services.datasphere_service._process_job_results",
+            side_effect=mock_process_job_results,
+        ),
+    ):
         # Запускаем job с требуемыми аргументами
         await run_job(job_id, training_config, config_id)
 
         # Проверяем вызовы наших моков
-        assert mock_datasphere['client'].submit_job.called
-        assert mock_datasphere['client'].get_job_status.called
-        assert mock_datasphere['save_model_file_and_db'].called
-        assert mock_datasphere['save_predictions_to_db'].called
+        assert mock_datasphere["client"].submit_job.called
+        assert mock_datasphere["client"].get_job_status.called
+        assert mock_datasphere["save_model_file_and_db"].called
+        assert mock_datasphere["save_predictions_to_db"].called
+
 
 @pytest.mark.asyncio
 async def test_datasphere_job_polling_status_tracking(mocked_db, mock_datasphere):
@@ -143,21 +147,21 @@ async def test_datasphere_job_polling_status_tracking(mocked_db, mock_datasphere
         status_call_count += 1
         return status
 
-    mock_datasphere['client'].get_job_status.side_effect = get_status_side_effect
+    mock_datasphere["client"].get_job_status.side_effect = get_status_side_effect
 
     # Создаём job
-    job_id = mocked_db['create_job']('test-job-id')
+    job_id = mocked_db["create_job"]("test-job-id")
 
     # Create a model for the job to satisfy foreign key constraints
-    model_id = mocked_db['create_model'](job_id)
-    mock_datasphere['save_model_file_and_db'].return_value = model_id
+    model_id = mocked_db["create_model"](job_id)
+    mock_datasphere["save_model_file_and_db"].return_value = model_id
 
     # Создаем mock job с нужными полями
     mock_job = {
-        'job_id': job_id,
-        'status': JobStatus.COMPLETED.value,
-        'progress': 100,
-        'error_message': None
+        "job_id": job_id,
+        "status": JobStatus.COMPLETED.value,
+        "progress": 100,
+        "error_message": None,
     }
 
     # Create sample training config and config_id
@@ -165,56 +169,75 @@ async def test_datasphere_job_polling_status_tracking(mocked_db, mock_datasphere
     config_id = "test-config-id"
 
     # Insert config record
-    cursor = mocked_db['conn'].cursor()
+    cursor = mocked_db["conn"].cursor()
     cursor.execute(
         "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        (config_id, json.dumps(training_config), datetime.now().isoformat())
+        (config_id, json.dumps(training_config), datetime.now().isoformat()),
     )
-    mocked_db['conn'].commit()
+    mocked_db["conn"].commit()
 
     # Generate a mock result_id for _process_job_results
     mock_result_id = str(uuid.uuid4())
 
     # Create job status history entries
     for status in ["PENDING", "PROVISIONING", "RUNNING", "COMPLETED"]:
-        mocked_db['create_job_status_history'](job_id, status, f"Job status changed to {status}")
+        mocked_db["create_job_status_history"](
+            job_id, status, f"Job status changed to {status}"
+        )
 
     # Mock _process_job_results to avoid database errors
     async def mock_process_job_results(*args, **kwargs):
         # Manually call save_model_file_and_db and save_predictions_to_db to make the test pass
         # Check if the mock functions are coroutines (AsyncMock) and await them if needed
-        if asyncio.iscoroutinefunction(mock_datasphere['save_model_file_and_db']):
-            await mock_datasphere['save_model_file_and_db'](job_id, '/fake/path/model.onnx')
+        if asyncio.iscoroutinefunction(mock_datasphere["save_model_file_and_db"]):
+            await mock_datasphere["save_model_file_and_db"](
+                job_id, "/fake/path/model.onnx"
+            )
         else:
-            mock_datasphere['save_model_file_and_db'](job_id, '/fake/path/model.onnx')
+            mock_datasphere["save_model_file_and_db"](job_id, "/fake/path/model.onnx")
 
-        if asyncio.iscoroutinefunction(mock_datasphere['save_predictions_to_db']):
-            await mock_datasphere['save_predictions_to_db'](model_id, '/fake/path/predictions.csv')
+        if asyncio.iscoroutinefunction(mock_datasphere["save_predictions_to_db"]):
+            await mock_datasphere["save_predictions_to_db"](
+                model_id, "/fake/path/predictions.csv"
+            )
         else:
-            mock_datasphere['save_predictions_to_db'](model_id, '/fake/path/predictions.csv')
+            mock_datasphere["save_predictions_to_db"](
+                model_id, "/fake/path/predictions.csv"
+            )
 
         # Create status history entries AFTER running the job - ensures they're created
         for status in ["PENDING", "PROVISIONING", "RUNNING", "COMPLETED"]:
-            mocked_db['create_job_status_history'](job_id, status, f"Job status changed to {status}")
+            mocked_db["create_job_status_history"](
+                job_id, status, f"Job status changed to {status}"
+            )
 
         return mock_result_id
 
     # Патчим get_job для возврата наших моков
-    with patch('deployment.app.db.database.get_job', return_value=mock_job), \
-         patch('deployment.app.services.datasphere_service._process_job_results', side_effect=mock_process_job_results):
-
+    with (
+        patch("deployment.app.db.database.get_job", return_value=mock_job),
+        patch(
+            "deployment.app.services.datasphere_service._process_job_results",
+            side_effect=mock_process_job_results,
+        ),
+    ):
         # Запускаем job с требуемыми аргументами
         await run_job(job_id, training_config, config_id)
 
         # Проверяем что функция get_job_status была вызвана несколько раз
-        assert mock_datasphere['client'].get_job_status.call_count >= len(status_sequence)
+        assert mock_datasphere["client"].get_job_status.call_count >= len(
+            status_sequence
+        )
 
         # Проверяем финальный статус job
-        assert mock_job['status'] == JobStatus.COMPLETED.value
+        assert mock_job["status"] == JobStatus.COMPLETED.value
 
         # Проверяем историю статусов
-        status_history = mocked_db['execute_query']('job_status_history', (job_id,), fetchall=True)
+        status_history = mocked_db["execute_query"](
+            "job_status_history", (job_id,), fetchall=True
+        )
         assert len(status_history) > 2
+
 
 @pytest.mark.asyncio
 async def test_datasphere_pipeline_error_handling(mocked_db, mock_datasphere):
@@ -227,24 +250,26 @@ async def test_datasphere_pipeline_error_handling(mocked_db, mock_datasphere):
     3. Обновление статуса job на FAILED
     """
     # Настраиваем mock для генерации ошибки
-    mock_datasphere['client'].submit_job.side_effect = DataSphereClientError("Failed to submit job to DataSphere")
+    mock_datasphere["client"].submit_job.side_effect = DataSphereClientError(
+        "Failed to submit job to DataSphere"
+    )
 
     # Создаём job
-    job_id = mocked_db['create_job']('test-job-id')
+    job_id = mocked_db["create_job"]("test-job-id")
 
     # Создаем mock job с нужными полями
     mock_job = {
-        'job_id': job_id,
-        'status': JobStatus.FAILED.value,
-        'progress': 0,
-        'error_message': 'Failed to submit job to DataSphere'
+        "job_id": job_id,
+        "status": JobStatus.FAILED.value,
+        "progress": 0,
+        "error_message": "Failed to submit job to DataSphere",
     }
 
     # Create sample training config and config_id
     training_config = create_sample_training_config()
     config_id = "test-config-id"
 
-    with patch('deployment.app.db.database.get_job', return_value=mock_job):
+    with patch("deployment.app.db.database.get_job", return_value=mock_job):
         # Запускаем job и обрабатываем ожидаемую ошибку
         try:
             await run_job(job_id, training_config, config_id)
@@ -252,7 +277,8 @@ async def test_datasphere_pipeline_error_handling(mocked_db, mock_datasphere):
             pass
 
         # Проверяем результат напрямую с mock_job
-        assert mock_job['status'] == JobStatus.FAILED.value
+        assert mock_job["status"] == JobStatus.FAILED.value
+
 
 @pytest.mark.asyncio
 async def test_datasphere_pipeline_db_format_validation(mocked_db, mock_datasphere):
@@ -263,18 +289,18 @@ async def test_datasphere_pipeline_db_format_validation(mocked_db, mock_datasphe
     - Данные имеют правильные типы и значения
     """
     # Создаём job
-    job_id = mocked_db['create_job']('test-job-id')
+    job_id = mocked_db["create_job"]("test-job-id")
 
     # Create a model for the job to satisfy foreign key constraints
-    model_id = mocked_db['create_model'](job_id)
-    mock_datasphere['save_model_file_and_db'].return_value = model_id
+    model_id = mocked_db["create_model"](job_id)
+    mock_datasphere["save_model_file_and_db"].return_value = model_id
 
     # Создаем mock для успешного завершения job
     mock_job = {
-        'job_id': job_id,
-        'status': JobStatus.COMPLETED.value,
-        'progress': 100,
-        'error_message': None
+        "job_id": job_id,
+        "status": JobStatus.COMPLETED.value,
+        "progress": 100,
+        "error_message": None,
     }
 
     # Create sample training config and config_id
@@ -282,12 +308,12 @@ async def test_datasphere_pipeline_db_format_validation(mocked_db, mock_datasphe
     config_id = "test-config-id"
 
     # Insert config record
-    cursor = mocked_db['conn'].cursor()
+    cursor = mocked_db["conn"].cursor()
     cursor.execute(
         "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        (config_id, json.dumps(training_config), datetime.now().isoformat())
+        (config_id, json.dumps(training_config), datetime.now().isoformat()),
     )
-    mocked_db['conn'].commit()
+    mocked_db["conn"].commit()
 
     # Generate a mock result_id for _process_job_results
     mock_result_id = str(uuid.uuid4())
@@ -296,34 +322,45 @@ async def test_datasphere_pipeline_db_format_validation(mocked_db, mock_datasphe
     async def mock_process_job_results(*args, **kwargs):
         # Manually call save_model_file_and_db and save_predictions_to_db to make the test pass
         # Check if the mock functions are coroutines (AsyncMock) and await them if needed
-        if asyncio.iscoroutinefunction(mock_datasphere['save_model_file_and_db']):
-            await mock_datasphere['save_model_file_and_db'](job_id, '/fake/path/model.onnx')
+        if asyncio.iscoroutinefunction(mock_datasphere["save_model_file_and_db"]):
+            await mock_datasphere["save_model_file_and_db"](
+                job_id, "/fake/path/model.onnx"
+            )
         else:
-            mock_datasphere['save_model_file_and_db'](job_id, '/fake/path/model.onnx')
+            mock_datasphere["save_model_file_and_db"](job_id, "/fake/path/model.onnx")
 
-        if asyncio.iscoroutinefunction(mock_datasphere['save_predictions_to_db']):
-            await mock_datasphere['save_predictions_to_db'](model_id, '/fake/path/predictions.csv')
+        if asyncio.iscoroutinefunction(mock_datasphere["save_predictions_to_db"]):
+            await mock_datasphere["save_predictions_to_db"](
+                model_id, "/fake/path/predictions.csv"
+            )
         else:
-            mock_datasphere['save_predictions_to_db'](model_id, '/fake/path/predictions.csv')
+            mock_datasphere["save_predictions_to_db"](
+                model_id, "/fake/path/predictions.csv"
+            )
 
         return mock_result_id
 
     # Патчим get_job для возврата наших моков
-    with patch('deployment.app.db.database.get_job', return_value=mock_job), \
-         patch('deployment.app.services.datasphere_service._process_job_results', side_effect=mock_process_job_results):
-
+    with (
+        patch("deployment.app.db.database.get_job", return_value=mock_job),
+        patch(
+            "deployment.app.services.datasphere_service._process_job_results",
+            side_effect=mock_process_job_results,
+        ),
+    ):
         # Запускаем job с требуемыми аргументами
         await run_job(job_id, training_config, config_id)
 
         # Assert that save_predictions_to_db was called
-        assert mock_datasphere['save_predictions_to_db'].called
+        assert mock_datasphere["save_predictions_to_db"].called
 
         # For this test we would normally check the MultiIndex and quantiles
         # but since we're mocking most of the functionality, we'll just check
         # that the essential mock calls were made
-        assert mock_datasphere['client'].submit_job.called
-        assert mock_datasphere['client'].get_job_status.called
-        assert mock_datasphere['save_model_file_and_db'].called
+        assert mock_datasphere["client"].submit_job.called
+        assert mock_datasphere["client"].get_job_status.called
+        assert mock_datasphere["save_model_file_and_db"].called
+
 
 @pytest.mark.asyncio
 async def test_datasphere_pipeline_edge_cases(mocked_db, mock_datasphere, caplog):
@@ -345,29 +382,31 @@ async def test_datasphere_pipeline_edge_cases(mocked_db, mock_datasphere, caplog
     original_exists = os.path.exists
 
     def patched_exists(path):
-        if 'metrics.json' in str(path):
+        if "metrics.json" in str(path):
             return False
         return original_exists(path)
 
-    with patch('os.path.exists', side_effect=patched_exists):
+    with patch("os.path.exists", side_effect=patched_exists):
         # Создаём job
-        job_id = mocked_db['create_job']('test-job-missing-metrics')
+        job_id = mocked_db["create_job"]("test-job-missing-metrics")
 
         # Создаем mock для успешного завершения job
         mock_job = {
-            'job_id': job_id,
-            'status': JobStatus.COMPLETED.value,
-            'progress': 100,
-            'error_message': None
+            "job_id": job_id,
+            "status": JobStatus.COMPLETED.value,
+            "progress": 100,
+            "error_message": None,
         }
 
         # Патчим get_job для возврата наших моков
-        with patch('deployment.app.db.database.get_job', return_value=mock_job):
+        with patch("deployment.app.db.database.get_job", return_value=mock_job):
             # Запускаем job с требуемыми аргументами
             await run_job(job_id, training_config, config_id)
 
             # Проверяем, что в логах есть сообщение о недоступности metrics.json
-            metrics_messages = [r.message for r in caplog.records if 'metrics.json' in r.message]
+            metrics_messages = [
+                r.message for r in caplog.records if "metrics.json" in r.message
+            ]
             assert len(metrics_messages) > 0, "No warning about missing metrics.json"
 
     # Сбрасываем caplog перед следующим сценарием
@@ -378,14 +417,19 @@ async def test_datasphere_pipeline_edge_cases(mocked_db, mock_datasphere, caplog
     # напрямую добавим сообщение в логи и проверим его наличие
 
     # Получаем логгер
-    logger = logging.getLogger('deployment.app.services.datasphere_service')
+    logger = logging.getLogger("deployment.app.services.datasphere_service")
 
     # Напрямую логируем сообщение об ошибке
-    logger.error("[test-job-empty-predictions] Error saving predictions: Empty predictions file")
+    logger.error(
+        "[test-job-empty-predictions] Error saving predictions: Empty predictions file"
+    )
+
 
 @pytest.mark.skip(reason="Skipping error logging and monitoring test due to nedd")
 @pytest.mark.asyncio
-async def test_datasphere_pipeline_error_logging_monitoring(mocked_db, mock_datasphere, caplog):
+async def test_datasphere_pipeline_error_logging_monitoring(
+    mocked_db, mock_datasphere, caplog
+):
     """
     Проверяет, что ошибки и предупреждения правильно логируются и могут быть отслежены:
     - Логирование ошибок и предупреждений
@@ -396,7 +440,7 @@ async def test_datasphere_pipeline_error_logging_monitoring(mocked_db, mock_data
     caplog.set_level(logging.DEBUG)
 
     # Создаём job
-    job_id = mocked_db['create_job']('test-job-logging')
+    job_id = mocked_db["create_job"]("test-job-logging")
 
     # Create sample training config and config_id
     training_config = create_sample_training_config()
@@ -404,33 +448,36 @@ async def test_datasphere_pipeline_error_logging_monitoring(mocked_db, mock_data
 
     # Создаем mock для успешного завершения job
     mock_job = {
-        'job_id': job_id,
-        'status': JobStatus.COMPLETED.value,
-        'progress': 100,
-        'error_message': None
+        "job_id": job_id,
+        "status": JobStatus.COMPLETED.value,
+        "progress": 100,
+        "error_message": None,
     }
 
     # Настраиваем мок для генерации предупреждений (но не ошибок)
-    original_download = mock_datasphere['client'].download_job_results
+    original_download = mock_datasphere["client"].download_job_results
 
     def download_with_warning(*args, **kwargs):
-        logger = logging.getLogger('deployment.app.services.datasphere_service')
-        logger.warning(f"[{job_id}] Warning during download: Some files might be incomplete")
+        logger = logging.getLogger("deployment.app.services.datasphere_service")
+        logger.warning(
+            f"[{job_id}] Warning during download: Some files might be incomplete"
+        )
         return original_download(*args, **kwargs)
 
-    mock_datasphere['client'].download_job_results = download_with_warning
+    mock_datasphere["client"].download_job_results = download_with_warning
 
     # Патчим get_job для возврата наших моков
-    with patch('deployment.app.db.database.get_job', return_value=mock_job):
+    with patch("deployment.app.db.database.get_job", return_value=mock_job):
         # Запускаем job
         await run_job(job_id, training_config, config_id)
 
         # Проверяем, что в логах есть предупреждение
-        warning_messages = [r for r in caplog.records if r.levelname == 'WARNING']
+        warning_messages = [r for r in caplog.records if r.levelname == "WARNING"]
         assert len(warning_messages) > 0, "No warnings were logged"
 
         # Проверяем, что job успешно завершился несмотря на предупреждения
-        assert mock_job['status'] == JobStatus.COMPLETED.value
+        assert mock_job["status"] == JobStatus.COMPLETED.value
+
 
 @pytest.mark.asyncio
 async def test_datasphere_pipeline_rollback_cleanup(mocked_db, mock_datasphere, caplog):
@@ -448,35 +495,37 @@ async def test_datasphere_pipeline_rollback_cleanup(mocked_db, mock_datasphere, 
     config_id = "test-config-id"
 
     # Insert config record
-    cursor = mocked_db['conn'].cursor()
+    cursor = mocked_db["conn"].cursor()
     cursor.execute(
         "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        (config_id, json.dumps(training_config), datetime.now().isoformat())
+        (config_id, json.dumps(training_config), datetime.now().isoformat()),
     )
-    mocked_db['conn'].commit()
+    mocked_db["conn"].commit()
 
     # Настраиваем мок для успешного прохождения основного пайплайна
-    mock_datasphere['client'].submit_job.return_value = "ds_job_test_cleanup"
-    mock_datasphere['client'].get_job_status.return_value = "SUCCESS"
+    mock_datasphere["client"].submit_job.return_value = "ds_job_test_cleanup"
+    mock_datasphere["client"].get_job_status.return_value = "SUCCESS"
 
     # Путь к директории для очистки - должен существовать с точки зрения теста
     ds_job_run_suffix = "ds_job_test-job-cleanup-1_7df8d51d"
-    cleanup_dir = os.path.join(mock_datasphere['settings'].datasphere.train_job.output_dir, ds_job_run_suffix)
+    cleanup_dir = os.path.join(
+        mock_datasphere["settings"].datasphere.train_job.output_dir, ds_job_run_suffix
+    )
 
     # Создаем job
     job_id = "test-job-cleanup-1"
-    mocked_db['create_job'](job_id)
+    mocked_db["create_job"](job_id)
 
     # Create a model for the job to satisfy foreign key constraints
-    model_id = mocked_db['create_model'](job_id)
-    mock_datasphere['save_model_file_and_db'].return_value = model_id
+    model_id = mocked_db["create_model"](job_id)
+    mock_datasphere["save_model_file_and_db"].return_value = model_id
 
     # Создаем mock job с нужными полями
     mock_job = {
-        'job_id': job_id,
-        'status': JobStatus.COMPLETED.value,
-        'progress': 100,
-        'error_message': None
+        "job_id": job_id,
+        "status": JobStatus.COMPLETED.value,
+        "progress": 100,
+        "error_message": None,
     }
 
     # Mock _process_job_results to raise an error before cleanup
@@ -493,13 +542,20 @@ async def test_datasphere_pipeline_rollback_cleanup(mocked_db, mock_datasphere, 
         return False
 
     # Определяем моки и запускаем тест
-    with patch('deployment.app.db.database.get_job', return_value=mock_job), \
-         patch('shutil.rmtree', side_effect=mock_cleanup_failure), \
-         patch('os.path.isdir', side_effect=mock_isdir), \
-         patch('os.makedirs'), \
-         patch('deployment.app.services.datasphere_service._process_job_results', side_effect=mock_process_job_results), \
-         patch('deployment.app.services.datasphere_service._cleanup_directories', side_effect=Exception("Cleanup failure")):
-
+    with (
+        patch("deployment.app.db.database.get_job", return_value=mock_job),
+        patch("shutil.rmtree", side_effect=mock_cleanup_failure),
+        patch("os.path.isdir", side_effect=mock_isdir),
+        patch("os.makedirs"),
+        patch(
+            "deployment.app.services.datasphere_service._process_job_results",
+            side_effect=mock_process_job_results,
+        ),
+        patch(
+            "deployment.app.services.datasphere_service._cleanup_directories",
+            side_effect=Exception("Cleanup failure"),
+        ),
+    ):
         # Запускаем job с требуемыми аргументами и ожидаем, что он закончится с ошибкой
         try:
             await run_job(job_id, training_config, config_id)
@@ -509,5 +565,9 @@ async def test_datasphere_pipeline_rollback_cleanup(mocked_db, mock_datasphere, 
             assert "Simulated processing error" in str(e) or "Cleanup failure" in str(e)
 
         # Проверяем логи на наличие сообщений об ошибке очистки
-        assert any("Error during final cleanup" in record.message for record in caplog.records) or \
-               any("Unexpected error in job pipeline" in record.message for record in caplog.records)
+        assert any(
+            "Error during final cleanup" in record.message for record in caplog.records
+        ) or any(
+            "Unexpected error in job pipeline" in record.message
+            for record in caplog.records
+        )

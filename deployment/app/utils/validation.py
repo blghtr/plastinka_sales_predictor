@@ -7,15 +7,19 @@ import pandas as pd
 
 logger = logging.getLogger("plastinka.validation")
 
+
 class ValidationError(Exception):
     """Exception raised for validation errors."""
+
     def __init__(self, message: str, details: dict[str, Any] | None = None):
         self.message = message
         self.details = details or {}
         super().__init__(self.message)
 
 
-def validate_excel_file(file_content: bytes, expected_columns: list[str] = None) -> tuple[bool, str]:
+def validate_excel_file(
+    file_content: bytes, expected_columns: list[str] = None
+) -> tuple[bool, str]:
     """
     Validate that the provided file is a valid Excel file with the expected structure.
 
@@ -28,7 +32,7 @@ def validate_excel_file(file_content: bytes, expected_columns: list[str] = None)
     """
     try:
         # Try to read as Excel file, specify engine
-        df = pd.read_excel(io.BytesIO(file_content), engine='openpyxl')
+        df = pd.read_excel(io.BytesIO(file_content), engine="openpyxl")
 
         # Check if dataframe is empty
         if df.empty:
@@ -46,7 +50,9 @@ def validate_excel_file(file_content: bytes, expected_columns: list[str] = None)
         return False, f"Invalid Excel file: {str(e)}"
 
 
-def  validate_date_format(date_str: str, format_str: str = "%d.%m.%Y") -> tuple[bool, datetime | None]:
+def validate_date_format(
+    date_str: str, format_str: str = "%d.%m.%Y"
+) -> tuple[bool, datetime | None]:
     """
     Validate that the provided string is a valid date in the expected format.
 
@@ -64,12 +70,14 @@ def  validate_date_format(date_str: str, format_str: str = "%d.%m.%Y") -> tuple[
         return False, None
 
 
-def validate_date_range(start_date: str | datetime,
-                        end_date: str | datetime,
-                        format_str: str = "%d.%m.%Y",
-                        min_date: datetime | None = None,
-                        max_date: datetime | None = None,
-                        max_range_days: int | None = None) -> tuple[bool, str, datetime | None, datetime | None]:
+def validate_date_range(
+    start_date: str | datetime,
+    end_date: str | datetime,
+    format_str: str = "%d.%m.%Y",
+    min_date: datetime | None = None,
+    max_date: datetime | None = None,
+    max_range_days: int | None = None,
+) -> tuple[bool, str, datetime | None, datetime | None]:
     """
     Validate a date range with comprehensive checks:
     - Validate date formats
@@ -95,12 +103,22 @@ def validate_date_range(start_date: str | datetime,
     if isinstance(start_date, str):
         is_valid, start_dt = validate_date_format(start_date, format_str)
         if not is_valid:
-            return False, f"Invalid start date format. Expected format: {format_str}", None, None
+            return (
+                False,
+                f"Invalid start date format. Expected format: {format_str}",
+                None,
+                None,
+            )
 
     if isinstance(end_date, str):
         is_valid, end_dt = validate_date_format(end_date, format_str)
         if not is_valid:
-            return False, f"Invalid end date format. Expected format: {format_str}", None, None
+            return (
+                False,
+                f"Invalid end date format. Expected format: {format_str}",
+                None,
+                None,
+            )
 
     # Ensure start_date <= end_date
     if start_dt > end_dt:
@@ -108,23 +126,38 @@ def validate_date_range(start_date: str | datetime,
 
     # Check if dates are within allowed range
     if min_date and start_dt < min_date:
-        return False, f"Start date must be on or after {min_date.strftime(format_str)}", None, None
+        return (
+            False,
+            f"Start date must be on or after {min_date.strftime(format_str)}",
+            None,
+            None,
+        )
 
     if max_date and end_dt > max_date:
-        return False, f"End date must be on or before {max_date.strftime(format_str)}", None, None
+        return (
+            False,
+            f"End date must be on or before {max_date.strftime(format_str)}",
+            None,
+            None,
+        )
 
     # Check range size
     if max_range_days:
         range_days = (end_dt - start_dt).days
         if range_days > max_range_days:
-            return False, f"Date range exceeds maximum allowed ({max_range_days} days)", None, None
+            return (
+                False,
+                f"Date range exceeds maximum allowed ({max_range_days} days)",
+                None,
+                None,
+            )
 
     return True, "", start_dt, end_dt
 
 
-def validate_forecast_date_range(start_date: str | datetime,
-                                end_date: str | datetime,
-                                format_str: str = "%d.%m.%Y") -> tuple[bool, str, datetime | None, datetime | None]:
+def validate_forecast_date_range(
+    start_date: str | datetime, end_date: str | datetime, format_str: str = "%d.%m.%Y"
+) -> tuple[bool, str, datetime | None, datetime | None]:
     """
     Validate forecast date range with specific constraints for forecasting.
 
@@ -138,22 +171,17 @@ def validate_forecast_date_range(start_date: str | datetime,
     """
     # Set forecast-specific constraints
     min_date = datetime.now()
-    max_date = datetime.now() + timedelta(days=365*2)  # Max 2 years in the future
+    max_date = datetime.now() + timedelta(days=365 * 2)  # Max 2 years in the future
     max_range_days = 365  # Max 1 year forecast range
 
     return validate_date_range(
-        start_date,
-        end_date,
-        format_str,
-        min_date,
-        max_date,
-        max_range_days
+        start_date, end_date, format_str, min_date, max_date, max_range_days
     )
 
 
-def validate_historical_date_range(start_date: str | datetime,
-                                  end_date: str | datetime,
-                                  format_str: str = "%d.%m.%Y") -> tuple[bool, str, datetime | None, datetime | None]:
+def validate_historical_date_range(
+    start_date: str | datetime, end_date: str | datetime, format_str: str = "%d.%m.%Y"
+) -> tuple[bool, str, datetime | None, datetime | None]:
     """
     Validate historical date range with specific constraints for historical data.
 
@@ -171,12 +199,7 @@ def validate_historical_date_range(start_date: str | datetime,
     max_range_days = 365 * 5  # Max 5 years of historical data at once
 
     return validate_date_range(
-        start_date,
-        end_date,
-        format_str,
-        min_date,
-        max_date,
-        max_range_days
+        start_date, end_date, format_str, min_date, max_date, max_range_days
     )
 
 
@@ -195,7 +218,7 @@ def validate_stock_file(file_content: bytes) -> tuple[bool, str]:
         "Исполнитель",
         "Альбом",
         "Дата создания",
-        "Экземпляры"
+        "Экземпляры",
     ]
     return validate_excel_file(file_content, expected_columns)
 
@@ -215,7 +238,7 @@ def validate_sales_file(file_content: bytes) -> tuple[bool, str]:
         "Исполнитель",
         "Альбом",
         "Дата добавления",
-        "Дата продажи"
+        "Дата продажи",
     ]
     return validate_excel_file(file_content, expected_columns)
 

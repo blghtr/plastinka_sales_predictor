@@ -39,9 +39,9 @@ def _build_handlers() -> list[logging.Handler]:
     file_path = os.path.join(log_dir, "api.log")
     file_handler = TimedRotatingFileHandler(
         filename=file_path,
-        when="D",        # Rotate by interval of days
-        interval=30,      # Approximate a month
-        backupCount=6,    # Keep 6 old logs
+        when="D",  # Rotate by interval of days
+        interval=30,  # Approximate a month
+        backupCount=6,  # Keep 6 old logs
         encoding="utf-8",
     )
     file_handler.setFormatter(formatter)

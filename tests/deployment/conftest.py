@@ -36,6 +36,7 @@ from deployment.app.db.schema import SCHEMA_SQL
 # Добавляем session-scoped кэш для FastAPI app
 _cached_app = None
 
+
 def get_cached_app():
     """Get or create cached FastAPI app instance for performance optimization."""
     global _cached_app
@@ -46,6 +47,7 @@ def get_cached_app():
         _cached_app = app
     return _cached_app
 
+
 @pytest.fixture(scope="session")
 def cached_fastapi_app(pytestconfig):
     """Session-scoped cached FastAPI app using pytest cache."""
@@ -55,12 +57,14 @@ def cached_fastapi_app(pytestconfig):
     if app_instance is None:
         print("Creating new FastAPI app instance...")
         from deployment.app.main import app
+
         app_instance = app
         pytestconfig.cache.set(cache_key, app_instance)
     else:
         print("Using cached FastAPI app instance...")
 
     return app_instance
+
 
 # --- Фикстуры для моков (остаются session-scoped, если не требуют сброса состояния между тестами)
 # --- или function-scoped, если требуют ---
@@ -71,12 +75,14 @@ def mock_run_cleanup_job_fixture():
     mock.return_value = None  # run_cleanup_job doesn't return anything
     return mock
 
+
 @pytest.fixture(scope="session")
 def mock_cleanup_old_predictions_fixture():
     """Mock for cleanup_old_predictions function."""
     mock = MagicMock()
     mock.return_value = 5  # Return some records removed count
     return mock
+
 
 @pytest.fixture(scope="session")
 def mock_cleanup_old_historical_data_fixture():
@@ -85,6 +91,7 @@ def mock_cleanup_old_historical_data_fixture():
     mock.return_value = 3  # Return some records removed count
     return mock
 
+
 @pytest.fixture(scope="session")
 def mock_cleanup_old_models_fixture():
     """Mock for cleanup_old_models function."""
@@ -92,23 +99,26 @@ def mock_cleanup_old_models_fixture():
     mock.return_value = 2  # Return some records removed count
     return mock
 
+
 @pytest.fixture(scope="session")
 def mock_db_conn_fixture():
     # This mock is for dependencies that expect a connection object.
     # If they perform operations, this mock needs to be configured.
     return MagicMock(spec=sqlite3.Connection)
 
+
 @pytest.fixture
 def test_db_path():
     # Create a temporary database file
     db_fd, db_path = tempfile.mkstemp(suffix=".db")
-    os.close(db_fd) # Close the file descriptor, we just need the path
+    os.close(db_fd)  # Close the file descriptor, we just need the path
     yield db_path
     # Cleanup the database file after the test
     try:
         os.unlink(db_path)
     except OSError:
-        pass # Ignore errors if file already removed or not created
+        pass  # Ignore errors if file already removed or not created
+
 
 @pytest.fixture
 def isolated_db_session(monkeypatch):
@@ -130,20 +140,24 @@ def isolated_db_session(monkeypatch):
 
         from deployment.app.db.database import dict_factory
         from deployment.app.db.schema import init_db
+
         init_db(str(db_path))
 
         original_sqlite3_connect = sqlite3.connect
+
         def patched_connect(*args, **kwargs):
             conn = original_sqlite3_connect(*args, **kwargs)
             conn.row_factory = dict_factory
             return conn
-        monkeypatch.setattr('sqlite3.connect', patched_connect)
+
+        monkeypatch.setattr("sqlite3.connect", patched_connect)
 
         yield str(db_path)
 
     finally:
         gc.collect()
         shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 @pytest.fixture(scope="function")
 def temp_db():
@@ -176,31 +190,31 @@ def temp_db_with_data(temp_db):
     config_params = {"param1": 100, "param2": "value"}
     cursor.execute(
         "INSERT INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        (config_id, json.dumps(config_params), now)
+        (config_id, json.dumps(config_params), now),
     )
 
     job_for_model_id = str(uuid.uuid4())
     cursor.execute(
         "INSERT INTO jobs (job_id, job_type, status, config_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (job_for_model_id, "training", "completed", config_id, now, now)
+        (job_for_model_id, "training", "completed", config_id, now, now),
     )
 
     model_id = str(uuid.uuid4())
     cursor.execute(
         "INSERT INTO models (model_id, job_id, model_path, created_at) VALUES (?, ?, ?, ?)",
-        (model_id, job_for_model_id, "/path/to/model", now)
+        (model_id, job_for_model_id, "/path/to/model", now),
     )
 
     job_id = str(uuid.uuid4())
     cursor.execute(
         "INSERT INTO jobs (job_id, job_type, status, config_id, model_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (job_id, "prediction", "running", config_id, model_id, now, now)
+        (job_id, "prediction", "running", config_id, model_id, now, now),
     )
 
     job_id_2 = str(uuid.uuid4())
     cursor.execute(
         "INSERT INTO jobs (job_id, job_type, status, config_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (job_id_2, "prediction", "pending", config_id, now, now)
+        (job_id_2, "prediction", "pending", config_id, now, now),
     )
 
     conn.commit()
@@ -211,7 +225,7 @@ def temp_db_with_data(temp_db):
         "model_id": model_id,
         "job_id": job_id,
         "job_id_2": job_id_2,
-        "job_for_model_id": job_for_model_id
+        "job_for_model_id": job_for_model_id,
     }
 
 
@@ -222,7 +236,7 @@ def reset_mocks_between_tests(
     mock_cleanup_old_predictions_fixture,
     mock_cleanup_old_historical_data_fixture,
     mock_cleanup_old_models_fixture,
-    mock_db_conn_fixture
+    mock_db_conn_fixture,
 ):
     """
     Auto-use fixture that resets all module-scoped mocks between tests.
@@ -244,13 +258,16 @@ def reset_mocks_between_tests(
     mock_cleanup_old_models_fixture.reset_mock()
     mock_db_conn_fixture.reset_mock()
 
-@pytest.fixture(scope='session')
+
+@pytest.fixture(scope="session")
 def session_monkeypatch():
     """Session-scoped monkeypatch fixture."""
     from _pytest.monkeypatch import MonkeyPatch
+
     mp = MonkeyPatch()
     yield mp
     mp.undo()
+
 
 @pytest.fixture(scope="session")
 def base_client(
@@ -258,7 +275,7 @@ def base_client(
     mock_run_cleanup_job_fixture,
     mock_cleanup_old_predictions_fixture,
     mock_cleanup_old_historical_data_fixture,
-    mock_cleanup_old_models_fixture
+    mock_cleanup_old_models_fixture,
 ):
     """
     Session-scoped FastAPI test client for maximum performance.
@@ -280,11 +297,21 @@ def base_client(
 
     # Patch the functions in the module where they are *used* (the admin API module)
     # This is crucial because of how they are imported and used with Depends(lambda:...).
-    with patch("deployment.app.api.admin.run_cleanup_job", mock_run_cleanup_job_fixture), \
-         patch("deployment.app.api.admin.cleanup_old_predictions", mock_cleanup_old_predictions_fixture), \
-         patch("deployment.app.api.admin.cleanup_old_historical_data", mock_cleanup_old_historical_data_fixture), \
-         patch("deployment.app.api.admin.cleanup_old_models", mock_cleanup_old_models_fixture):
-
+    with (
+        patch("deployment.app.api.admin.run_cleanup_job", mock_run_cleanup_job_fixture),
+        patch(
+            "deployment.app.api.admin.cleanup_old_predictions",
+            mock_cleanup_old_predictions_fixture,
+        ),
+        patch(
+            "deployment.app.api.admin.cleanup_old_historical_data",
+            mock_cleanup_old_historical_data_fixture,
+        ),
+        patch(
+            "deployment.app.api.admin.cleanup_old_models",
+            mock_cleanup_old_models_fixture,
+        ),
+    ):
         # Import and create the app with mocked dependencies
         # Import settings and main app *after* monkeypatching
         from deployment.app.config import get_config_values, get_settings
@@ -297,7 +324,7 @@ def base_client(
 
         # CRITICAL FIX: Clear the dependency overrides on the app object
         # to ensure a clean state for the test client.
-        app.dependency_overrides.clear() # Clear any old overrides
+        app.dependency_overrides.clear()  # Clear any old overrides
 
         # CRITICAL FIX: Removed incorrect dependency overrides.
         # The authentication should now work via the correctly configured settings.
@@ -315,6 +342,7 @@ def base_client(
         # Cleanup
         app.dependency_overrides.clear()
 
+
 @pytest.fixture(scope="function")
 def client(base_client):
     """
@@ -324,6 +352,7 @@ def client(base_client):
     """
     return base_client
 
+
 @pytest.fixture(scope="function")
 def mock_x_api_key(monkeypatch):
     """
@@ -331,9 +360,11 @@ def mock_x_api_key(monkeypatch):
     Yields a callable that takes the desired value for x_api_key.
     This ensures that the settings object used by the app instance is correctly modified.
     """
+
     def _set_x_api_key(value: str | None):
         # Import get_settings here to avoid circular dependencies
         from deployment.app.config import get_settings
+
         settings = get_settings()
         # Use monkeypatch to safely set the attribute for the duration of the test
         monkeypatch.setattr(settings.api, "x_api_key", value)
@@ -342,6 +373,7 @@ def mock_x_api_key(monkeypatch):
     yield _set_x_api_key
 
     print("[DEBUG mock_x_ap_key] Fixture teardown.")
+
 
 @pytest.fixture(scope="function", autouse=True)
 def mock_retry_monitor_global(monkeypatch):
@@ -354,18 +386,20 @@ def mock_retry_monitor_global(monkeypatch):
     mock_module = MagicMock()
     mock_module.DEFAULT_PERSISTENCE_PATH = None
     mock_module.record_retry = MagicMock()
-    mock_module.get_retry_statistics = MagicMock(return_value={
-        "total_retries": 0,
-        "successful_retries": 0,
-        "exhausted_retries": 0,
-        "successful_after_retry": 0,
-        "high_failure_operations": [],
-        "alerted_operations": [],
-        "alert_thresholds": {},
-        "operation_stats": {},
-        "exception_stats": {},
-        "timestamp": "2021-01-01T00:00:00"
-    })
+    mock_module.get_retry_statistics = MagicMock(
+        return_value={
+            "total_retries": 0,
+            "successful_retries": 0,
+            "exhausted_retries": 0,
+            "successful_after_retry": 0,
+            "high_failure_operations": [],
+            "alerted_operations": [],
+            "alert_thresholds": {},
+            "operation_stats": {},
+            "exception_stats": {},
+            "timestamp": "2021-01-01T00:00:00",
+        }
+    )
     mock_module.reset_retry_statistics = MagicMock(return_value={})
 
     # SAFE APPROACH: Use monkeypatch to replace the module instead of deleting from sys.modules
