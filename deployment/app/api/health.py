@@ -137,8 +137,6 @@ def check_database() -> ComponentHealth:
             "job_status_history",
             "dim_multiindex_mapping",
             "fact_sales",
-            "dim_price_categories",
-            "dim_styles",
             "fact_stock",
             "fact_prices",
             "fact_stock_changes",

@@ -23,21 +23,6 @@ CREATE TABLE IF NOT EXISTS dim_multiindex_mapping (
            recording_decade, release_decade, style, record_year)
 );
 
-CREATE TABLE IF NOT EXISTS dim_price_categories (
-    category_id INTEGER PRIMARY KEY,
-    range_start DECIMAL(10,2),
-    range_end DECIMAL(10,2),
-    category_name TEXT,
-    UNIQUE(category_name)
-);
-
-CREATE TABLE IF NOT EXISTS dim_styles (
-    style_id INTEGER PRIMARY KEY,
-    style_name TEXT,
-    parent_style TEXT,
-    UNIQUE(style_name)
-);
-
 -- Fact Tables (with standardized column names)
 CREATE TABLE IF NOT EXISTS fact_stock (
     multiindex_id INTEGER,

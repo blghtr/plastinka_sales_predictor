@@ -191,8 +191,6 @@ The application uses SQLite with a star schema design:
 
 ### Dimension Tables
 - `dim_multiindex_mapping` - Central dimension table for vinyl records
-- `dim_price_categories` - Price range categories
-- `dim_styles` - Music style hierarchy
 
 ### Fact Tables
 - `fact_sales` - Historical sales records
