@@ -34,42 +34,6 @@ jobs:
         uv run --all-extras ruff check . --exit-zero
         uv run --all-extras ruff format --check .
     
-    - name: Debug paths and environment
-      run: |
-        echo "=== GitHub Actions Environment ==="
-        echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
-        echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE" 
-        echo "RUNNER_WORKSPACE: $RUNNER_WORKSPACE"
-        echo "Current directory (pwd):"
-        pwd
-        echo "ls -la .:"
-        ls -la .
-        echo "ls -la ..:"
-        ls -la ..
-        echo "ls -la ../..:"
-        ls -la ../.. || echo "Parent directory not accessible"
-        export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-        echo "Checking file structure:"
-        echo "deployment/ exists:"
-        ls -la deployment/ || echo "❌ deployment/ NOT FOUND"
-        echo "deployment/__init__.py exists:"
-        ls -la deployment/__init__.py || echo "❌ deployment/__init__.py NOT FOUND" 
-        echo "deployment/app/ exists:"
-        ls -la deployment/app/ || echo "❌ deployment/app/ NOT FOUND"
-        echo "deployment/app/__init__.py exists:"
-        ls -la deployment/app/__init__.py || echo "❌ deployment/app/__init__.py NOT FOUND"
-        echo "deployment/app/models/ exists:"
-        ls -la deployment/app/models/ || echo "❌ deployment/app/models/ NOT FOUND"
-        echo "deployment/app/models/__init__.py exists:"
-        ls -la deployment/app/models/__init__.py || echo "❌ deployment/app/models/__init__.py NOT FOUND"
-        echo "deployment/app/models/api_models.py exists:"
-        ls -la deployment/app/models/api_models.py || echo "❌ deployment/app/models/api_models.py NOT FOUND"
-        echo "Testing import step by step:"
-        python -c "import deployment; print('✅ deployment imported')" || echo "❌ deployment import failed"
-        python -c "import deployment.app; print('✅ deployment.app imported')" || echo "❌ deployment.app import failed"
-        python -c "import deployment.app.models; print('✅ deployment.app.models imported')" || echo "❌ deployment.app.models import failed"
-        python -c "import deployment.app.models.api_models; print('✅ deployment.app.models.api_models imported')" || echo "❌ deployment.app.models.api_models import failed"
-
     - name: Run tests with coverage
       run: |
         export PYTHONPATH="${PYTHONPATH}:$(pwd)"

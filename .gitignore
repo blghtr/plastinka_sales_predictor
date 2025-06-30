@@ -41,7 +41,9 @@ ENV/
 *.h5
 *.pt
 *.pth
-models/
+/models/
+# Allow deployment/app/models/ for API models
+!deployment/app/models/
 datasets/
 results/
 logs/
