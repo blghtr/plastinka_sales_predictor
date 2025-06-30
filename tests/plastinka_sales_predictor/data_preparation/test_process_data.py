@@ -459,7 +459,9 @@ class TestDataPreprocessing:
             actual_result, expected_path, "get_preprocessed_df (stock)"
         )
 
-    @pytest.mark.skip(reason="Artifact file not found: sales_df_raw.pkl and preprocessed_stock_with_bins.pkl")
+    @pytest.mark.skip(
+        reason="Artifact file not found: sales_df_raw.pkl and preprocessed_stock_with_bins.pkl"
+    )
     def test_get_preprocessed_df_sales_success(self):
         """Test successful get_preprocessed_df execution with sales data."""
         # Arrange
@@ -588,7 +590,9 @@ class TestPipelineIntegration:
 class TestStockFeatures:
     """Test suite for stock features generation."""
 
-    @pytest.mark.skip(reason="Artifact file not found: stock_data.pkl and change_data.pkl")
+    @pytest.mark.skip(
+        reason="Artifact file not found: stock_data.pkl and change_data.pkl"
+    )
     def test_get_stock_features_success(self):
         """Test successful get_stock_features execution."""
         # Arrange
@@ -705,7 +709,9 @@ class TestSalesPivoting:
 class TestTrainingDataset:
     """Test suite for PlastinkaTrainingTSDataset functionality."""
 
-    @pytest.mark.skip(reason="Artifact file not found: stock_features.pkl and monthly_sales_pivot.pkl")
+    @pytest.mark.skip(
+        reason="Artifact file not found: stock_features.pkl and monthly_sales_pivot.pkl"
+    )
     def test_plastinka_training_ts_dataset_success(self):
         """Test successful PlastinkaTrainingTSDataset creation."""
         # Arrange
@@ -965,7 +971,9 @@ class TestIntegration:
         assert isinstance(GROUP_KEYS, list)
         assert len(GROUP_KEYS) > 0
 
-    @pytest.mark.skip(reason="Artifact file not found: stock_df_raw.pkl and sales_df_raw.pkl")
+    @pytest.mark.skip(
+        reason="Artifact file not found: stock_df_raw.pkl and sales_df_raw.pkl"
+    )
     @patch("plastinka_sales_predictor.data_preparation.pd.read_excel")
     @patch("plastinka_sales_predictor.data_preparation.pd.read_csv")
     def test_end_to_end_pipeline_integration(self, mock_read_csv, mock_read_excel):

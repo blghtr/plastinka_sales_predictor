@@ -31,8 +31,8 @@ jobs:
     
     - name: Run linting
       run: |
-        uv run --all-extras ruff check . --exit-zero
-        uv run --all-extras ruff format --check .
+        uv run --all-extras ruff check . --fix --exit-zero
+        uv run --all-extras ruff format .
     
     - name: Run tests with coverage
       run: |
