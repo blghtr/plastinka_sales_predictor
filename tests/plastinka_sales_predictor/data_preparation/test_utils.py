@@ -1,9 +1,9 @@
 """
 Comprehensive tests for DataFrame comparison utilities.
 
-This test suite covers all utility functions used for comparing DataFrames including 
+This test suite covers all utility functions used for comparing DataFrames including
 index comparison, numeric/categorical column comparison, comprehensive reporting, and
-enhanced assertion methods. Tests are organized by function groups and include both 
+enhanced assertion methods. Tests are organized by function groups and include both
 success and failure scenarios.
 
 Testing Approach:
@@ -410,11 +410,11 @@ class TestIntegration:
 def compare_indices(actual: pd.DataFrame, expected: pd.DataFrame) -> dict[str, list[Any]]:
     """
     Compares indices between two DataFrames and returns differences.
-    
+
     Args:
         actual: The actual DataFrame
         expected: The expected DataFrame
-        
+
     Returns:
         Dict with keys 'missing' and 'extra' containing lists of indices
     """
@@ -422,8 +422,8 @@ def compare_indices(actual: pd.DataFrame, expected: pd.DataFrame) -> dict[str, l
     expected_indices = set(expected.index)
 
     return {
-        'missing': sorted(list(expected_indices - actual_indices)),
-        'extra': sorted(list(actual_indices - expected_indices))
+        'missing': sorted(expected_indices - actual_indices),
+        'extra': sorted(actual_indices - expected_indices)
     }
 
 
@@ -435,13 +435,13 @@ def compare_numeric_columns(
 ) -> dict[str, dict[str, dict[str, float]]]:
     """
     Compares numeric columns between DataFrames and returns statistical differences.
-    
+
     Args:
         actual: The actual DataFrame
         expected: The expected DataFrame
         columns: List of numeric columns to compare (if None, all shared numeric columns)
         tolerance: Tolerance for considering differences significant
-        
+
     Returns:
         Nested dict with column -> stat -> difference information
     """
@@ -449,7 +449,7 @@ def compare_numeric_columns(
     if columns is None:
         actual_numeric = actual.select_dtypes(include=np.number).columns
         expected_numeric = expected.select_dtypes(include=np.number).columns
-        columns = sorted(list(set(actual_numeric).intersection(set(expected_numeric))))
+        columns = sorted(set(actual_numeric).intersection(set(expected_numeric)))
 
     result = {}
     stats = ['mean', 'median', 'min', 'max', 'std']
@@ -498,12 +498,12 @@ def compare_categorical_columns(
 ) -> dict[str, dict[str, Any]]:
     """
     Compares categorical columns between DataFrames and returns differences in values.
-    
+
     Args:
         actual: The actual DataFrame
         expected: The expected DataFrame
         columns: List of categorical columns to compare (if None, all columns with object or category dtype)
-        
+
     Returns:
         Dict with information about differences in categorical columns
     """
@@ -511,7 +511,7 @@ def compare_categorical_columns(
     if columns is None:
         actual_cat = set(actual.select_dtypes(include=['object', 'category']).columns)
         expected_cat = set(expected.select_dtypes(include=['object', 'category']).columns)
-        columns = sorted(list(actual_cat.union(expected_cat)))
+        columns = sorted(actual_cat.union(expected_cat))
 
     result = {}
 
@@ -526,8 +526,8 @@ def compare_categorical_columns(
 
             if missing_values or extra_values:
                 result[col] = {
-                    'missing_values': sorted(list(missing_values)),
-                    'extra_values': sorted(list(extra_values)),
+                    'missing_values': sorted(missing_values),
+                    'extra_values': sorted(extra_values),
                     'actual_cardinality': len(actual_values),
                     'expected_cardinality': len(expected_values)
                 }
@@ -538,11 +538,11 @@ def compare_categorical_columns(
 def dataframe_comparison_report(actual: pd.DataFrame, expected: pd.DataFrame) -> dict[str, Any]:
     """
     Generates a comprehensive comparison report between two DataFrames.
-    
+
     Args:
         actual: The actual DataFrame
         expected: The expected DataFrame
-        
+
     Returns:
         Dict with detailed comparison information
     """
@@ -556,9 +556,9 @@ def dataframe_comparison_report(actual: pd.DataFrame, expected: pd.DataFrame) ->
             )
         },
         'columns': {
-            'missing': sorted(list(set(expected.columns) - set(actual.columns))),
-            'extra': sorted(list(set(actual.columns) - set(expected.columns))),
-            'common': sorted(list(set(actual.columns).intersection(set(expected.columns))))
+            'missing': sorted(set(expected.columns) - set(actual.columns)),
+            'extra': sorted(set(actual.columns) - set(expected.columns)),
+            'common': sorted(set(actual.columns).intersection(set(expected.columns)))
         }
     }
 
@@ -577,12 +577,12 @@ def dataframe_comparison_report(actual: pd.DataFrame, expected: pd.DataFrame) ->
 def assert_dataframes_equal_with_details(actual: pd.DataFrame, expected: pd.DataFrame, check_dtype: bool = False):
     """
     Asserts that two DataFrames are equal, with detailed error message if they're not.
-    
+
     Args:
         actual: The actual DataFrame
         expected: The expected DataFrame
         check_dtype: Whether to check dtypes (passed to pd.testing.assert_frame_equal)
-        
+
     Raises:
         AssertionError: If the DataFrames are not equal, with detailed information
     """

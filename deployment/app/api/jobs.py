@@ -1,4 +1,3 @@
-import io
 import json
 import logging
 import os
@@ -37,15 +36,14 @@ from deployment.app.db.database import (
 from deployment.app.models.api_models import (
     DataUploadResponse,
     JobDetails,
+    JobResponse,
     JobsList,
     JobStatus,
     JobType,
     PredictionParams,
     PredictionResponse,
     ReportParams,
-    ReportResponse,
     TrainingResponse,
-    JobResponse,
 )
 from deployment.app.services.auth import get_current_api_key_validated
 from deployment.app.services.data_processor import process_data_files
@@ -94,12 +92,12 @@ async def create_data_upload_job(
 ):
     """
     Submit a job to process data files.
-    
+
     This will:
     1. Upload the files to a temporary location
     2. Process them using the existing pipeline
     3. Store processed features in the database
-    
+
     Returns a job ID that can be used to check the job status.
     """
     job_id = None
@@ -277,14 +275,14 @@ async def create_training_job(
 ):
     """
     Submit a job to train a model using the active parameter set.
-    
+
     This will:
     1. Prepare the training dataset using the specified date range
     2. Train the model using the active parameter set or best parameter set
     3. Save the trained model
-    
+
     Returns a job ID that can be used to check the job status.
-    
+
     Returns:
         HTTPException: If there's no active parameter set and no best parameter set by metric.
     """
@@ -396,12 +394,12 @@ async def create_prediction_job(
 ):
     """
     Submit a job to generate predictions.
-    
+
     This will:
     1. Load the model specified by model_id
     2. Generate predictions
     3. Save the prediction results
-    
+
     Returns a job ID that can be used to check the job status.
     """
     try:
@@ -439,11 +437,11 @@ async def create_prediction_report_job(
 ):
     """
     Submit a job to generate a prediction report.
-    
+
     This will:
     1. Create a job record in the database.
     2. Add a background task to generate the report.
-    
+
     Returns a job ID that can be used to check the job status.
     """
     try:
@@ -454,10 +452,10 @@ async def create_prediction_report_job(
             job_type=JobType.REPORT,
             parameters=params.model_dump()
         )
-        
+
         # Add the report generation to background tasks
         background_tasks.add_task(run_report_job, job_id=job_id, params=params)
-        
+
         logger.info(f"Report job created with ID: {job_id}")
         return JobResponse(job_id=job_id, status=JobStatus.PENDING)
 
@@ -473,7 +471,7 @@ async def create_prediction_report_job(
 async def get_job_status(request: Request, job_id: str, api_key: bool = Depends(get_current_api_key_validated)):
     """
     Get the status and details of a job.
-    
+
     If the job is completed, this will also include the results.
     """
     try:

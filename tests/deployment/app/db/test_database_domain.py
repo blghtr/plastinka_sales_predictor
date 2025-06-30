@@ -5,7 +5,7 @@ This test suite consolidates domain-specific database operations testing from mu
 into a unified, well-organized structure following comprehensive testing patterns.
 
 Testing Approach:
-- Use in-memory SQLite databases for test isolation and performance  
+- Use in-memory SQLite databases for test isolation and performance
 - Mock all external dependencies using @patch decorators
 - Test both success and failure scenarios for all operations
 - Test model registration, lifecycle management, and cleanup operations
@@ -43,8 +43,6 @@ from deployment.app.db.database import (
 
 try:
     from deployment.app.db.data_retention import (
-        cleanup_old_historical_data,
-        cleanup_old_models,
         cleanup_old_predictions,
         run_cleanup_job,
     )
@@ -322,7 +320,7 @@ class TestDataRetention:
 
         all_predictions = old_predictions + recent_predictions
         conn.executemany(
-            """INSERT INTO fact_predictions 
+            """INSERT INTO fact_predictions
                (multiindex_id, prediction_date, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             all_predictions

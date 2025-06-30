@@ -2,15 +2,20 @@ import logging
 import sqlite3
 from collections import defaultdict
 from datetime import datetime
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-from deployment.app.db.database import execute_query, get_active_model, create_job, get_data_upload_result, get_effective_config, get_job, get_prediction_result, get_report_result, get_training_result, list_jobs, update_job_status, create_report_result
-from deployment.app.db.feature_storage import load_features
-from deployment.app.models.api_models import ReportParams, ReportType, JobStatus
 from deployment.app.config import get_settings
+from deployment.app.db.database import (
+    create_report_result,
+    execute_query,
+    get_active_model,
+    update_job_status,
+)
+from deployment.app.db.feature_storage import load_features
+from deployment.app.models.api_models import JobStatus, ReportParams, ReportType
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +23,10 @@ logger = logging.getLogger(__name__)
 def generate_report(params: ReportParams) -> pd.DataFrame:
     """
     Generate a prediction report using the specified parameters.
-    
+
     Args:
         params: Report parameters (only prediction_report supported)
-        
+
     Returns:
         DataFrame with prediction report data
     """
@@ -62,12 +67,12 @@ def _generate_prediction_report(
 ) -> pd.DataFrame:
     """
     Generate an enhanced prediction report for a specific month with enriched metrics.
-    
+
     Args:
         prediction_month: Month for which predictions are needed
         filters: Additional filters for the report
         model_id: Optional model_id for filtering
-        
+
     Returns:
         DataFrame with prediction data
     """
@@ -145,14 +150,14 @@ def _find_training_jobs_for_prediction_month(
 ) -> list[dict[str, Any]]:
     """
     Find training jobs that have predictions for the specified month and model.
-    
+
     Now simplified: just look for prediction_results with the target prediction_month.
-    
+
     Args:
         prediction_month: Month for which we need predictions
         model_id: Optional model_id for filtering
         connection: Optional database connection to use
-        
+
     Returns:
         List of training job records
     """
@@ -165,7 +170,7 @@ def _find_training_jobs_for_prediction_month(
         SELECT DISTINCT j.job_id, j.parameters, j.created_at, j.status
         FROM jobs j
         JOIN prediction_results pr ON j.job_id = pr.job_id
-        WHERE j.job_type = 'training' 
+        WHERE j.job_type = 'training'
         AND j.status = 'completed'
         AND pr.prediction_month = ?
     """
@@ -199,12 +204,12 @@ def _extract_predictions_for_jobs(
 ) -> pd.DataFrame:
     """
     Extract prediction data for the given training jobs.
-    
+
     Args:
         training_jobs: List of training job records
         filters: Additional filters to apply
         model_id: Optional model_id for filtering
-        
+
     Returns:
         DataFrame with prediction data
     """
@@ -239,7 +244,7 @@ def _extract_predictions_for_jobs(
 
         # Get actual prediction data
         predictions_query = f"""
-            SELECT 
+            SELECT
                 fp.result_id,
                 dmm.barcode,
                 dmm.artist,
@@ -295,11 +300,11 @@ def _extract_predictions_for_jobs(
 def _apply_filters_to_dataframe(df: pd.DataFrame, filters: dict[str, Any]) -> pd.DataFrame:
     """
     Apply filters to the predictions DataFrame.
-    
+
     Args:
         df: DataFrame to filter
         filters: Dictionary of filters to apply
-        
+
     Returns:
         Filtered DataFrame
     """
@@ -319,10 +324,10 @@ def _apply_filters_to_dataframe(df: pd.DataFrame, filters: dict[str, Any]) -> pd
 def _load_raw_features_for_report(prediction_month: datetime) -> dict[str, pd.DataFrame]:
     """
     Load raw features needed for enriched report generation.
-    
+
     Args:
         prediction_month: Month for which to load features
-        
+
     Returns:
         Dictionary of raw features
     """
@@ -351,14 +356,14 @@ def _load_raw_features_for_report(prediction_month: datetime) -> dict[str, pd.Da
 def _adapt_features_schema(raw_features: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     """
     Adapt features loaded from database to match notebook expectations.
-    
+
     The feature_storage.load_features() returns DataFrames with MultiIndex structure
     reconstructed from dim_multiindex_mapping. This function ensures the schema
     matches what the notebook's process_features function expects.
-    
+
     Args:
         raw_features: Raw features from database
-        
+
     Returns:
         Adapted features with proper schema
     """
@@ -413,17 +418,17 @@ def _adapt_features_schema(raw_features: dict[str, pd.DataFrame]) -> dict[str, p
 def _process_features_for_report(raw_features: dict[str, pd.DataFrame], prediction_month: datetime) -> dict[str, pd.DataFrame]:
     """
     Simplified version of notebook's process_features adapted for database system.
-    
+
     Key adaptations:
     1. Works with feature_storage.load_features() output format
     2. Uses dynamic prediction_month instead of hardcoded date
     3. Handles English column names from database schema
     4. Returns only the specific metrics needed for reports
-    
+
     Args:
         raw_features: Raw features from database
         prediction_month: Month for which to generate features
-        
+
     Returns:
         Dictionary of processed features
     """
@@ -572,11 +577,11 @@ def _process_features_for_report(raw_features: dict[str, pd.DataFrame], predicti
 def _extract_features_for_month(processed_features: dict[str, pd.DataFrame], target_month: datetime) -> pd.DataFrame:
     """
     Extract features for specific prediction month with Russian business names.
-    
+
     Args:
         processed_features: Processed features dictionary
         target_month: Target month for extraction
-        
+
     Returns:
         DataFrame with enriched columns for the target month
     """
@@ -639,11 +644,11 @@ def _extract_features_for_month(processed_features: dict[str, pd.DataFrame], tar
 def _join_predictions_with_enriched_metrics(predictions_df: pd.DataFrame, enriched_columns: pd.DataFrame) -> pd.DataFrame:
     """
     Join prediction data with enriched metrics using product attribute matching.
-    
+
     Args:
         predictions_df: DataFrame with prediction data
         enriched_columns: DataFrame with enriched metrics
-        
+
     Returns:
         Enhanced predictions DataFrame
     """
@@ -718,17 +723,17 @@ def run_report_job(job_id: str, params: ReportParams):
     """
     try:
         update_job_status(job_id, JobStatus.RUNNING, progress=10, status_message="Generating report...")
-        
+
         report_df = generate_report(params)
-        
+
         # Save the report to a file
         reports_dir = Path(get_settings().reports_dir)
         reports_dir.mkdir(parents=True, exist_ok=True)
         report_path = reports_dir / f"report_{job_id}.csv"
         report_df.to_csv(report_path, index=False)
-        
+
         update_job_status(job_id, JobStatus.RUNNING, progress=80, status_message="Report generated, saving results...")
-        
+
         # Save result to database
         result_id = create_report_result(
             job_id=job_id,
@@ -736,9 +741,9 @@ def run_report_job(job_id: str, params: ReportParams):
             parameters=params.model_dump_json(),
             output_path=str(report_path),
         )
-        
+
         update_job_status(job_id, JobStatus.COMPLETED, progress=100, status_message="Report job completed.", result_id=result_id)
-        
+
     except Exception as e:
         logger.error(f"Report job {job_id} failed: {e}", exc_info=True)
         update_job_status(job_id, JobStatus.FAILED, error_message=str(e))

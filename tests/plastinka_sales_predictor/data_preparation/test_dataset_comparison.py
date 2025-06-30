@@ -86,8 +86,8 @@ def compare_dataset_values(actual_dict, expected_dict, tolerance=1e-6):
     expected_keys = set(expected_dict.keys())
 
     comparison = {
-        'missing_keys': sorted(list(expected_keys - actual_keys)),
-        'extra_keys': sorted(list(actual_keys - expected_keys)),
+        'missing_keys': sorted(expected_keys - actual_keys),
+        'extra_keys': sorted(actual_keys - expected_keys),
         'length_differences': {},
         'sample_differences': {}
     }
@@ -348,7 +348,7 @@ class TestIntegration:
 def test_dataset_values_full_comparison(mock_load_artifact):
     """
     Comprehensive test that compares the full dataset values, not just lengths.
-    
+
     This test validates the complete dataset comparison workflow with mocked dependencies
     to ensure the original functionality is preserved while adding comprehensive testing.
     """

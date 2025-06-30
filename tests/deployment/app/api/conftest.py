@@ -1,12 +1,5 @@
-import gc
-import json
-import os
-import shutil
 import sqlite3
 import sys
-import tempfile
-import uuid
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -74,7 +67,7 @@ def base_client(
     """
     session_monkeypatch.setenv("API_X_API_KEY", "test_x_api_key_conftest")
     session_monkeypatch.setenv("API_API_KEY", "test_token")
-    
+
     with patch("deployment.app.api.admin.run_cleanup_job", mock_run_cleanup_job_fixture), \
          patch("deployment.app.api.admin.cleanup_old_predictions", mock_cleanup_old_predictions_fixture), \
          patch("deployment.app.api.admin.cleanup_old_historical_data", mock_cleanup_old_historical_data_fixture), \
@@ -138,4 +131,4 @@ def mock_retry_monitor_api(monkeypatch):
     mock_module.get_retry_statistics = MagicMock(return_value={"total_retries": 0})
     mock_module.reset_retry_statistics = MagicMock(return_value={})
     monkeypatch.setitem(sys.modules, "deployment.app.utils.retry_monitor", mock_module)
-    yield mock_module 
+    yield mock_module

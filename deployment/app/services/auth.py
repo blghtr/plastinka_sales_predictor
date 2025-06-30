@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
-from ..config import get_settings, AppSettings
+from ..config import AppSettings, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +23,13 @@ async def get_admin_user(
 ) -> dict[str, Any]:
     """
     Validate admin token and return user information.
-    
+
     Args:
         credentials: Bearer token credentials from the HTTP Authorization header
-    
+
     Returns:
         Dict containing admin user information
-    
+
     Raises:
         HTTPException: If the token is missing or invalid
     """
@@ -68,13 +68,13 @@ async def get_current_api_key_validated(
 ) -> bool:
     """
     Validate X-API-Key header.
-    
+
     Args:
         api_key: The API key from the X-API-Key header.
-        
+
     Returns:
         True if the API key is valid.
-        
+
     Raises:
         HTTPException: If the API key is missing, not configured, or invalid.
     """

@@ -1,17 +1,14 @@
+import gc
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import tempfile
+import time
 import uuid
 from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock
-import sys
-import importlib
-from pathlib import Path
-import time
-import gc
-import shutil
 
 import pandas as pd
 import pytest
@@ -249,7 +246,7 @@ def json_default_serializer(obj):
     """
     JSON serializer for objects not serializable by default json code
     """
-    if isinstance(obj, (datetime, date)):
+    if isinstance(obj, datetime | date):
         return obj.isoformat()
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
@@ -279,10 +276,10 @@ SAMPLE_PREDICTIONS = {
 def create_training_params(base_params=None):
     """
     Creates a complete TrainingParams object with all required fields.
-    
+
     Args:
         base_params: Optional dictionary with parameters to use as a base
-        
+
     Returns:
         A valid TrainingParams object
     """
@@ -379,14 +376,14 @@ def mock_datasphere(fs, monkeypatch):
     mock_settings.datasphere = MagicMock()
     mock_settings.datasphere.max_polls = 5
     mock_settings.datasphere.poll_interval = 1.0
-    
+
     # Fix timeout values to be actual integers (not MagicMock objects)
     mock_settings.datasphere.client_submit_timeout_seconds = 60
     mock_settings.datasphere.client_status_timeout_seconds = 30
     mock_settings.datasphere.client_download_timeout_seconds = 600
     mock_settings.datasphere.client_init_timeout_seconds = 60
     mock_settings.datasphere.client_cancel_timeout_seconds = 60
-    
+
     mock_settings.datasphere.client = {
         "project_id": "test-project",
         "folder_id": "test-folder",
@@ -446,7 +443,7 @@ def mock_datasphere(fs, monkeypatch):
 def verify_predictions_saved(connection, result, expected_data):
     """
     Проверяет, что предсказания корректно сохранены в базе данных.
-    
+
     Args:
         connection: Соединение с БД
         result: Результат сохранения предсказаний
@@ -505,7 +502,7 @@ def temp_db(sample_predictions_data):
     Creates a temporary database and a predictions CSV file for testing.
     This fixture provides a more specific setup for tests that need to
     read a predictions file and write to a database.
-    
+
     CRITICAL FIXES APPLIED:
     - Uses context manager pattern for proper resource management
     - Forces garbage collection before cleanup to release Windows file locks
@@ -558,21 +555,21 @@ def temp_db(sample_predictions_data):
             # Close cursor if it exists
             if 'cursor' in locals() and hasattr(cursor, 'close'):
                 cursor.close()
-            
+
             # Close the connection properly
             if conn:
                 conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
                 conn.close()
-            
+
             # Force garbage collection to release all references
             gc.collect()
-            
+
             # Small delay to allow Windows to release file locks
             time.sleep(0.2)
-            
+
         except Exception as e:
             print(f"Warning: Database cleanup issue: {e}")
-        
+
         # Manual cleanup with retry for Windows
         def cleanup_with_retry(path, max_retries=3):
             for attempt in range(max_retries):
@@ -586,5 +583,5 @@ def temp_db(sample_predictions_data):
                         gc.collect()  # Force garbage collection again
                     else:
                         print(f"Warning: Could not cleanup temp directory after {max_retries} attempts: {e}")
-        
+
         cleanup_with_retry(temp_dir_path)

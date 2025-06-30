@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS dim_multiindex_mapping (
     release_decade TEXT,  -- Год выпуска
     style TEXT,     -- Стиль
     record_year INTEGER, -- precise_record_year
-    UNIQUE(barcode, artist, album, cover_type, price_category, release_type, 
+    UNIQUE(barcode, artist, album, cover_type, price_category, release_type,
            recording_decade, release_decade, style, record_year)
 );
 
@@ -236,14 +236,14 @@ CREATE INDEX IF NOT EXISTS idx_training_results_model ON training_results(model_
 def init_db(db_path: str = None, connection: sqlite3.Connection = None):
     """
     Initialize the database with schema.
-    
+
     This function is idempotent - running it multiple times is safe.
     Tables and indexes are created only if they don't already exist.
-    
+
     Args:
         db_path: Path to SQLite database file (optional, if connection is provided)
         connection: Optional existing database connection. If provided, db_path is ignored.
-        
+
     Returns:
         bool: True if successful, False otherwise
     """
@@ -314,11 +314,11 @@ def migrate_add_prediction_month(db_path: str = None, connection: sqlite3.Connec
     """
     Migration to add prediction_month column to prediction_results table.
     This function is idempotent - running it multiple times is safe.
-    
+
     Args:
         db_path: Path to SQLite database file (optional, if connection is provided)
         connection: Optional existing database connection. If provided, db_path is ignored.
-        
+
     Returns:
         bool: True if successful, False otherwise
     """

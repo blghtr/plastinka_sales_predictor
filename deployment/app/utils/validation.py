@@ -18,11 +18,11 @@ class ValidationError(Exception):
 def validate_excel_file(file_content: bytes, expected_columns: list[str] = None) -> tuple[bool, str]:
     """
     Validate that the provided file is a valid Excel file with the expected structure.
-    
+
     Args:
         file_content: The content of the uploaded file
         expected_columns: Optional list of column names expected in the file
-        
+
     Returns:
         Tuple of (is_valid, error_message)
     """
@@ -49,11 +49,11 @@ def validate_excel_file(file_content: bytes, expected_columns: list[str] = None)
 def  validate_date_format(date_str: str, format_str: str = "%d.%m.%Y") -> tuple[bool, datetime | None]:
     """
     Validate that the provided string is a valid date in the expected format.
-    
+
     Args:
         date_str: Date string to validate
         format_str: Expected date format
-        
+
     Returns:
         Tuple of (is_valid, parsed_date or None)
     """
@@ -76,7 +76,7 @@ def validate_date_range(start_date: str | datetime,
     - Ensure start_date <= end_date
     - Check if dates are within min/max allowed range
     - Validate range size doesn't exceed maximum
-    
+
     Args:
         start_date: Start date (string or datetime)
         end_date: End date (string or datetime)
@@ -84,7 +84,7 @@ def validate_date_range(start_date: str | datetime,
         min_date: Optional minimum allowed date
         max_date: Optional maximum allowed date
         max_range_days: Optional maximum allowed range in days
-        
+
     Returns:
         Tuple of (is_valid, error_message, parsed_start_date, parsed_end_date)
     """
@@ -127,12 +127,12 @@ def validate_forecast_date_range(start_date: str | datetime,
                                 format_str: str = "%d.%m.%Y") -> tuple[bool, str, datetime | None, datetime | None]:
     """
     Validate forecast date range with specific constraints for forecasting.
-    
+
     Args:
         start_date: Start date (string or datetime)
         end_date: End date (string or datetime)
         format_str: Date format if string dates provided
-        
+
     Returns:
         Tuple of (is_valid, error_message, parsed_start_date, parsed_end_date)
     """
@@ -156,12 +156,12 @@ def validate_historical_date_range(start_date: str | datetime,
                                   format_str: str = "%d.%m.%Y") -> tuple[bool, str, datetime | None, datetime | None]:
     """
     Validate historical date range with specific constraints for historical data.
-    
+
     Args:
         start_date: Start date (string or datetime)
         end_date: End date (string or datetime)
         format_str: Date format if string dates provided
-        
+
     Returns:
         Tuple of (is_valid, error_message, parsed_start_date, parsed_end_date)
     """
@@ -183,10 +183,10 @@ def validate_historical_date_range(start_date: str | datetime,
 def validate_stock_file(file_content: bytes) -> tuple[bool, str]:
     """
     Validate that the provided file is a valid stock data file.
-    
+
     Args:
         file_content: The content of the uploaded file
-        
+
     Returns:
         Tuple of (is_valid, error_message)
     """
@@ -203,10 +203,10 @@ def validate_stock_file(file_content: bytes) -> tuple[bool, str]:
 def validate_sales_file(file_content: bytes) -> tuple[bool, str]:
     """
     Validate that the provided file is a valid sales data file.
-    
+
     Args:
         file_content: The content of the uploaded file
-        
+
     Returns:
         Tuple of (is_valid, error_message)
     """
@@ -223,11 +223,11 @@ def validate_sales_file(file_content: bytes) -> tuple[bool, str]:
 def validate_pagination_params(offset: int, limit: int) -> tuple[int, int]:
     """
     Validate and normalize pagination parameters.
-    
+
     Args:
         offset: Starting position
         limit: Number of items to return
-        
+
     Returns:
         Tuple of (normalized_offset, normalized_limit)
     """

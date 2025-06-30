@@ -223,7 +223,7 @@ def test_download_job_results_success(client, mock_datasphere_client):
     mock_datasphere_client.get.assert_called_once_with(TEST_JOB_ID)
     # Verify download_files was called with collected files
     mock_datasphere_client.download_files.assert_called_once_with(
-        TEST_JOB_ID, 
+        TEST_JOB_ID,
         ['output1.txt', 'output2.txt', 'log1.txt', 'diag1.txt'],  # All file types included
         "/tmp/output"
     )

@@ -2,7 +2,7 @@
 Comprehensive tests for deployment.app.api.models_configs
 
 This test suite covers all model configuration endpoints with comprehensive mocking
-of external dependencies. Tests are organized by endpoint groups and include both 
+of external dependencies. Tests are organized by endpoint groups and include both
 success and failure scenarios.
 
 Testing Approach:
@@ -88,7 +88,7 @@ class TestActiveConfigEndpoint:
         """Test active config endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
         mock_x_api_key(None)
-        
+
         # Act
         response = client.get("/api/v1/models-configs/configs/active", headers={"X-API-Key": TEST_X_API_KEY})
 
@@ -254,7 +254,7 @@ class TestBestConfigEndpoint:
         """Test best config endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
         mock_x_api_key(None)
-        
+
         # Act
         response = client.get("/api/v1/models-configs/configs/best", headers={"X-API-Key": TEST_X_API_KEY})
 
@@ -331,7 +331,7 @@ class TestConfigListEndpoint:
         """Test config list endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
         mock_x_api_key(None)
-        
+
         # Act
         response = client.get("/api/v1/models-configs/configs", headers={"X-API-Key": TEST_X_API_KEY})
 

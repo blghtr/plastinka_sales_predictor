@@ -44,14 +44,14 @@ logger = logging.getLogger(__name__)
 def create_project_input_link(archive_path: str, project_root: str) -> str:
     """
     Creates cross-platform link to archive in project root.
-    
+
     Args:
         archive_path: Path to the temporary archive file
         project_root: Path to the project root directory
-        
+
     Returns:
         Path to the created link/file in project root
-        
+
     Raises:
         RuntimeError: If linking/copying fails
     """
@@ -87,7 +87,7 @@ def create_project_input_link(archive_path: str, project_root: str) -> str:
 def cleanup_project_input_link(project_root: str) -> None:
     """
     Removes input.zip link/file from project root.
-    
+
     Args:
         project_root: Path to the project root directory
     """
@@ -164,11 +164,11 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path) -> No
     """
     Verifies the integrity of all necessary DataSphere job input files before archiving and submission.
     Ensures the input directory exists, is a directory, and contains the config and dataset files.
-    
+
     Args:
         job_id: The ID of the current job.
         input_dir_path: The path to the input directory to be verified.
-        
+
     Raises:
         FileNotFoundError: If a critical file (config.json or dataset) is missing.
         RuntimeError: If the input directory is invalid or other general integrity issues.
@@ -238,16 +238,16 @@ async def _prepare_datasphere_job_submission(job_id: str, config: TrainingConfig
 async def _archive_input_directory(job_id: str, input_dir: str, archive_dir: str = None) -> str:
     """
     Archives the input directory into a zip file for DataSphere submission.
-    
+
     Args:
         job_id: The job ID for logging
         input_dir: Path to the input directory to archive
-        archive_dir: Optional directory where to create the archive. 
+        archive_dir: Optional directory where to create the archive.
                     If None, creates in parent of input_dir (current behavior)
-        
+
     Returns:
         Path to the created archive file
-        
+
     Raises:
         RuntimeError: If archiving fails
     """
@@ -272,7 +272,7 @@ async def _archive_input_directory(job_id: str, input_dir: str, archive_dir: str
                 if '_build_artifacts' in dirs:
                     dirs.remove('_build_artifacts')
                     logger.info(f"[{job_id}] Excluding _build_artifacts directory from archive")
-                
+
                 for file in files:
                     file_path = os.path.join(root, file)
                     # Skip the archive file itself to avoid recursion
@@ -306,16 +306,16 @@ async def _create_new_datasphere_job(
 ) -> str:
     """
     Creates a new DataSphere job (current logic).
-    
+
     Args:
         job_id: Our internal job ID
         client: DataSphere client instance
         ready_config_path: Path to job configuration
         work_dir: Working directory for temporary files
-        
+
     Returns:
         DataSphere job ID of the new job
-        
+
     Raises:
         RuntimeError: If job creation fails or times out
     """
@@ -344,16 +344,16 @@ async def _create_new_datasphere_job(
 async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_config_path: str, work_dir: str) -> str:
     """
     Submits a new DataSphere job and returns the DS job ID.
-    
+
     Args:
         job_id: The job ID in our system
         client: Initialized DataSphere client
         ready_config_path: Path to the ready configuration file
         work_dir: Working directory for temporary files
-        
+
     Returns:
         The DataSphere job ID
-        
+
     Raises:
         FileNotFoundError: If the config file doesn't exist
         RuntimeError: If job creation fails
@@ -375,7 +375,7 @@ async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_co
         return ds_job_id
 
     except Exception as e:
-        if not isinstance(e, (FileNotFoundError, RuntimeError)):
+        if not isinstance(e, FileNotFoundError | RuntimeError):
             error_msg = f"DataSphere job creation failed: {str(e)}"
             logger.error(f"[{job_id}] {error_msg}", exc_info=True)
             update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
@@ -386,15 +386,15 @@ async def _submit_datasphere_job(job_id: str, client: DataSphereClient, ready_co
 async def _check_datasphere_job_status(job_id: str, ds_job_id: str, client: DataSphereClient) -> str:
     """
     Checks the status of a DataSphere job and returns the current status.
-    
+
     Args:
         job_id: The job ID in our system
         ds_job_id: The DataSphere job ID
         client: Initialized DataSphere client
-        
+
     Returns:
         The current status string from DataSphere
-        
+
     Raises:
         RuntimeError: If getting status fails or times out
     """
@@ -517,14 +517,14 @@ async def _download_logs_diagnostics(
 ) -> None:
     """
     Downloads logs and diagnostics for a DataSphere job.
-    
+
     Args:
         job_id: The job ID in our system
         ds_job_id: The DataSphere job ID
         client: Initialized DataSphere client
         logs_dir: Directory to download logs to
         is_success: Whether the job was successful (used for logging message)
-        
+
     Returns:
         None
     """
@@ -563,14 +563,14 @@ async def _process_datasphere_job(
 ) -> tuple[str, str, dict[str, Any] | None, str | None, str | None, int]:
     """
     Coordinates the DataSphere job lifecycle including submission, monitoring, and result fetching.
-    
+
     Args:
         job_id: ID of the job
         client: DataSphere client
         ds_job_specific_output_base_dir: Directory for this run's outputs/results
         ready_config_path: Path to the ready DataSphere config file
         work_dir: Working directory for temporary files
-        
+
     Returns:
         Tuple of (ds_job_id, results_dir, metrics_data, model_path, predictions_path, polls)
     """
@@ -816,16 +816,16 @@ def save_predictions_to_db(
 ) -> dict:
     """
     Reads prediction results from a CSV file and saves them to the database.
-    
+
     Args:
         predictions_path: Path to the CSV file with predictions
         job_id: The job ID that produced these predictions
         model_id: The model ID used for these predictions
         direct_db_connection: Optional direct database connection to use
-        
+
     Returns:
         Dictionary with result_id and predictions_count
-        
+
     Raises:
         FileNotFoundError: If the predictions file doesn't exist
         ValueError: If the predictions file has invalid format or missing required columns
@@ -884,8 +884,8 @@ def save_predictions_to_db(
             timestamp = datetime.now().isoformat()
             conn.execute(
                 """
-                INSERT INTO prediction_results 
-                (result_id, job_id, model_id, prediction_date, prediction_month, output_path, summary_metrics) 
+                INSERT INTO prediction_results
+                (result_id, job_id, model_id, prediction_date, prediction_month, output_path, summary_metrics)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (result_id, job_id, model_id, timestamp,
@@ -970,7 +970,7 @@ def save_predictions_to_db(
             # Rollback on error
             try:
                 conn.rollback()
-            except:
+            except Exception:
                 pass
             raise e
         finally:
@@ -978,10 +978,10 @@ def save_predictions_to_db(
             if not direct_db_connection and conn:
                 conn.close()
 
-    except pd.errors.EmptyDataError:
-        raise ValueError("Predictions file is empty")
-    except pd.errors.ParserError:
-        raise ValueError("Predictions file has invalid format")
+    except pd.errors.EmptyDataError as e:
+        raise ValueError("Predictions file is empty") from e
+    except pd.errors.ParserError as e:
+        raise ValueError("Predictions file has invalid format") from e
     except Exception as e:
         # Do not wrap database connection errors
         import sqlite3
@@ -989,7 +989,7 @@ def save_predictions_to_db(
             raise
         if isinstance(e, sqlite3.OperationalError):
             raise
-        raise ValueError(f"Error processing predictions: {str(e)}")
+        raise ValueError(f"Error processing predictions: {str(e)}") from e
 
 
 
@@ -1091,7 +1091,7 @@ async def run_job(job_id: str, training_config: dict, config_id: str, dataset_st
 
             except (ValueError, RuntimeError, TimeoutError, ImportError) as e:
                 error_msg = f"Job pipeline failed: {str(e)}"
-                logger.error(f"[{job_id}] {error_msg}", exc_info=isinstance(e, (RuntimeError, ImportError)))
+                logger.error(f"[{job_id}] {error_msg}", exc_info=isinstance(e, RuntimeError | ImportError))
                 job_details = get_job(job_id)
                 if job_details and job_details.get('status') != JobStatus.FAILED.value:
                     update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg, status_message=error_msg)
@@ -1129,17 +1129,17 @@ async def save_model_file_and_db(
 ) -> str:
     """
     Saves the model file to permanent storage and creates a database record.
-    
+
     Args:
         job_id: The job ID that produced this model
         model_path: Path to the temporary model file (downloaded from DataSphere)
         ds_job_id: DataSphere job ID that produced this model
         config: Training configuration used
         metrics_data: Optional metrics data from training
-        
+
     Returns:
         The generated model ID
-        
+
     Raises:
         RuntimeError: If model file cannot be copied or database record cannot be created
     """

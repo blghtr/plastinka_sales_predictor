@@ -30,10 +30,10 @@ R = TypeVar('R')
 def is_retryable_http_error(exception: Exception) -> bool:
     """
     Determine if an HTTP error should be retried.
-    
+
     Args:
         exception: The exception to check
-        
+
     Returns:
         True if the error is retryable, False otherwise
     """
@@ -47,13 +47,7 @@ def is_retryable_http_error(exception: Exception) -> bool:
         )
     elif isinstance(exception, requests.RequestException):
         # Retry network errors like connection errors, timeouts
-        return not isinstance(exception, (
-            requests.exceptions.InvalidURL,
-            requests.exceptions.InvalidSchema,
-            requests.exceptions.MissingSchema,
-            requests.exceptions.InvalidHeader,
-            requests.exceptions.InvalidProxyURL
-        ))
+        return not isinstance(exception, requests.exceptions.InvalidURL | requests.exceptions.InvalidSchema | requests.exceptions.MissingSchema | requests.exceptions.InvalidHeader | requests.exceptions.InvalidProxyURL)
 
     return False
 
@@ -61,10 +55,10 @@ def is_retryable_http_error(exception: Exception) -> bool:
 def is_retryable_cloud_error(exception: Exception) -> bool:
     """
     Determine if a cloud service error should be retried.
-    
+
     Args:
         exception: The exception to check
-        
+
     Returns:
         True if the error is retryable, False otherwise
     """
@@ -138,13 +132,13 @@ def calculate_backoff(retry_attempt: int, base_delay: float = 1.0,
                      max_delay: float = 60.0, jitter: bool = True) -> float:
     """
     Calculate exponential backoff with jitter.
-    
+
     Args:
         retry_attempt: Current retry attempt number (0-based)
         base_delay: Base delay in seconds
         max_delay: Maximum delay in seconds
         jitter: Whether to add jitter
-        
+
     Returns:
         Delay in seconds before next retry
     """
@@ -168,7 +162,7 @@ def retry_with_backoff(
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
     Decorator for retrying functions with exponential backoff.
-    
+
     Args:
         max_tries: Maximum number of attempts
         base_delay: Base delay between retries in seconds
@@ -176,7 +170,7 @@ def retry_with_backoff(
         retryable_exceptions: Tuple of exceptions that trigger retry
         giveup_func: Function that determines when to give up retrying
         component: Component name for monitoring purposes
-        
+
     Returns:
         Decorated function with retry logic
     """
@@ -275,7 +269,7 @@ async def retry_async_with_backoff(
 ) -> Callable[[Callable[..., Coroutine[Any, Any, T]]], Callable[..., Coroutine[Any, Any, T]]]:
     """
     Decorator for retrying async functions with exponential backoff.
-    
+
     Args:
         max_tries: Maximum number of attempts
         base_delay: Base delay between retries in seconds
@@ -283,7 +277,7 @@ async def retry_async_with_backoff(
         retryable_exceptions: Tuple of exceptions that trigger retry
         giveup_func: Function that determines when to give up retrying
         component: Component name for monitoring purposes
-        
+
     Returns:
         Decorated async function with retry logic
     """
@@ -377,13 +371,13 @@ async def retry_async_with_backoff(
 def retry_http_request(max_tries: int = 3, base_delay: float = 2.0, max_delay: float = 30.0, component: str = "http"):
     """
     Decorator specifically for retrying HTTP requests.
-    
+
     Args:
         max_tries: Maximum number of attempts
         base_delay: Base delay between retries in seconds
         max_delay: Maximum delay between retries in seconds
         component: Component name for monitoring purposes
-        
+
     Returns:
         Decorated function with HTTP request retry logic
     """
@@ -400,13 +394,13 @@ def retry_http_request(max_tries: int = 3, base_delay: float = 2.0, max_delay: f
 def retry_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max_delay: float = 60.0, component: str = "cloud"):
     """
     Decorator specifically for retrying cloud operations.
-    
+
     Args:
         max_tries: Maximum number of attempts
         base_delay: Base delay between retries in seconds
         max_delay: Maximum delay between retries in seconds
         component: Component name for monitoring purposes
-        
+
     Returns:
         Decorated function with cloud operation retry logic
     """
@@ -423,13 +417,13 @@ def retry_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max_delay
 def retry_async_http_request(max_tries: int = 3, base_delay: float = 2.0, max_delay: float = 30.0, component: str = "async_http"):
     """
     Decorator specifically for retrying async HTTP requests.
-    
+
     Args:
         max_tries: Maximum number of attempts
         base_delay: Base delay between retries in seconds
         max_delay: Maximum delay between retries in seconds
         component: Component name for monitoring purposes
-        
+
     Returns:
         Decorated async function with HTTP request retry logic
     """
@@ -446,13 +440,13 @@ def retry_async_http_request(max_tries: int = 3, base_delay: float = 2.0, max_de
 def retry_async_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max_delay: float = 60.0, component: str = "async_cloud"):
     """
     Decorator specifically for retrying async cloud operations.
-    
+
     Args:
         max_tries: Maximum number of attempts
         base_delay: Base delay between retries in seconds
         max_delay: Maximum delay between retries in seconds
         component: Component name for monitoring purposes
-        
+
     Returns:
         Decorated async function with cloud operation retry logic
     """
@@ -469,7 +463,7 @@ def retry_async_cloud_operation(max_tries: int = 5, base_delay: float = 1.0, max
 class RetryContext:
     """
     Context manager for implementing retry logic in a block of code.
-    
+
     Example:
         ```python
         with RetryContext(max_tries=3, exceptions=(ConnectionError,)) as retry:
@@ -497,11 +491,11 @@ class RetryContext:
     ):
         """
         Initialize retry context.
-        
+
         Args:
             max_tries: Maximum number of attempts
             base_delay: Base delay between retries in seconds
-            max_delay: Maximum delay between retries in seconds 
+            max_delay: Maximum delay between retries in seconds
             exceptions: Tuple of exceptions that trigger retry
             giveup_func: Function that determines when to give up retrying
             on_give_up: Callback when giving up retries
@@ -542,7 +536,7 @@ class RetryContext:
     def attempts(self) -> bool:
         """
         Check if attempts are available and increment attempt counter.
-        
+
         Returns:
             True if attempts remain, False otherwise
         """
@@ -555,10 +549,10 @@ class RetryContext:
     def failed(self, exception: Exception) -> None:
         """
         Handle failure in retry loop.
-        
+
         Args:
             exception: The exception that caused the failure
-        
+
         Raises:
             Exception: If max retries reached or should give up
         """
@@ -665,7 +659,7 @@ class RetryContext:
                 try:
                     class_name = instance.__class__.__name__
                     return f"{module_name}.{class_name}.{function_name}"
-                except:
+                except Exception:
                     pass
 
             # Return module.function_name

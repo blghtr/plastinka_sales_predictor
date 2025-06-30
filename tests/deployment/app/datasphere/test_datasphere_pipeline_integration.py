@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Retry monitor mocking is handled by the mock_retry_monitor_global fixture in conftest.py
-
 from deployment.app.models.api_models import JobStatus
 from deployment.app.services.datasphere_service import run_job
 from deployment.datasphere.client import DataSphereClientError
@@ -58,7 +57,7 @@ def create_sample_training_config():
 async def test_end_to_end_datasphere_pipeline(mocked_db, mock_datasphere):
     """
     Тест полного пайплайна интеграции SQL → DataSphere Job → SQL
-    
+
     Проверяет:
     1. Создание job в БД
     2. Запуск job через DataSphere сервис
@@ -128,7 +127,7 @@ async def test_end_to_end_datasphere_pipeline(mocked_db, mock_datasphere):
 async def test_datasphere_job_polling_status_tracking(mocked_db, mock_datasphere):
     """
     Тест отслеживания статуса и прогресса job
-    
+
     Проверяет:
     1. Корректное опрашивание статуса job
     2. Обновление прогресса при получении новых статусов
@@ -221,7 +220,7 @@ async def test_datasphere_job_polling_status_tracking(mocked_db, mock_datasphere
 async def test_datasphere_pipeline_error_handling(mocked_db, mock_datasphere):
     """
     Тест обработки ошибок в пайплайне DataSphere
-    
+
     Проверяет:
     1. Создание job в БД
     2. Правильную обработку ошибки от DataSphere
@@ -504,7 +503,7 @@ async def test_datasphere_pipeline_rollback_cleanup(mocked_db, mock_datasphere, 
         # Запускаем job с требуемыми аргументами и ожидаем, что он закончится с ошибкой
         try:
             await run_job(job_id, training_config, config_id)
-            assert False, "Expected an exception but none was raised"
+            raise AssertionError("Expected an exception but none was raised")
         except Exception as e:
             # Проверяем, что это ошибка очистки или процессинга
             assert "Simulated processing error" in str(e) or "Cleanup failure" in str(e)

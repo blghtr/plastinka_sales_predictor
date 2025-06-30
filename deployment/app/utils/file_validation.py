@@ -25,11 +25,11 @@ async def validate_file_size(
 ) -> tuple[bool, str | None]:
     """
     Validate that the file size is within allowed limits.
-    
+
     Args:
         file: The file to validate
         max_size: Maximum allowed file size in bytes
-        
+
     Returns:
         Tuple of (is_valid, error_message)
     """
@@ -58,11 +58,11 @@ async def validate_content_type(
 ) -> tuple[bool, str | None]:
     """
     Validate that the file's content type is allowed.
-    
+
     Args:
         file: The file to validate
         valid_types: List of allowed content types
-        
+
     Returns:
         Tuple of (is_valid, error_message)
     """
@@ -88,7 +88,7 @@ async def validate_excel_file_upload(file: UploadFile) -> None:
     """
     Comprehensive validation for Excel file uploads.
     Raises ValidationError if any validation fails.
-    
+
     Args:
         file: The Excel file to validate
     """

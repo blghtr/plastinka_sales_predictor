@@ -35,7 +35,7 @@ def train_model(
 ) -> tuple:
     """
     Trains an TiDE model using prepared features.
-    
+
     Returns:
         tuple: (model, metrics_dict) where:
             - model is the trained TiDEModel
@@ -177,9 +177,9 @@ def get_predictions_df(
         return array
 
     preds_, labels_ = [], []
-    for p, _, _, l in zip(preds, series, future_covariates, labels, strict=False):
+    for p, _, _, label in zip(preds, series, future_covariates, labels, strict=False):
         preds_.append(_maybe_inverse_transform(p.data_array().values))
-        labels_.append(l)
+        labels_.append(label)
 
     preds_ = np.hstack(preds_).squeeze()
 
@@ -209,13 +209,13 @@ def get_predictions_df(
 def validate_input_directory(input_path: str) -> str:
     """
     Validate input and extract if it's a ZIP archive.
-    
+
     Args:
         input_path: Path to input directory or ZIP file
-        
+
     Returns:
         Path to directory containing input files
-        
+
     Raises:
         SystemExit: If validation fails
     """
@@ -245,10 +245,10 @@ def validate_input_directory(input_path: str) -> str:
 def validate_config_file(config_file_path: str) -> None:
     """
     Validate that config file exists.
-    
+
     Args:
         config_file_path: Path to config.json file
-        
+
     Raises:
         SystemExit: If validation fails
     """
@@ -260,11 +260,11 @@ def validate_config_file(config_file_path: str) -> None:
 def validate_dataset_file(file_path: str, file_type: str) -> None:
     """
     Validate that dataset file exists.
-    
+
     Args:
         file_path: Path to dataset file
         file_type: Type of dataset (e.g., "train", "validation")
-        
+
     Raises:
         SystemExit: If validation fails
     """
@@ -276,11 +276,11 @@ def validate_dataset_file(file_path: str, file_type: str) -> None:
 def validate_dataset_objects(train_dataset, val_dataset) -> None:
     """
     Validate that dataset objects are not None.
-    
+
     Args:
         train_dataset: Training dataset object
         val_dataset: Validation dataset object
-        
+
     Raises:
         SystemExit: If validation fails
     """
@@ -292,10 +292,10 @@ def validate_dataset_objects(train_dataset, val_dataset) -> None:
 def validate_config_parameters(config: dict) -> None:
     """
     Validate required configuration parameters.
-    
+
     Args:
         config: Configuration dictionary
-        
+
     Raises:
         SystemExit: If validation fails
     """
@@ -312,11 +312,11 @@ def validate_config_parameters(config: dict) -> None:
 def validate_prediction_window(L: int, length: int) -> None:
     """
     Validate prediction window parameters.
-    
+
     Args:
         L: Total number of time steps in dataset
         length: Required window length
-        
+
     Raises:
         SystemExit: If validation fails
     """
@@ -328,11 +328,11 @@ def validate_prediction_window(L: int, length: int) -> None:
 def validate_file_created(file_path: str, file_type: str) -> None:
     """
     Validate that a file was successfully created.
-    
+
     Args:
         file_path: Path to the file
         file_type: Type of file for error message
-        
+
     Raises:
         SystemExit: If validation fails
     """
@@ -344,10 +344,10 @@ def validate_file_created(file_path: str, file_type: str) -> None:
 def validate_archive_files(files_to_archive: list) -> None:
     """
     Validate that all files required for archiving exist.
-    
+
     Args:
         files_to_archive: List of file paths to validate
-        
+
     Raises:
         SystemExit: If validation fails
     """
@@ -360,13 +360,13 @@ def validate_archive_files(files_to_archive: list) -> None:
 def load_configuration(input_path: str) -> tuple:
     """
     Load and validate configuration from input directory or ZIP file.
-    
+
     Args:
         input_path: Path to directory or ZIP file containing config.json
-        
+
     Returns:
         Tuple of (configuration_dictionary, actual_input_directory)
-        
+
     Raises:
         SystemExit: If configuration loading fails
     """
@@ -394,13 +394,13 @@ def load_configuration(input_path: str) -> tuple:
 def load_datasets(input_dir: str) -> tuple:
     """
     Load and validate training and validation datasets.
-    
+
     Args:
         input_dir: Directory containing train.dill and val.dill files
-        
+
     Returns:
         Tuple of (train_dataset, val_dataset)
-        
+
     Raises:
         SystemExit: If dataset loading fails
     """
@@ -434,15 +434,15 @@ def load_datasets(input_dir: str) -> tuple:
 def run_training(train_dataset, val_dataset, config: dict) -> tuple:
     """
     Execute model training and return model with metrics.
-    
+
     Args:
         train_dataset: Training dataset
         val_dataset: Validation dataset
         config: Configuration dictionary
-        
+
     Returns:
         Tuple of (model, training_metrics, training_duration_seconds)
-        
+
     Raises:
         SystemExit: If training fails
     """
@@ -473,15 +473,15 @@ def run_training(train_dataset, val_dataset, config: dict) -> tuple:
 def run_prediction(model, train_dataset, config: dict):
     """
     Execute prediction using trained model.
-    
+
     Args:
         model: Trained model
         train_dataset: Training dataset for prediction setup
         config: Configuration dictionary
-        
+
     Returns:
         Predictions dataframe
-        
+
     Raises:
         SystemExit: If prediction fails
     """
@@ -522,11 +522,11 @@ def run_prediction(model, train_dataset, config: dict):
 def prepare_metrics(training_metrics: dict, training_duration_seconds: float) -> dict:
     """
     Prepare final metrics dictionary from training results.
-    
+
     Args:
         training_metrics: Metrics from training process
         training_duration_seconds: Training duration
-        
+
     Returns:
         Combined metrics dictionary
     """
@@ -550,11 +550,11 @@ def prepare_metrics(training_metrics: dict, training_duration_seconds: float) ->
 def save_model_file(model, model_output: str) -> None:
     """
     Save model to ONNX format with validation.
-    
+
     Args:
         model: Trained model to save
         model_output: Output file path
-        
+
     Raises:
         SystemExit: If saving fails
     """
@@ -576,11 +576,11 @@ def save_model_file(model, model_output: str) -> None:
 def save_predictions_file(predictions, prediction_output: str) -> None:
     """
     Save predictions to CSV format with validation.
-    
+
     Args:
         predictions: Predictions dataframe
         prediction_output: Output file path
-        
+
     Raises:
         SystemExit: If saving fails
     """
@@ -602,11 +602,11 @@ def save_predictions_file(predictions, prediction_output: str) -> None:
 def save_metrics_file(metrics: dict, metrics_output: str) -> None:
     """
     Save metrics to JSON format with validation.
-    
+
     Args:
         metrics: Metrics dictionary
         metrics_output: Output file path
-        
+
     Raises:
         SystemExit: If saving fails
     """
@@ -627,11 +627,11 @@ def save_metrics_file(metrics: dict, metrics_output: str) -> None:
 def create_output_archive(temp_output_dir: str, output: str) -> None:
     """
     Create output archive with all result files.
-    
+
     Args:
         temp_output_dir: Directory containing output files
         output: Output archive path
-        
+
     Raises:
         SystemExit: If archive creation fails
     """

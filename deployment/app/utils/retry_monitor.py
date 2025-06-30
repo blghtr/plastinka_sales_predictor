@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class RetryMonitor:
     """
     Tracks and analyzes retry statistics for different operations.
-    
+
     This class is thread-safe and provides insights into retry patterns
     across different components of the application.
     """
@@ -27,7 +27,7 @@ class RetryMonitor:
                 persistence_file: str | None = None, save_interval_seconds: int = 600):
         """
         Initialize retry monitor.
-        
+
         Args:
             capacity: Maximum number of retry events to store
             log_interval_seconds: Interval for periodic logging of statistics
@@ -80,7 +80,7 @@ class RetryMonitor:
     ) -> None:
         """
         Record a retry event.
-        
+
         Args:
             operation: Name of the operation being retried
             exception_type: Type of exception that triggered the retry
@@ -204,7 +204,7 @@ class RetryMonitor:
     def set_alert_threshold(self, threshold_name: str, value: int | float) -> None:
         """
         Set an alert threshold value.
-        
+
         Args:
             threshold_name: Name of the threshold to set
             value: New threshold value
@@ -218,7 +218,7 @@ class RetryMonitor:
     def register_alert_handler(self, handler: Callable[[str, str, Any, dict[str, Any]], None]) -> None:
         """
         Register a function to be called when alert thresholds are exceeded.
-        
+
         Args:
             handler: Function to call with parameters (operation_key, alert_type, alert_value, event)
         """
@@ -228,7 +228,7 @@ class RetryMonitor:
     def get_statistics(self) -> dict[str, Any]:
         """
         Get current retry statistics.
-        
+
         Returns:
             Dictionary with retry statistics
         """
@@ -251,7 +251,7 @@ class RetryMonitor:
     def get_high_failure_operations(self) -> set[str]:
         """
         Get operations with high failure rates.
-        
+
         Returns:
             Set of operation names
         """
@@ -261,7 +261,7 @@ class RetryMonitor:
     def get_alerted_operations(self) -> set[str]:
         """
         Get operations that have triggered alerts.
-        
+
         Returns:
             Set of operation names
         """
@@ -280,7 +280,7 @@ class RetryMonitor:
     def set_persistence_file(self, file_path: str | None) -> None:
         """
         Set the persistence file path.
-        
+
         Args:
             file_path: Path to file for persisting statistics, or None to disable
         """
@@ -304,7 +304,7 @@ class RetryMonitor:
     def _check_alert(self, operation_key: str, alert_type: str, alert_value: Any, event: dict[str, Any]) -> None:
         """
         Check if an alert should be triggered and notify handlers.
-        
+
         Args:
             operation_key: Operation identifier
             alert_type: Type of alert that was triggered
@@ -403,7 +403,7 @@ class RetryMonitor:
     def _get_operation_stats(self) -> dict[str, dict[str, Any]]:
         """
         Calculate statistics for each operation.
-        
+
         Returns:
             Dictionary with operation statistics
         """
@@ -437,7 +437,7 @@ class RetryMonitor:
     def _get_exception_stats(self) -> dict[str, dict[str, Any]]:
         """
         Calculate statistics for each exception type.
-        
+
         Returns:
             Dictionary with exception statistics
         """
@@ -489,7 +489,7 @@ def record_retry(
 ) -> None:
     """
     Record a retry event using the global monitor.
-    
+
     Args:
         operation: Name of the operation being retried
         exception: Exception that triggered the retry
@@ -514,7 +514,7 @@ def record_retry(
 def get_retry_statistics() -> dict[str, Any]:
     """
     Get current retry statistics from the global monitor.
-    
+
     Returns:
         Dictionary with retry statistics
     """
@@ -524,7 +524,7 @@ def get_retry_statistics() -> dict[str, Any]:
 def get_high_failure_operations() -> set[str]:
     """
     Get operations with high failure rates from the global monitor.
-    
+
     Returns:
         Set of operation names
     """
@@ -540,7 +540,7 @@ def reset_retry_statistics() -> None:
 def log_alert_handler(operation_key: str, alert_type: str, alert_value: Any, event: dict[str, Any]) -> None:
     """
     Default alert handler that logs detailed alert information.
-    
+
     Args:
         operation_key: Operation identifier
         alert_type: Type of alert that was triggered
@@ -561,7 +561,7 @@ retry_monitor.register_alert_handler(log_alert_handler)
 def set_alert_threshold(threshold_name: str, value: int | float) -> None:
     """
     Set an alert threshold value in the global monitor.
-    
+
     Args:
         threshold_name: Name of the threshold to set
         value: New threshold value
@@ -571,7 +571,7 @@ def set_alert_threshold(threshold_name: str, value: int | float) -> None:
 def register_alert_handler(handler: Callable[[str, str, Any, dict[str, Any]], None]) -> None:
     """
     Register an alert handler with the global monitor.
-    
+
     Args:
         handler: Function to call when thresholds are exceeded
     """
@@ -580,7 +580,7 @@ def register_alert_handler(handler: Callable[[str, str, Any, dict[str, Any]], No
 def get_alerted_operations() -> set[str]:
     """
     Get operations that have triggered alerts from the global monitor.
-    
+
     Returns:
         Set of operation names
     """

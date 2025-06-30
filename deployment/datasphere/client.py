@@ -1,7 +1,6 @@
 import logging
 import os
 import shutil
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -99,14 +98,14 @@ class DataSphereClient:
     def _prepare_job_with_local_modules(self, config_path: str, work_dir: str):
         """
         Prepares job parameters with local modules support.
-        
+
         Args:
             config_path: Path to the job configuration YAML file.
             work_dir: Working directory for temporary files.
-            
+
         Returns:
             Tuple of (job_params, cfg, sha256_to_display_path)
-            
+
         Raises:
             DataSphereClientError: If preparation fails.
         """
@@ -306,10 +305,10 @@ class DataSphereClient:
 
     def list_jobs(self) -> list[jobs.Job]:
         """Lists all jobs in the project.
-        
+
         Returns:
             A list of Job objects.
-            
+
         Raises:
             DataSphereClientError: If listing jobs fails.
         """
@@ -325,13 +324,13 @@ class DataSphereClient:
 
     def get_job(self, job_id: str) -> jobs.Job:
         """Gets detailed information about a job.
-        
+
         Args:
             job_id: The ID of the job to get.
-            
+
         Returns:
             A Job object with detailed information.
-            
+
         Raises:
             DataSphereClientError: If getting job details fails.
         """
@@ -347,16 +346,16 @@ class DataSphereClient:
 def _cleanup_build_artifacts(base_dir: str) -> None:
     """
     Removes common Python build artifacts from the specified directory.
-    
+
     Args:
         base_dir: Base directory to clean up
     """
     base_path = Path(base_dir)
-    
+
     # Common build artifact patterns
     patterns_to_remove = [
         "build",
-        "dist", 
+        "dist",
         "*.egg-info",
         "*.egg",
         "__pycache__",
@@ -364,9 +363,9 @@ def _cleanup_build_artifacts(base_dir: str) -> None:
         "*.pyo",
         ".pytest_cache"
     ]
-    
+
     removed_items = []
-    
+
     for pattern in patterns_to_remove:
         if "*" in pattern:
             # Handle glob patterns
@@ -388,11 +387,11 @@ def _cleanup_build_artifacts(base_dir: str) -> None:
                         shutil.rmtree(item)
                         removed_items.append(str(item))
                     elif item.is_file():
-                        item.unlink() 
+                        item.unlink()
                         removed_items.append(str(item))
                 except (OSError, PermissionError) as e:
                     logger.warning(f"Failed to remove {item}: {e}")
-    
+
     if removed_items:
         logger.info(f"Cleaned up {len(removed_items)} build artifacts: {removed_items[:5]}{'...' if len(removed_items) > 5 else ''}")
 
@@ -400,13 +399,13 @@ def _cleanup_build_artifacts(base_dir: str) -> None:
 def cleanup_all_build_artifacts(base_dirs: list[str] = None) -> None:
     """
     Performs comprehensive cleanup of build artifacts across multiple directories.
-    
+
     Args:
         base_dirs: List of base directories to clean. If None, cleans current directory.
     """
     if base_dirs is None:
         base_dirs = [os.getcwd()]
-    
+
     total_cleaned = 0
     for base_dir in base_dirs:
         if os.path.exists(base_dir):
@@ -419,7 +418,7 @@ def cleanup_all_build_artifacts(base_dirs: list[str] = None) -> None:
                 logger.info(f"Cleaned {cleaned_count} items from {base_dir}")
             except Exception as e:
                 logger.warning(f"Failed to clean directory {base_dir}: {e}")
-    
+
     logger.info(f"Total build artifacts cleaned: {total_cleaned}")
 
 
@@ -428,17 +427,17 @@ def _build_environment_context(work_dir: str):
     """
     Context manager that sets up environment variables to control build artifact locations.
     Creates a separate subdirectory for build artifacts that won't be included in the archive.
-    
+
     Args:
         work_dir: Working directory for temporary files
     """
     # Store original environment variables
     original_env = {}
-    
+
     # Create a separate subdirectory for build artifacts
     build_artifacts_dir = os.path.join(work_dir, "_build_artifacts")
     os.makedirs(build_artifacts_dir, exist_ok=True)
-    
+
     # Create subdirectories for different types of temporary files
     build_temp_dir = os.path.join(build_artifacts_dir, "build_temp")
     pip_temp_dir = os.path.join(build_artifacts_dir, "pip_temp")
@@ -446,41 +445,41 @@ def _build_environment_context(work_dir: str):
     pip_cache_dir = os.path.join(build_artifacts_dir, "pip_cache")
     build_lib_dir = os.path.join(build_artifacts_dir, "build_lib")
     wheel_build_dir = os.path.join(build_artifacts_dir, "wheel_build")
-    
+
     # Create all directories
     for dir_path in [build_temp_dir, pip_temp_dir, egg_cache_dir, pip_cache_dir, build_lib_dir, wheel_build_dir]:
         os.makedirs(dir_path, exist_ok=True)
-    
+
     temp_vars = {
         # Standard temp directories - point to build artifacts dir
         'TMPDIR': build_artifacts_dir,
-        'TMP': build_artifacts_dir, 
+        'TMP': build_artifacts_dir,
         'TEMP': build_artifacts_dir,
         'PYTHONDONTWRITEBYTECODE': '1',
-        
+
         # Python build-specific directories
         'PYTHON_EGG_CACHE': egg_cache_dir,
-        
+
         # Pip configuration
         'PIP_BUILD_DIR': pip_temp_dir,
         'PIP_CACHE_DIR': pip_cache_dir,
-        
+
         # Setuptools/distutils configuration
         'DISTUTILS_BUILD_DIR': build_temp_dir,
         'BUILD_TEMP': build_temp_dir,
         'BUILD_LIB': build_lib_dir,
-        
+
         # Wheel build directory
         'WHEEL_BUILD_DIR': wheel_build_dir,
     }
-    
+
     # Set temporary environment variables
     for key, value in temp_vars.items():
         original_env[key] = os.environ.get(key)
         os.environ[key] = value
-    
+
     logger.info(f"Build environment configured to use build artifacts dir: {build_artifacts_dir}")
-    
+
     try:
         yield
     finally:

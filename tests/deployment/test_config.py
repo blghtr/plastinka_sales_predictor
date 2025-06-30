@@ -1,8 +1,8 @@
 """
 Comprehensive tests for deployment.app.config
 
-This test suite covers all configuration classes and functions in the config module 
-with comprehensive mocking of external dependencies. Tests are organized by 
+This test suite covers all configuration classes and functions in the config module
+with comprehensive mocking of external dependencies. Tests are organized by
 configuration class groups and include both success and failure scenarios.
 
 Testing Approach:
@@ -22,7 +22,6 @@ All external imports and dependencies are mocked to ensure test isolation.
 
 import json
 import os
-import importlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,8 +44,8 @@ from deployment.app.config import (
     get_data_retention_config,
     get_datasphere_config,
     get_db_config,
-    load_config_file,
     get_settings,
+    load_config_file,
 )
 
 

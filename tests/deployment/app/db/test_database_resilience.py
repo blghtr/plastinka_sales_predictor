@@ -122,12 +122,12 @@ def test_database_connection_nonexistent_dir(mocker):
         if conn and conn != real_conn: # Close the returned connection if different
             try:
                 conn.close()
-            except:
+            except Exception:
                 pass
         if real_conn: # Close the real connection
             try:
                 real_conn.close()
-            except:
+            except Exception:
                 pass
 
         # Give Windows a moment to release file handles
@@ -468,7 +468,7 @@ def json_default_serializer(obj):
     """
     JSON serializer for objects not serializable by default json code
     """
-    if isinstance(obj, (datetime, date)):
+    if isinstance(obj, datetime | date):
         return obj.isoformat()
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 

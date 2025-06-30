@@ -34,13 +34,13 @@ logger = logging.getLogger(__name__)
 def load_data(start_date=None, end_date=None, feature_types=None):
     """
     Loads features using feature_storage.load_features (factory pattern).
-    
+
     Args:
         start_date: Optional start date for filtering data
         end_date: Optional end date for filtering data
         feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
                       If None, all available features will be loaded
-    
+
     Returns:
         Dictionary of loaded features
     """
@@ -72,12 +72,12 @@ def prepare_datasets(raw_features: dict, config: dict, save_directory: str) -> t
     """
     Loads data from DB, prepares features, creates full dataset.
     Saves train and validation datasets to the specified output_dir.
-    
+
     Args:
         raw_features: Dictionary of raw features loaded from the database.
         config: Dictionary containing training configuration.
         output_dir: Directory to save the prepared datasets.
-    
+
     Returns:
         Tuple of (train_dataset, val_dataset)
     """
@@ -157,14 +157,14 @@ def prepare_datasets(raw_features: dict, config: dict, save_directory: str) -> t
 def get_datasets(start_date=None, end_date=None, config=None, output_dir: str | None = None, feature_types=None):
     """
     Loads data from DB, prepares features, creates and saves datasets to output_dir.
-    
+
     Args:
         start_date: Start date for data loading.
         end_date: End date for data loading.
         config: Dictionary containing training configuration.
         output_dir: Directory to save the prepared datasets.
         feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
-    
+
     Returns:
         Tuple of (train_dataset, val_dataset)
     """

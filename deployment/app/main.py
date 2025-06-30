@@ -37,8 +37,8 @@ async def lifespan(app: FastAPI):
     # Perform environment checks
     '''
     env_health = "healthy" # check_environment()
-    
-    if env_health.status != "healthy": 
+
+    if env_health.status != "healthy":
         logger.warning(f"Missing environment variables: {env_health.details.get('missing_variables')}")
         logger.warning("The application may not function correctly. See docs/environment_variables.md for details.")
     '''

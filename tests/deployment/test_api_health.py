@@ -2,7 +2,7 @@
 Comprehensive tests for deployment.app.api.health
 
 This test suite covers all health check endpoints and component health functions
-with comprehensive mocking of external dependencies. Tests are organized by endpoint 
+with comprehensive mocking of external dependencies. Tests are organized by endpoint
 groups and include both success and failure scenarios.
 
 Testing Approach:
@@ -10,7 +10,7 @@ Testing Approach:
 - Test health check endpoints with different component states (healthy/degraded/unhealthy)
 - Test authentication and authorization scenarios for protected endpoints
 - Test system statistics endpoint functionality with psutil mocking
-- Test retry statistics management (get/reset operations)  
+- Test retry statistics management (get/reset operations)
 - Test individual component health check functions in isolation
 - Verify proper HTTP status codes and response formats
 - Test error handling scenarios and edge cases
@@ -428,7 +428,7 @@ class TestComponentHealthChecks:
 
     @patch.dict(os.environ, {
         "DATASPHERE_PROJECT_ID": "project123",
-        "DATASPHERE_FOLDER_ID": "folder456", 
+        "DATASPHERE_FOLDER_ID": "folder456",
         "API_X_API_KEY": "api_key_789",
         "CALLBACK_AUTH_TOKEN": "token_abc",
         "DATASPHERE_OAUTH_TOKEN": "oauth_token_def"
@@ -444,7 +444,7 @@ class TestComponentHealthChecks:
 
     @patch.dict(os.environ, {
         "DATASPHERE_PROJECT_ID": "project123",
-        "DATASPHERE_FOLDER_ID": "folder456", 
+        "DATASPHERE_FOLDER_ID": "folder456",
         "API_X_API_KEY": "api_key_789",
         "CALLBACK_AUTH_TOKEN": "token_abc",
         "DATASPHERE_YC_PROFILE": "default"
@@ -471,7 +471,7 @@ class TestComponentHealthChecks:
         # Expected missing variables with descriptions
         expected_missing = [
             "DATASPHERE_PROJECT_ID (DataSphere Project ID)",
-            "DATASPHERE_FOLDER_ID (Yandex Cloud Folder ID)", 
+            "DATASPHERE_FOLDER_ID (Yandex Cloud Folder ID)",
             "API_X_API_KEY (API Authentication Key)",
             "CALLBACK_AUTH_TOKEN (Cloud Callback Authentication Token)",
             "DATASPHERE_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)"

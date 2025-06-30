@@ -41,8 +41,6 @@ def get_cached_app():
     global _cached_app
     if _cached_app is None:
         # Import and create the app with mocked dependencies
-        from fastapi import Depends, HTTPException, Security
-        from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, APIKeyHeader
         from deployment.app.main import app
 
         _cached_app = app
@@ -53,7 +51,7 @@ def cached_fastapi_app(pytestconfig):
     """Session-scoped cached FastAPI app using pytest cache."""
     cache_key = "fastapi_app/instance"
     app_instance = pytestconfig.cache.get(cache_key, None)
-    
+
     if app_instance is None:
         print("Creating new FastAPI app instance...")
         from deployment.app.main import app
@@ -61,7 +59,7 @@ def cached_fastapi_app(pytestconfig):
         pytestconfig.cache.set(cache_key, app_instance)
     else:
         print("Using cached FastAPI app instance...")
-    
+
     return app_instance
 
 # --- Фикстуры для моков (остаются session-scoped, если не требуют сброса состояния между тестами)
@@ -121,7 +119,7 @@ def isolated_db_session(monkeypatch):
     - Uses monkeypatch to safely set environment variables (auto-cleanup)
     - Initializes database schema for the isolated database
     - REMOVED: Dangerous global module deletion that causes test pollution
-    
+
     Yields:
         str: The file path to the temporary database.
     """
@@ -198,7 +196,7 @@ def temp_db_with_data(temp_db):
         "INSERT INTO jobs (job_id, job_type, status, config_id, model_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (job_id, "prediction", "running", config_id, model_id, now, now)
     )
-    
+
     job_id_2 = str(uuid.uuid4())
     cursor.execute(
         "INSERT INTO jobs (job_id, job_type, status, config_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -264,12 +262,12 @@ def base_client(
 ):
     """
     Session-scoped FastAPI test client for maximum performance.
-    
+
     PERFORMANCE OPTIMIZATION:
     - Session scope: FastAPI app initialized only ONCE per test session
     - All expensive setup (imports, dependency injection) happens once
     - Shared across ALL tests in the session
-    
+
     ISOLATION MAINTAINED:
     - reset_mocks_between_tests fixture ensures mocks are reset between tests
     - Database operations use isolated test databases
@@ -279,7 +277,7 @@ def base_client(
     # This ensures that the app's settings are loaded with the test values.
     session_monkeypatch.setenv("API_X_API_KEY", "test_x_api_key_conftest")
     session_monkeypatch.setenv("API_API_KEY", "test_token")
-    
+
     # Patch the functions in the module where they are *used* (the admin API module)
     # This is crucial because of how they are imported and used with Depends(lambda:...).
     with patch("deployment.app.api.admin.run_cleanup_job", mock_run_cleanup_job_fixture), \
@@ -288,10 +286,8 @@ def base_client(
          patch("deployment.app.api.admin.cleanup_old_models", mock_cleanup_old_models_fixture):
 
         # Import and create the app with mocked dependencies
-        from fastapi import Depends, HTTPException, Security
-        from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, APIKeyHeader
         # Import settings and main app *after* monkeypatching
-        from deployment.app.config import get_settings, get_config_values
+        from deployment.app.config import get_config_values, get_settings
         from deployment.app.main import app
 
         # CRITICAL FIX: Clear caches after setting environment variables

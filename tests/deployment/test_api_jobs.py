@@ -2,7 +2,7 @@
 Comprehensive tests for deployment.app.api.jobs
 
 This test suite covers all API endpoints in the jobs router with comprehensive mocking
-of external dependencies. Tests are organized by endpoint groups and include both success 
+of external dependencies. Tests are organized by endpoint groups and include both success
 and failure scenarios.
 
 Testing Approach:

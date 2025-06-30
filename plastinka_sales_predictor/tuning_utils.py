@@ -33,10 +33,10 @@ logger = configure_logger(
 def load_fixed_params(json_path=None, tunable_params=None):
     """
     Load fixed parameters from a JSON file and return tunable and fixed parameters.
-    
+
     Args:
         json_path: Path to the JSON file with fixed parameters
-        
+
     Returns:
         tuple: (tunable_params, fixed_params)
     """
@@ -266,7 +266,7 @@ def flatten_config(config, parent_key=None):
     """
     Flatten a nested configuration dictionary.
     foo: bar: baz -> config/foo/bar/baz
-    
+
     Args:
         config: Nested configuration dictionary
         parent_key: Parent key to prepend to the flattened keys

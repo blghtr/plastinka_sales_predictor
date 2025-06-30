@@ -683,7 +683,7 @@ class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
         X = self.validate_data(X)
         for column in X.columns:
             mlb = MultiLabelBinarizer(sparse_output=True)
-            mlb.fit(X[column].str.split(self.separator).map(lambda x: list(map(lambda y: y.strip(), x))))
+            mlb.fit(X[column].str.split(self.separator).map(lambda x: [y.strip() for y in x]))
             self.encoders[column] = mlb
 
         return self
@@ -697,7 +697,7 @@ class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
             if encoder is None:
                 continue
             binarized = encoder.transform(
-                X[column].str.split(self.separator).map(lambda x: list(map(lambda y: y.strip(), x)))
+                X[column].str.split(self.separator).map(lambda x: [y.strip() for y in x])
             )
             binarized_df = pd.DataFrame.sparse.from_spmatrix(
                 binarized,
@@ -780,7 +780,7 @@ class GlobalLogMinMaxScaler(BaseEstimator, TransformerMixin):
 
     def _validate_data(self, X):
         # Приводим данные к DataFrame для совместимости с pandas или numpy
-        if not isinstance(X, (pd.DataFrame, pd.Series, np.ndarray)):
+        if not isinstance(X, pd.DataFrame | pd.Series | np.ndarray):
             raise ValueError("Input should be a pandas DataFrame, Series or numpy array.")
         if not isinstance(X, np.ndarray):
             X = X.values
@@ -1011,7 +1011,7 @@ def process_data(
 
     def process_movements(group):
         """
-        Count the number of rows in a group and calculate the mean price 
+        Count the number of rows in a group and calculate the mean price
         for stock change calculation
         """
         return pd.Series({

@@ -176,9 +176,9 @@ class SQLFeatureStore:
         if pd.isna(value):
             return default
 
-        if isinstance(value, (np.floating, float)):
+        if isinstance(value, np.floating | float):
             return int(np.round(value))
-        elif isinstance(value, (np.integer, int)):
+        elif isinstance(value, np.integer | int):
             return int(value)
         else:
             try:
@@ -192,7 +192,7 @@ class SQLFeatureStore:
         if pd.isna(value):
             return default
 
-        if isinstance(value, (np.floating, float, np.integer, int)):
+        if isinstance(value, np.floating | float | np.integer | int):
             return float(value)
         else:
             try:
@@ -238,13 +238,13 @@ class SQLFeatureStore:
     ) -> dict[str, pd.DataFrame]:
         """
         Load features from SQL database with optional date range filtering and feature type selection
-        
+
         Args:
             start_date: Optional start date for filtering data
             end_date: Optional end date for filtering data
             feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
                           If None, all available features will be loaded
-        
+
         Returns:
             Dictionary of loaded features
         """
@@ -279,7 +279,7 @@ class SQLFeatureStore:
 
         placeholders = ', '.join('?' * len(multiindex_ids))
         query = f"""
-        SELECT barcode, artist, album, cover_type, price_category, release_type, 
+        SELECT barcode, artist, album, cover_type, price_category, release_type,
                recording_decade, release_decade, style, record_year
         FROM dim_multiindex_mapping
         WHERE multiindex_id IN ({placeholders})
@@ -363,7 +363,7 @@ class SQLFeatureStore:
             full_index = self._build_multiindex_from_mapping(all_ids)
 
             # Map multiindex_id back to the full index tuple
-            id_to_tuple_map = {id_val: index_tuple for id_val, index_tuple in zip(all_ids, full_index, strict=False)}
+            id_to_tuple_map = dict(zip(all_ids, full_index, strict=False))
             df['full_index'] = df['multiindex_id'].map(id_to_tuple_map)
 
             # Convert to the required structure with date in index
@@ -436,7 +436,7 @@ def load_features(store_type: str = 'sql',
                   **kwargs) -> dict[str, pd.DataFrame]:
     """
     Helper function to load features using a specific store type
-    
+
     Args:
         store_type: Type of feature store to use (default: 'sql')
         start_date: Optional start date for filtering data
@@ -444,7 +444,7 @@ def load_features(store_type: str = 'sql',
         feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
                       If None, all available features will be loaded
         **kwargs: Additional arguments to pass to the feature store
-    
+
     Returns:
         Dictionary of loaded features
     """

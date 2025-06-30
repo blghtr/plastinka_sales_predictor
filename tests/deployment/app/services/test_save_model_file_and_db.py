@@ -19,7 +19,6 @@ Testing Strategy:
 import os
 import shutil
 import sqlite3
-import tempfile
 import uuid
 from datetime import datetime
 from unittest.mock import MagicMock
@@ -50,7 +49,7 @@ def create_test_save_model_file_and_db():
     ) -> str:
         """
         Test-friendly version of save_model_file_and_db function.
-        
+
         Args:
             job_id: Internal job ID
             model_path: Path to temporary model file
@@ -59,10 +58,10 @@ def create_test_save_model_file_and_db():
             metrics_data: Optional metrics data
             create_model_record_func: Mock function for database operations
             get_settings_func: Mock function for settings
-            
+
         Returns:
             Generated model ID
-            
+
         Raises:
             RuntimeError: If file operations or database operations fail
         """
@@ -71,31 +70,31 @@ def create_test_save_model_file_and_db():
             base_model_id = config.model_id
             unique_suffix = str(uuid.uuid4())[:8]
             model_id = f"{base_model_id}_{unique_suffix}"
-            
+
             # Get settings
             if get_settings_func:
                 settings = get_settings_func()
             else:
                 settings = get_settings()
-            
+
             # Verify source file exists
             if not os.path.exists(model_path):
                 raise RuntimeError(f"Source model file not found: {model_path}")
-            
+
             # Create permanent path
             permanent_path = os.path.join(settings.models_dir, f"{model_id}.onnx")
-            
+
             # Copy file to permanent location
             shutil.copy2(model_path, permanent_path)
-            
+
             # Verify copy was successful
             if not os.path.exists(permanent_path):
                 raise RuntimeError("Model file copy verification failed")
-            
+
             # Prepare metadata
             file_size = os.path.getsize(permanent_path)
             created_at = datetime.utcnow()
-            
+
             metadata = {
                 "downloaded_from_ds_job": ds_job_id,
                 "original_temp_path": model_path,
@@ -104,7 +103,7 @@ def create_test_save_model_file_and_db():
                 "metrics": metrics_data or {},
                 "file_size_bytes": file_size
             }
-            
+
             # Create database record
             if create_model_record_func:
                 create_model_record_func(
@@ -114,22 +113,22 @@ def create_test_save_model_file_and_db():
                     created_at=created_at,
                     metadata=metadata
                 )
-            
+
             return model_id
-            
+
         except Exception as e:
             # Clean up any copied files on error
             try:
                 if 'permanent_path' in locals() and os.path.exists(permanent_path):
                     os.remove(permanent_path)
-            except:
+            except Exception:
                 pass
-            
+
             if isinstance(e, RuntimeError):
                 raise
             else:
                 raise RuntimeError(f"Failed to save model file and create DB record: {str(e)}") from e
-    
+
     return test_save_model_file_and_db
 
 
@@ -190,7 +189,7 @@ class TestSaveModelFileAndDb:
         """Test successful model file copying and database record creation."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
-        
+
         # Arrange
         job_id = "test-job-123"
         ds_job_id = "ds-job-456"
@@ -203,7 +202,7 @@ class TestSaveModelFileAndDb:
         # Mock settings
         mock_settings = MagicMock()
         mock_settings.models_dir = temp_workspace['models_dir']  # Use models_dir from the workspace dict
-        
+
         # Mock database operations
         captured_calls = []
         def mock_create_model_record(**kwargs):
@@ -256,7 +255,7 @@ class TestSaveModelFileAndDb:
         """Test handling of missing source model file."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
-        
+
         # Arrange
         job_id = "test-job-123"
         ds_job_id = "ds-job-456"
@@ -282,7 +281,7 @@ class TestSaveModelFileAndDb:
         """Test handling of file copy failure."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
-        
+
         # Arrange
         job_id = "test-job-123"
         ds_job_id = "ds-job-456"
@@ -317,7 +316,7 @@ class TestSaveModelFileAndDb:
         """Test handling of copy verification failure."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
-        
+
         # Arrange
         job_id = "test-job-123"
         ds_job_id = "ds-job-456"
@@ -355,7 +354,7 @@ class TestSaveModelFileAndDb:
         """Test handling of database record creation failure."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
-        
+
         # Arrange
         job_id = "test-job-123"
         ds_job_id = "ds-job-456"
@@ -395,7 +394,7 @@ class TestSaveModelFileAndDb:
         """Test that metadata is correctly preserved and structured."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
-        
+
         # Arrange
         job_id = "test-job-789"
         ds_job_id = "ds-job-012"
@@ -460,7 +459,7 @@ class TestSaveModelFileAndDb:
         """Test handling when metrics_data is None."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
-        
+
         # Arrange
         job_id = "test-job-456"
         ds_job_id = "ds-job-789"
@@ -506,7 +505,7 @@ class TestSaveModelFileAndDb:
         """Test that multiple calls generate unique model IDs."""
         # Create test function
         save_model_file_and_db = create_test_save_model_file_and_db()
-        
+
         # Arrange
         job_id = "test-job-multi"
         ds_job_id = "ds-job-multi"

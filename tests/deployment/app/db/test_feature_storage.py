@@ -34,9 +34,9 @@ def feature_store_env():
 
     # Insert initial test data
     cursor.execute("""
-    INSERT INTO dim_multiindex_mapping (multiindex_id, barcode, artist, album, cover_type, price_category, 
+    INSERT INTO dim_multiindex_mapping (multiindex_id, barcode, artist, album, cover_type, price_category,
                                         release_type, recording_decade, release_decade, style, record_year)
-    VALUES (1, '1234567890', 'Test Artist', 'Test Album', 'CD', 'Standard', 
+    VALUES (1, '1234567890', 'Test Artist', 'Test Album', 'CD', 'Standard',
             'Studio', '2010s', '2010s', 'Rock', 2015)
     """)
 
@@ -261,7 +261,8 @@ def test_sql_feature_store_as_context_manager_internal_connection(mock_get_db_co
     finally:
         # Attempt to close, will be no-op or error if already closed by __exit__
         try:
-            if internal_conn_obj: internal_conn_obj.close()
+            if internal_conn_obj:
+                internal_conn_obj.close()
         except sqlite3.ProgrammingError:
             pass # Already closed, expected
         if os.path.exists(temp_db_file_internal):
@@ -287,7 +288,8 @@ def test_sql_feature_store_context_manager_exception_internal(mock_get_db_connec
 
     finally:
         try:
-            if internal_conn_obj_exc: internal_conn_obj_exc.close()
+            if internal_conn_obj_exc:
+                internal_conn_obj_exc.close()
         except sqlite3.ProgrammingError:
             pass
         if os.path.exists(temp_db_file_internal_exc):
@@ -309,7 +311,8 @@ def test_sql_feature_store_context_manager_exception_external():
         external_conn_exc.execute("SELECT 1") # Should not raise
 
     finally:
-        if external_conn_exc: external_conn_exc.close()
+        if external_conn_exc:
+            external_conn_exc.close()
         if os.path.exists(temp_db_file_ext_exc):
             os.unlink(temp_db_file_ext_exc)
 # End of new connection management tests
@@ -448,7 +451,7 @@ def test_load_stock_feature(feature_store_env):
         pd.testing.assert_index_equal(loaded_df.index, index)
         # Column order might vary depending on insertion if not explicitly sorted before pivot
         # Ensure columns are sorted for consistent testing
-        assert sorted(list(loaded_df.columns)) == sorted([date1, date2])
+        assert sorted(loaded_df.columns) == sorted([date1, date2])
         assert loaded_df[date1].iloc[0] == 10
         assert loaded_df[date2].iloc[0] == 12
 

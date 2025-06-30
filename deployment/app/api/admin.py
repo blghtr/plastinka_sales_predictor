@@ -36,9 +36,9 @@ async def trigger_cleanup_job(
 ):
     """
     Trigger a full data retention cleanup job to run in the background.
-    
+
     This endpoint requires admin authentication.
-    
+
     Returns:
         Dict with status message
     """
@@ -54,13 +54,13 @@ async def clean_predictions(
 ):
     """
     Clean up predictions older than the specified retention period.
-    
+
     This endpoint requires admin authentication.
-    
+
     Args:
         days_to_keep: Number of days to keep predictions for.
                       If None, uses the value from settings.
-    
+
     Returns:
         Dict with cleanup results
     """
@@ -81,15 +81,15 @@ async def clean_historical_data(
 ):
     """
     Clean up historical sales, stock, price and stock change data older than the specified periods.
-    
+
     This endpoint requires admin authentication.
-    
+
     Args:
         sales_days_to_keep: Number of days to keep sales and price data.
                            If None, uses the value from settings.
         stock_days_to_keep: Number of days to keep stock and stock change data.
                            If None, uses the value from settings.
-    
+
     Returns:
         Dict with cleanup results
     """
@@ -117,15 +117,15 @@ async def clean_models(
 ):
     """
     Clean up old models based on retention policy.
-    
+
     This endpoint requires admin authentication.
-    
+
     Args:
         models_to_keep: Number of models to keep per parameter set.
                        If None, uses the value from settings.
         inactive_days_to_keep: Number of days to keep inactive models.
                               If None, uses the value from settings.
-    
+
     Returns:
         Dict with cleanup results
     """

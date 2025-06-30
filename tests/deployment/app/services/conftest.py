@@ -10,9 +10,7 @@ Migration from: tests/deployment/app/services/conftest.py (old problematic versi
 To: This new architecture that supports PyTorch, DataSphere SDK, and ML frameworks
 """
 import os
-import sys
 import tempfile
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -37,12 +35,12 @@ from deployment.app.models.api_models import (
 def temp_workspace():
     """
     Real filesystem with temporary directories for DataSphere tests.
-    
-    COMPATIBILITY: 
+
+    COMPATIBILITY:
     - ✅ Works with PyTorch, DataSphere SDK, ML frameworks
     - ✅ No import conflicts during pytest collection
     - ✅ Cross-platform (Windows, Linux, macOS)
-    
+
     PERFORMANCE:
     - Fast setup/teardown
     - Isolated between tests
@@ -57,7 +55,7 @@ def temp_workspace():
             'job_dir': os.path.join(temp_dir, 'datasphere_job'),
             'config_path': os.path.join(temp_dir, 'datasphere_job', 'config.yaml')
         }
-        
+
         # Create all directories
         for key, dir_path in workspace.items():
             if key != 'temp_dir' and key != 'config_path':
@@ -66,19 +64,19 @@ def temp_workspace():
                 os.makedirs(os.path.dirname(dir_path), exist_ok=True)
                 with open(dir_path, 'w') as f:
                     f.write("# Fake DataSphere job config\nname: test_job\ntype: python")
-        
+
         yield workspace
 
 @pytest.fixture
 def file_operations_fs():
     """
     Function-scoped pyfakefs ONLY for testing pure file operations.
-    
+
     USE CASES:
     - Unit tests for shutil operations
     - pathlib operations testing
     - File manipulation without ML dependencies
-    
+
     DO NOT USE FOR:
     - DataSphere SDK tests
     - PyTorch model loading
@@ -100,7 +98,7 @@ def session_monkeypatch():
 def mock_datasphere_env(temp_workspace, monkeypatch):
     """
     Replacement for mock_service_env without session-scoped pyfakefs.
-    
+
     ARCHITECTURE CHANGES:
     - Uses real filesystem with temp directories
     - No pyfakefs conflicts with ML frameworks
@@ -125,7 +123,7 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
     mock_settings.datasphere_job_dir = temp_workspace['job_dir']
     mock_settings.models_dir = temp_workspace['models_dir']
     mock_settings.project_root_dir = temp_workspace['temp_dir']
-    
+
     # DataSphere client settings
     mock_settings.datasphere = MagicMock()
     mock_settings.datasphere.project_id = "test-project-id-new-arch"
@@ -142,7 +140,7 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
         "folder_id": "test-folder",
         "oauth_token": "test-token"
     }
-    
+
     mocks['settings'] = mock_settings
 
     # --- Patch get_settings function ---
@@ -153,7 +151,7 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
     mock_client = MagicMock()
     mock_client.submit_job.return_value = "ds-job-default-new-arch"
     mock_client.get_job_status.return_value = "COMPLETED"
-    
+
     def default_download_side_effect(ds_job_id, results_dir, **kwargs):
         os.makedirs(results_dir, exist_ok=True)
         # Create result files in REAL filesystem
@@ -163,7 +161,7 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
             f.write("fake onnx model data")
         with open(os.path.join(results_dir, "predictions.csv"), 'w') as f:
             f.write("barcode,pred\n123456789012,10")
-    
+
     mock_client.download_job_results.side_effect = default_download_side_effect
     mocks['client'] = mock_client
 
@@ -174,12 +172,12 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
     mock_db_conn.executemany.return_value = mock_db_conn
     mock_db_conn.fetchone.return_value = {"id": 1, "multiindex_id": "test-multiindex-new"}
     mocks['db_connection'] = mock_db_conn
-    
+
     mock_get_db_connection = MagicMock(return_value=mock_db_conn)
     mocks['get_db_connection'] = mock_get_db_connection
 
     # --- Database Function Mocks ---
-    for func_name in ['get_or_create_multiindex_id', 'update_job_status', 'create_training_result', 
+    for func_name in ['get_or_create_multiindex_id', 'update_job_status', 'create_training_result',
                      'execute_many', 'save_predictions_to_db', 'get_job', 'create_model_record']:
         mock = MagicMock(name=func_name)
         mocks[func_name] = mock
@@ -221,7 +219,7 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
     # --- Registry for Reset Fixture ---
     mocks['_DATASPHERE_ENV_APPLIED'] = True
     _GLOBAL_MOCKS_REGISTRY.update(mocks)
-    
+
     yield mocks
 
 # =================================================================================
@@ -252,7 +250,7 @@ def reset_new_arch_mocks_between_tests():
         client_mock = _GLOBAL_MOCKS_REGISTRY['client']
         client_mock.submit_job.return_value = "ds-job-default-new-arch"
         client_mock.get_job_status.return_value = "COMPLETED"
-        
+
         def default_download_side_effect(ds_job_id, results_dir, **kwargs):
             os.makedirs(results_dir, exist_ok=True)
             with open(os.path.join(results_dir, "metrics.json"), 'w') as f:
@@ -261,7 +259,7 @@ def reset_new_arch_mocks_between_tests():
                 f.write("fake onnx model data")
             with open(os.path.join(results_dir, "predictions.csv"), 'w') as f:
                 f.write("barcode,pred\n123456789012,10")
-        
+
         client_mock.download_job_results.side_effect = default_download_side_effect
 
     yield
@@ -273,10 +271,10 @@ def reset_new_arch_mocks_between_tests():
 def create_training_params(base_params=None):
     """
     Creates a complete TrainingConfig object with all required fields.
-    
+
     Args:
         base_params: Optional dictionary with parameters to use as a base
-        
+
     Returns:
         A valid TrainingConfig object
     """
@@ -346,4 +344,4 @@ def mock_datasphere_client():
 def mock_get_datasets():
     """Мокирует get_datasets, чтобы не генерировать реальные датасеты."""
     with patch("deployment.app.services.datasphere_service.get_datasets", return_value=({"train": 1}, {"val": 1})) as mock_func:
-        yield mock_func 
+        yield mock_func

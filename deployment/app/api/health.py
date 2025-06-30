@@ -80,7 +80,7 @@ def check_environment() -> ComponentHealth:
     """Check for required environment variables."""
     required_vars = {
         "DATASPHERE_PROJECT_ID": "DataSphere Project ID",
-        "DATASPHERE_FOLDER_ID": "Yandex Cloud Folder ID", 
+        "DATASPHERE_FOLDER_ID": "Yandex Cloud Folder ID",
         "API_X_API_KEY": "API Authentication Key",
         "CALLBACK_AUTH_TOKEN": "Cloud Callback Authentication Token"
     }
@@ -93,7 +93,7 @@ def check_environment() -> ComponentHealth:
     # Check for DataSphere authentication (need at least one)
     has_oauth = bool(os.environ.get("DATASPHERE_OAUTH_TOKEN"))
     has_profile = bool(os.environ.get("DATASPHERE_YC_PROFILE"))
-    
+
     if not (has_oauth or has_profile):
         missing.append("DATASPHERE_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)")
 

@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from deployment.app.config import DataRetentionSettings
 from deployment.app.db.data_retention import (
@@ -72,7 +72,7 @@ class TestDataRetention(unittest.TestCase):
             metadata TEXT,
             is_active BOOLEAN DEFAULT 0
         );
-        
+
         -- Predictions table
         CREATE TABLE IF NOT EXISTS fact_predictions (
             prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +87,7 @@ class TestDataRetention(unittest.TestCase):
             quantile_95 DECIMAL(10,2) NOT NULL,
             created_at TIMESTAMP NOT NULL
         );
-        
+
         -- Configs table
         CREATE TABLE IF NOT EXISTS configs (
             config_id TEXT PRIMARY KEY,
@@ -95,7 +95,7 @@ class TestDataRetention(unittest.TestCase):
             created_at TIMESTAMP NOT NULL,
             is_active BOOLEAN DEFAULT 0
         );
-        
+
         -- Training results table
         CREATE TABLE IF NOT EXISTS training_results (
             result_id TEXT PRIMARY KEY,
@@ -159,7 +159,7 @@ class TestDataRetention(unittest.TestCase):
         # Insert model records
         self.cursor.executemany(
             """
-            INSERT INTO models 
+            INSERT INTO models
             (model_id, job_id, model_path, created_at, metadata, is_active)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
@@ -251,7 +251,7 @@ class TestDataRetention(unittest.TestCase):
         self.cursor.executemany(
             """
             INSERT INTO fact_predictions
-            (multiindex_id, prediction_date, result_id, model_id, 
+            (multiindex_id, prediction_date, result_id, model_id,
              quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,

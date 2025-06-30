@@ -28,10 +28,10 @@ logger = logging.getLogger(__name__)
 def _get_default_data_root_dir() -> str:
     """
     Get the default data root directory with fallback logic for test environments.
-    
+
     Returns:
         str: Path to the default data root directory
-        
+
     Raises:
         RuntimeError: If home directory cannot be determined and fallback fails
     """
@@ -55,10 +55,10 @@ def _get_default_data_root_dir() -> str:
 def load_config_file(file_path: str) -> dict[str, Any]:
     """
     Load configuration from a JSON or YAML file.
-    
+
     Args:
         file_path: Path to the config file
-        
+
     Returns:
         Dict containing configuration values
     """
@@ -120,10 +120,10 @@ def get_app_config() -> dict[str, Any]:
 def ensure_directory_exists(path_value: str) -> str:
     """
     Проверяет существование директории и создает её при необходимости.
-    
+
     Args:
         path_value: Путь к директории
-        
+
     Returns:
         Тот же путь, после создания директории
     """
@@ -204,7 +204,8 @@ class APISettings(BaseSettings):
             if isinstance(loaded_data, dict):
                 config_file_data = loaded_data
 
-        custom_dict_source = lambda: config_file_data
+        def custom_dict_source():
+            return config_file_data
 
         return (
             init_settings,
@@ -258,7 +259,8 @@ class DatabaseSettings(BaseSettings):
             if isinstance(loaded_data, dict):
                 config_file_data = loaded_data
 
-        custom_dict_source = lambda: config_file_data
+        def custom_dict_source():
+            return config_file_data
 
         return (
             init_settings,
@@ -411,7 +413,8 @@ class DataSphereSettings(BaseSettings):
             if isinstance(loaded_data, dict):
                 config_file_data = loaded_data
 
-        custom_dict_source = lambda: config_file_data
+        def custom_dict_source():
+            return config_file_data
 
         return (
             init_settings,
@@ -496,7 +499,8 @@ class DataRetentionSettings(BaseSettings):
             if isinstance(loaded_data, dict):
                 config_file_data = loaded_data
 
-        custom_dict_source = lambda: config_file_data
+        def custom_dict_source():
+            return config_file_data
 
         return (
             init_settings,
@@ -704,7 +708,8 @@ class AppSettings(BaseSettings):
             if isinstance(loaded_data, dict):
                 config_file_data = loaded_data
 
-        custom_dict_source = lambda: config_file_data
+        def custom_dict_source():
+            return config_file_data
 
         # Nested settings (api, db, etc.) will handle their own sources
         # when Pydantic initializes them.

@@ -17,7 +17,7 @@ def json_default_serializer(obj):
     """
     JSON serializer for objects not serializable by default json code
     """
-    if isinstance(obj, (datetime, date)):
+    if isinstance(obj, datetime | date):
         return obj.isoformat()
     if isinstance(obj, Path):
         return str(obj)
@@ -96,7 +96,7 @@ def db_transaction(db_path_or_conn: str | Path | sqlite3.Connection = None):
     conn_created_internally = False
 
     try:
-        if isinstance(db_path_or_conn, (str, Path)):
+        if isinstance(db_path_or_conn, str | Path):
             conn = get_db_connection(db_path_or_conn) # Assuming get_db_connection can take a path
             conn_created_internally = True
         elif isinstance(db_path_or_conn, sqlite3.Connection):
@@ -148,7 +148,7 @@ def dict_factory(cursor, row):
 def execute_query(query: str, params: tuple = (), fetchall: bool = False, connection: sqlite3.Connection = None) -> list[dict] | dict | None:
     """
     Execute a query and optionally return results
-    
+
     Args:
         query: SQL query with placeholders (?, :name)
         params: Parameters for the query
@@ -158,10 +158,10 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
                     NOT commit or rollback. The caller is responsible for transaction
                     management. If not provided, a new connection is created and
                     the operation (if not a SELECT/PRAGMA) is committed.
-                    
+
     Returns:
         Query results as dict or list of dicts, or None for operations
-        
+
     Raises:
         DatabaseError: If database operation fails
     """
@@ -231,7 +231,7 @@ def execute_query(query: str, params: tuple = (), fetchall: bool = False, connec
 def execute_many(query: str, params_list: list[tuple], connection: sqlite3.Connection = None) -> None:
     """
     Execute a query with multiple parameter sets
-    
+
     Args:
         query: SQL query with placeholders
         params_list: List of parameter tuples
@@ -240,7 +240,7 @@ def execute_many(query: str, params_list: list[tuple], connection: sqlite3.Conne
                     NOT commit or rollback. The caller is responsible for transaction
                     management. If not provided, a new connection is created and
                     the batch operation is committed.
-        
+
     Raises:
         DatabaseError: If database operation fails
     """
@@ -294,13 +294,13 @@ def create_job(job_type: str, parameters: dict[str, Any] = None, connection: sql
     Create a new job record and return the job ID.
     If an external 'connection' is provided, this function operates within that transaction.
     Otherwise, it creates a new transaction using the 'db_transaction' context manager.
-    
+
     Args:
         job_type: Type of job (from JobType enum)
         parameters: Dictionary of job parameters
         connection: Optional existing database connection to use
         status: Initial job status (default: 'pending')
-        
+
     Returns:
         Generated job ID
     """
@@ -346,7 +346,7 @@ def update_job_status(job_id: str, status: str, progress: float = None,
                       connection: sqlite3.Connection = None) -> None:
     """
     Update job status and related fields
-    
+
     Args:
         job_id: ID of the job to update
         status: New job status
@@ -354,7 +354,7 @@ def update_job_status(job_id: str, status: str, progress: float = None,
         result_id: Optional result ID if job completed
         error_message: Optional error message if job failed
         status_message: Optional detailed status message (stored in job_status_history)
-        
+
         connection: Optional existing database connection to use
     """
     now = datetime.now().isoformat()
@@ -382,9 +382,9 @@ def update_job_status(job_id: str, status: str, progress: float = None,
 
         # Update job status
         query = """
-            UPDATE jobs 
-            SET 
-                status = ?, 
+            UPDATE jobs
+            SET
+                status = ?,
                 updated_at = ?,
                 progress = COALESCE(?, progress),
                 result_id = COALESCE(?, result_id),
@@ -398,8 +398,8 @@ def update_job_status(job_id: str, status: str, progress: float = None,
         # If no status_message is provided, use the status itself
         history_message = status_message if status_message else f"Status changed to: {status}"
         history_query = """
-            INSERT INTO job_status_history 
-            (job_id, status, status_message, progress, updated_at) 
+            INSERT INTO job_status_history
+            (job_id, status, status_message, progress, updated_at)
             VALUES (?, ?, ?, ?, ?)
         """
         history_params = (job_id, status, history_message, progress, now)
@@ -417,11 +417,11 @@ def update_job_status(job_id: str, status: str, progress: float = None,
 def get_job(job_id: str, connection: sqlite3.Connection = None) -> dict:
     """
     Get job details by ID
-    
+
     Args:
         job_id: Job ID to retrieve
         connection: Optional existing database connection to use
-        
+
     Returns:
         Job details dictionary or None if not found
     """
@@ -436,13 +436,13 @@ def get_job(job_id: str, connection: sqlite3.Connection = None) -> dict:
 def list_jobs(job_type: str = None, status: str = None, limit: int = 100, connection: sqlite3.Connection = None) -> list[dict]:
     """
     List jobs with optional filters
-    
+
     Args:
         job_type: Optional job type filter
         status: Optional status filter
         limit: Maximum number of jobs to return
         connection: Optional existing database connection to use
-        
+
     Returns:
         List of job dictionaries
     """
@@ -475,21 +475,21 @@ def create_data_upload_result(job_id: str, records_processed: int,
                               connection: sqlite3.Connection = None) -> str:
     """
     Create a data upload result record
-    
+
     Args:
         job_id: Associated job ID
         records_processed: Number of records processed
         features_generated: List of feature types generated
         processing_run_id: ID of the processing run
         connection: Optional existing database connection to use
-        
+
     Returns:
         Generated result ID
     """
     result_id = generate_id()
 
     query = """
-    INSERT INTO data_upload_results (result_id, job_id, records_processed, 
+    INSERT INTO data_upload_results (result_id, job_id, records_processed,
                                     features_generated, processing_run_id)
     VALUES (?, ?, ?, ?, ?)
     """
@@ -632,8 +632,8 @@ def get_active_config(connection: sqlite3.Connection = None) -> dict[str, Any] |
         cursor.execute(
             """
             SELECT config_id, config
-            FROM configs 
-            WHERE is_active = 1 
+            FROM configs
+            WHERE is_active = 1
             LIMIT 1
             """
         )
@@ -669,12 +669,12 @@ def get_active_config(connection: sqlite3.Connection = None) -> dict[str, Any] |
 def set_config_active(config_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None) -> bool:
     """
     Sets a config as active and optionally deactivates others.
-    
+
     Args:
         config_id: The config ID to activate
         deactivate_others: Whether to deactivate all other configs
         connection: Optional existing database connection to use
-        
+
     Returns:
         True if successful, False otherwise
     """
@@ -723,12 +723,12 @@ def set_config_active(config_id: str, deactivate_others: bool = True, connection
 def get_best_config_by_metric(metric_name: str, higher_is_better: bool = True, connection: sqlite3.Connection = None) -> dict[str, Any] | None:
     """
     Returns the config with the best metric value based on training_results.
-    
+
     Args:
         metric_name: The name of the metric to use for evaluation
         higher_is_better: True if higher values of the metric are better, False otherwise
         connection: Optional existing database connection to use
-        
+
     Returns:
         Dictionary with config_id, config, and metrics fields if a best config exists,
         otherwise None.
@@ -822,7 +822,7 @@ def create_model_record(
     """
     Creates a record for a trained model artifact.
     If `is_active` is True, this model will be marked active, deactivating others.
-    
+
     Args:
         model_id: Unique identifier for the model
         job_id: ID of the job that produced the model
@@ -889,12 +889,12 @@ def create_model_record(
 def get_active_model(connection: sqlite3.Connection = None) -> dict[str, Any] | None:
     """
     Returns the currently active model or None if none is active.
-    
+
     Args:
         connection: Optional existing database connection to use
-        
+
     Returns:
-        Dictionary with model information if an active model exists, 
+        Dictionary with model information if an active model exists,
         otherwise None.
     """
     conn_created = False
@@ -908,9 +908,9 @@ def get_active_model(connection: sqlite3.Connection = None) -> dict[str, Any] | 
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT model_id, model_path, metadata 
-            FROM models 
-            WHERE is_active = 1 
+            SELECT model_id, model_path, metadata
+            FROM models
+            WHERE is_active = 1
             LIMIT 1
             """
         )
@@ -952,12 +952,12 @@ def get_active_model(connection: sqlite3.Connection = None) -> dict[str, Any] | 
 def set_model_active(model_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None) -> bool:
     """
     Sets a model as active and optionally deactivates others.
-    
+
     Args:
         model_id: The model ID to activate
         deactivate_others: Whether to deactivate all other models
         connection: Optional existing database connection to use
-        
+
     Returns:
         True if successful, False otherwise
     """
@@ -1006,12 +1006,12 @@ def set_model_active(model_id: str, deactivate_others: bool = True, connection: 
 def get_best_model_by_metric(metric_name: str, higher_is_better: bool = True, connection: sqlite3.Connection = None) -> dict[str, Any] | None:
     """
     Returns the model with the best metric value based on training_results.
-    
+
     Args:
         metric_name: The name of the metric to use for evaluation
         higher_is_better: True if higher values of the metric are better, False otherwise
         connection: Optional existing database connection to use
-        
+
     Returns:
         Dictionary with model information if a best model exists, otherwise None.
     """
@@ -1100,9 +1100,9 @@ def get_recent_models(limit: int = 5, connection: sqlite3.Connection = None) -> 
     Get the most recent models from the database.
     """
     query = """
-        SELECT model_id, job_id, model_path, created_at, metadata, is_active 
-        FROM models 
-        ORDER BY created_at DESC 
+        SELECT model_id, job_id, model_path, created_at, metadata, is_active
+        FROM models
+        ORDER BY created_at DESC
         LIMIT ?
     """
     return execute_query(query, (limit,), fetchall=True, connection=connection)
@@ -1184,7 +1184,7 @@ def create_training_result(
 
         # Insert the training result
         query = """
-        INSERT INTO training_results 
+        INSERT INTO training_results
         (result_id, job_id, model_id, config_id, metrics, duration)
         VALUES (?, ?, ?, ?, ?, ?)
         """
@@ -1250,7 +1250,7 @@ def create_prediction_result(
 ) -> str:
     """
     Create a prediction result record
-    
+
     Args:
         job_id: Associated job ID
         model_id: ID of the model used for prediction
@@ -1258,7 +1258,7 @@ def create_prediction_result(
         summary_metrics: Dictionary of prediction metrics
         prediction_month: Month for which predictions were made
         connection: Optional existing database connection to use
-        
+
     Returns:
         Generated result ID
     """
@@ -1288,14 +1288,14 @@ def create_prediction_result(
 def create_report_result(job_id: str, report_type: str, parameters: dict[str, Any], output_path: str, connection: sqlite3.Connection = None) -> str:
     """
     Create a report result record
-    
+
     Args:
         job_id: Associated job ID
         report_type: Type of report
         parameters: Dictionary of report parameters
         output_path: Path to generated report
         connection: Optional existing database connection to use
-        
+
     Returns:
         Generated result ID
     """
@@ -1349,7 +1349,7 @@ def create_processing_run(start_time: datetime, status: str,
                          connection: sqlite3.Connection = None) -> int:
     """
     Create a processing run record
-    
+
     Args:
         start_time: Start time of processing
         status: Status of the run
@@ -1357,7 +1357,7 @@ def create_processing_run(start_time: datetime, status: str,
         source_files: Comma-separated list of source files
         end_time: Optional end time of processing
         connection: Optional existing database connection to use
-        
+
     Returns:
         Generated run ID
     """
@@ -1388,7 +1388,7 @@ def update_processing_run(run_id: int, status: str, end_time: datetime = None,
                          connection: sqlite3.Connection = None) -> None:
     """
     Update a processing run
-    
+
     Args:
         run_id: ID of the run to update
         status: New status
@@ -1421,7 +1421,7 @@ def get_or_create_multiindex_id(barcode: str, artist: str, album: str,
                                 connection: sqlite3.Connection = None) -> int:
     """
     Get or create a multiindex mapping entry
-    
+
     Args:
         barcode: Barcode value
         artist: Artist name
@@ -1434,7 +1434,7 @@ def get_or_create_multiindex_id(barcode: str, artist: str, album: str,
         style: Music style
         record_year: Record year
         connection: Optional existing database connection to use
-        
+
     Returns:
         Multiindex ID
     """
@@ -1478,11 +1478,11 @@ def get_or_create_multiindex_id(barcode: str, artist: str, album: str,
 def get_configs(limit: int = 5, connection: sqlite3.Connection = None) -> list[dict[str, Any]]:
     """
     Retrieves a list of configs ordered by creation date.
-    
+
     Args:
         limit: Maximum number of configs to return
         connection: Optional existing database connection to use
-        
+
     Returns:
         List of configs with their details
     """
@@ -1611,17 +1611,18 @@ def delete_configs_by_ids(config_ids: list[str], connection: sqlite3.Connection 
     finally:
         if conn_created and 'conn' in locals() and conn:
             conn.close()
-        return summary
+
+    return summary
 
 def get_all_models(limit: int = 100, include_active_status: bool = True, connection: sqlite3.Connection = None) -> list[dict[str, Any]]:
     """
     Retrieves a list of all models with their details.
-    
+
     Args:
         limit: Maximum number of models to return
         include_active_status: Whether to include the active status in the results
         connection: Optional existing database connection to use
-        
+
     Returns:
         List of models with their details
     """
@@ -1750,7 +1751,8 @@ def delete_models_by_ids(model_ids: list[str], connection: sqlite3.Connection = 
     finally:
         if conn_created and 'conn' in locals() and conn:
             conn.close()
-        return summary
+
+    return summary
 
 def get_effective_config(settings, logger=None, connection=None):
     """

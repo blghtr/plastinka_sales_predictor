@@ -17,12 +17,12 @@ logger = logging.getLogger(__name__)
 def cleanup_old_predictions(days_to_keep: int | None = None, conn=None) -> int:
     """
     Remove prediction records older than the specified retention period.
-    
+
     Args:
         days_to_keep: Number of days to keep predictions for.
                       If None, uses the value from settings.
         conn: Optional database connection. If None, a new connection is created.
-    
+
     Returns:
         Number of records removed
     """
@@ -48,7 +48,7 @@ def cleanup_old_predictions(days_to_keep: int | None = None, conn=None) -> int:
         )
         result = cursor.fetchone()
         # Handle both tuple (normal SQLite) and dict (test with dict_factory) result formats
-        count = result[0] if isinstance(result, (tuple, list)) else list(result.values())[0]
+        count = result[0] if isinstance(result, tuple | list) else list(result.values())[0]
 
         if count > 0:
             # Delete old predictions
@@ -80,14 +80,14 @@ def cleanup_old_historical_data(
 ) -> dict[str, int]:
     """
     Remove historical sales and stock data older than the specified retention period.
-    
+
     Args:
         sales_days_to_keep: Number of days to keep sales data.
                            If None, uses the value from settings.
         stock_days_to_keep: Number of days to keep stock data.
                            If None, uses the value from settings.
         conn: Optional database connection. If None, a new connection is created.
-    
+
     Returns:
         Dictionary with counts of removed records by type
     """
@@ -191,17 +191,17 @@ def cleanup_old_models(models_to_keep: int | None = None,
                       conn=None) -> list[str]:
     """
     Clean up old model records and files based on retention policy.
-    
+
     For each active parameter set, keeps the top N models ranked by validation metric.
     For inactive models, removes those older than the specified period.
-    
+
     Args:
         models_to_keep: Number of models to keep per parameter set.
                         If None, uses the value from settings.
         inactive_days_to_keep: Number of days to keep inactive models.
                                If None, uses the value from settings.
         conn: Optional database connection. If None, a new connection is created.
-    
+
     Returns:
         List of model IDs that were deleted
     """
@@ -292,8 +292,8 @@ def cleanup_old_models(models_to_keep: int | None = None,
         cutoff_date_str = retention_date.strftime('%Y-%m-%d %H:%M:%S')
 
         cursor.execute("""
-            SELECT model_id, model_path 
-            FROM models 
+            SELECT model_id, model_path
+            FROM models
             WHERE is_active = 0 AND created_at < ?
         """, (cutoff_date_str,))
 
@@ -343,7 +343,7 @@ def cleanup_old_models(models_to_keep: int | None = None,
 def run_cleanup_job() -> None:
     """
     Run a complete cleanup job, applying all data retention policies.
-    
+
     This function is designed to be called periodically (e.g., via cron job)
     to maintain optimal database size and remove unnecessary files.
     """

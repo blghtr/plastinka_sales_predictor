@@ -2,7 +2,7 @@
 Comprehensive tests for deployment.app.api.admin
 
 This test suite covers all admin data retention endpoints with comprehensive mocking
-of external dependencies. Tests are organized by endpoint groups and include both 
+of external dependencies. Tests are organized by endpoint groups and include both
 success and failure scenarios.
 
 Testing Approach:
@@ -30,7 +30,7 @@ TEST_BEARER_TOKEN = "test_token"
 def admin_client(client: TestClient, mock_db_conn_fixture: MagicMock):
     """A test client with the database dependency overridden for admin endpoints."""
     from deployment.app.api.admin import get_db_conn_and_close
-    
+
     def override_get_db_conn():
         yield mock_db_conn_fixture
 

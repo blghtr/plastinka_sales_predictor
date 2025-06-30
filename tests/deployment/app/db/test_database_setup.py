@@ -26,7 +26,7 @@ def temp_db():
             status_message TEXT,
             error_message TEXT
         );
-        
+
         CREATE TABLE job_status_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             job_id TEXT,

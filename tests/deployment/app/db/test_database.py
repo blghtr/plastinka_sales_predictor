@@ -493,7 +493,7 @@ def test_get_active_model(in_memory_db, sample_model_data):
     # Insert directly to avoid complicating the test with multiple patches
     cursor = conn.cursor()
     cursor.execute(
-        """INSERT INTO models 
+        """INSERT INTO models
            (model_id, job_id, model_path, created_at, metadata, is_active)
            VALUES (?, ?, ?, ?, ?, ?)""",
         (model_id, job_id, model_path, created_at.isoformat(),

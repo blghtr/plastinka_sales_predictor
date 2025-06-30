@@ -25,7 +25,7 @@ def json_default_serializer(obj):
     """
     JSON serializer for objects not serializable by default json code
     """
-    if isinstance(obj, (datetime, date)):
+    if isinstance(obj, datetime | date):
         return obj.isoformat()
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
@@ -164,8 +164,10 @@ def file_based_db():
         model_id_2 = 'model-2'
         model_path_1 = os.path.join(temp_dir.name, 'model_1.onnx')
         model_path_2 = os.path.join(temp_dir.name, 'model_2.onnx')
-        with open(model_path_1, 'w') as f: f.write('dummy model 1')
-        with open(model_path_2, 'w') as f: f.write('dummy model 2')
+        with open(model_path_1, 'w') as f:
+            f.write('dummy model 1')
+        with open(model_path_2, 'w') as f:
+            f.write('dummy model 2')
 
         cursor.execute(
             """INSERT INTO models (model_id, job_id, model_path, created_at, is_active) VALUES (?, ?, ?, ?, ?)""",

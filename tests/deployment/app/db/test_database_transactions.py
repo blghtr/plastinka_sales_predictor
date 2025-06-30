@@ -296,7 +296,7 @@ def test_create_job_transaction_safety(isolated_db_session):
         try:
             failed_job = get_job(job_id_fail, connection=conn_verify)
             assert failed_job is None, "Job should not exist after rollback"
-        except:
+        except Exception:
             # If get_job raises an exception, that's also acceptable - it means the job wasn't found
             pass
 
@@ -367,14 +367,14 @@ def test_complex_transaction_chain(isolated_db_session):
         try:
             job1 = get_job(job_id_1, connection=conn_verify)
             assert job1 is None, "Job 1 should not exist after rollback"
-        except:
+        except Exception:
             # Job not found is acceptable
             pass
 
         try:
             job2 = get_job(job_id_2, connection=conn_verify)
             assert job2 is None, "Job 2 should not exist after rollback"
-        except:
+        except Exception:
             # Job not found is acceptable
             pass
 

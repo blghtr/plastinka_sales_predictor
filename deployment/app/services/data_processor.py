@@ -19,7 +19,7 @@ async def process_data_files(
 ) -> None:
     """
     Process uploaded files to extract features.
-    
+
     Args:
         job_id: ID of the job
         stock_file_path: Path to the saved stock file

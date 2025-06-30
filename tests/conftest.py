@@ -1,9 +1,7 @@
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
-
 
 # This fixture is removed to prevent global state pollution.
 # Mocks should be defined closer to the tests that need them,
