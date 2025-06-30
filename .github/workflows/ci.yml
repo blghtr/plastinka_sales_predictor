@@ -36,19 +36,39 @@ jobs:
     
     - name: Debug paths and environment
       run: |
-        echo "Current directory:"
+        echo "=== GitHub Actions Environment ==="
+        echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+        echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE" 
+        echo "RUNNER_WORKSPACE: $RUNNER_WORKSPACE"
+        echo "Current directory (pwd):"
         pwd
-        echo "PYTHONPATH BEFORE fix:"
-        echo $PYTHONPATH
+        echo "ls -la .:"
+        ls -la .
+        echo "ls -la ..:"
+        ls -la ..
+        echo "ls -la ../..:"
+        ls -la ../.. || echo "Parent directory not accessible"
         export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-        echo "PYTHONPATH AFTER fix:"
-        echo $PYTHONPATH
-        echo "Python path AFTER fix:"
-        python -c "import sys; print('\n'.join(sys.path))"
-        echo "Testing import AFTER fix:"
-        python -c "import deployment.app.models.api_models; print('✅ Success')" || echo "❌ Failed"
-        echo "Testing uv run import AFTER fix:"
-        uv run --all-extras python -c "import deployment.app.models.api_models; print('✅ Success')" || echo "❌ Failed"
+        echo "Checking file structure:"
+        echo "deployment/ exists:"
+        ls -la deployment/ || echo "❌ deployment/ NOT FOUND"
+        echo "deployment/__init__.py exists:"
+        ls -la deployment/__init__.py || echo "❌ deployment/__init__.py NOT FOUND" 
+        echo "deployment/app/ exists:"
+        ls -la deployment/app/ || echo "❌ deployment/app/ NOT FOUND"
+        echo "deployment/app/__init__.py exists:"
+        ls -la deployment/app/__init__.py || echo "❌ deployment/app/__init__.py NOT FOUND"
+        echo "deployment/app/models/ exists:"
+        ls -la deployment/app/models/ || echo "❌ deployment/app/models/ NOT FOUND"
+        echo "deployment/app/models/__init__.py exists:"
+        ls -la deployment/app/models/__init__.py || echo "❌ deployment/app/models/__init__.py NOT FOUND"
+        echo "deployment/app/models/api_models.py exists:"
+        ls -la deployment/app/models/api_models.py || echo "❌ deployment/app/models/api_models.py NOT FOUND"
+        echo "Testing import step by step:"
+        python -c "import deployment; print('✅ deployment imported')" || echo "❌ deployment import failed"
+        python -c "import deployment.app; print('✅ deployment.app imported')" || echo "❌ deployment.app import failed"
+        python -c "import deployment.app.models; print('✅ deployment.app.models imported')" || echo "❌ deployment.app.models import failed"
+        python -c "import deployment.app.models.api_models; print('✅ deployment.app.models.api_models imported')" || echo "❌ deployment.app.models.api_models import failed"
 
     - name: Run tests with coverage
       run: |
