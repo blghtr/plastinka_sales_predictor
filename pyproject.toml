@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "plastinka_sales_predictor"
@@ -9,33 +9,24 @@ description = "A machine learning model for predicting sales using advanced metr
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "aiofiles>=24.1.0",
-    "backoff>=2.2.1",
-    "boto3>=1.38.2",
-    "botocore>=1.38.2",
     "click>=8.1.8",
     "configspace<=0.7.1",
     "darts>=0.34.0",
     "dill>=0.3.9",
-    "fastapi>=0.115.12",
     "hpbandster>=0.7.4",
-    "httpx>=0.28.1",
     "numpy>=1.26.4",
-    "openpyxl>=3.1.5",
     "pandas>=2.2.3",
-    "pyarrow>=19.0.1",
-    "pydantic-settings>=2.9.1",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=0.26.0",
-    "python-dateutil>=2.9.0.post0",
-    "python-multipart>=0.0.20",
-    "ray[default]>=2.44.1",
+    "ray[train,tune]>=2.44.1",
     "scikit-learn>=1.6.1",
     "scipy>=1.15.2",
     "tensorboard>=2.19.0",
     "torch>=2.6.0",
     "torchmetrics>=1.7.0",
-    "uvicorn>=0.34.2",
+    "build>=1.2.2.post1",
+    "setuptools>=78.0.2",
+    "wheel>=0.45.1",
+    "onnx>=1.18.0",
+    "PyYAML>=6.0.1"
 ]
 
 [project.optional-dependencies]
@@ -43,9 +34,121 @@ notebook = [
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
 ]
+dev = [
+    "backoff>=2.2.1",
+    "boto3>=1.38.2",
+    "botocore>=1.38.2",
+    "debugpy>=1.8.13",
+    "fastapi>=0.115.12",
+    "httpx>=0.28.1",
+    "pyfakefs>=5.8.0",
+    "pytest>=8.3.5",
+    "pytest-mock>=3.14.0",
+    "pytest-asyncio>=0.26.0",
+    "pytest-benchmark>=5.1.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+]
+deployment = [
+    "aiofiles>=24.1.0",
+    "boto3>=1.38.2",
+    "botocore>=1.38.2",
+    "datasphere>=0.10.0",
+    "fastapi>=0.115.12",
+    "httpx>=0.28.1",
+    "openpyxl>=3.1.5",
+    "psutil>=7.0.0",
+    "psycopg2-binary>=2.9.10",
+    "pydantic-settings>=2.9.1",
+    "python-multipart>=0.0.20",
+    "uvicorn>=0.34.2",
+    "yandexcloud>=0.341.0",
+]
 
-[tool.hatch.build.targets.wheel]
-packages = ["plastinka_sales_predictor"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["plastinka_sales_predictor*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long, handled by formatter
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+# Ignore missing imports for some packages
+[[tool.mypy.overrides]]
+module = [
+    "darts.*",
+    "ray.*",
+    "datasphere.*",
+    "yandexcloud.*",
+]
+ignore_missing_imports = true
+
+# uv configuration for automatic PyTorch backend selection
+[tool.uv.sources]
+torch = [
+    # На Windows и macOS используем CPU по умолчанию
+    { index = "pytorch-cpu", marker = "sys_platform == 'win32'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+    # На Linux можно использовать CUDA, если доступна
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+]
+
+# Define PyTorch indexes for different backends
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+

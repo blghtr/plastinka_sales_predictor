@@ -30,11 +30,11 @@ jobs:
     
     - name: Run linting
       run: |
-        uv run ruff check . --exit-zero
-        uv run ruff format --check .
+        uv run ruff check . --exit-zero --all-extras
+        uv run ruff format --check . --all-extras
     
     - name: Run type checking (allow failures for now)
-      run: uv run mypy . || true
+      run: uv run mypy . --all-extras || true
     
     - name: Run tests with coverage
       run: |
