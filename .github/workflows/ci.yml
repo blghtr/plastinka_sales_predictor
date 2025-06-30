@@ -34,9 +34,23 @@ jobs:
         uv run --all-extras ruff check . --exit-zero
         uv run --all-extras ruff format --check .
     
-    - name: Run type checking (allow failures for now)
-      run: uv run --all-extras mypy . || true
-    
+    - name: Debug paths and environment
+      run: |
+        echo "Current directory:"
+        pwd
+        echo "Contents:"
+        ls -la
+        echo "PYTHONPATH:"
+        echo $PYTHONPATH
+        echo "Python path:"
+        python -c "import sys; print('\n'.join(sys.path))"
+        echo "Testing import:"
+        python -c "import deployment.app.models.api_models; print('✅ Success')" || echo "❌ Failed"
+        echo "Testing uv run import:"
+        uv run --all-extras python -c "import deployment.app.models.api_models; print('✅ Success')" || echo "❌ Failed"
+        echo "Checking installed packages:"
+        uv run --all-extras python -c "import pkg_resources; print([d.project_name for d in pkg_resources.working_set if 'plastinka' in d.project_name])"
+
     - name: Run tests with coverage
       run: |
         uv run --all-extras pytest --cov=plastinka_sales_predictor --cov=deployment --cov-report=term-missing --cov-fail-under=60 --maxfail=10
