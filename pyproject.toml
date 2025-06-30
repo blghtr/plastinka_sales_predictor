@@ -68,7 +68,6 @@ deployment = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["plastinka_sales_predictor*", "deployment*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
