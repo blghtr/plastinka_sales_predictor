@@ -20,6 +20,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+        ref: main
         
     - name: Extract version
       id: extract_version
@@ -42,6 +43,11 @@ jobs:
           exit 1
         fi
         echo "✅ Version format is valid: $VERSION"
+        
+    - name: Merge tag commit
+      run: |
+        git fetch origin --tags
+        git merge ${{ github.sha }} --no-edit
         
     - name: Update version in setup.cfg
       run: |
@@ -104,7 +110,7 @@ jobs:
         git config --local user.name "GitHub Action"
         git add plastinka_sales_predictor/setup.cfg pyproject.toml plastinka_sales_predictor/datasphere_job/config.yaml
         git commit -m "chore: sync version to ${{ steps.extract_version.outputs.VERSION }} [skip ci]"
-        git push
+        git push origin main
         
     - name: Create summary
       run: |
