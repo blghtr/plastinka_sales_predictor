@@ -62,6 +62,7 @@ deployment = [
     "pydantic-settings>=2.9.1",
     "python-multipart>=0.0.20",
     "uvicorn>=0.34.2",
+    "gunicorn>=23.0.0",
     "yandexcloud>=0.341.0",
 ]
 
