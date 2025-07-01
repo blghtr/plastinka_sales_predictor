@@ -1188,6 +1188,18 @@ wheels = [
 ]
 
 [[package]]
+name = "gunicorn"
+version = "23.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/72/9614c465dc206155d93eff0ca20d42e1e35afc533971379482de953521a4/gunicorn-23.0.0.tar.gz", hash = "sha256:f014447a0101dc57e294f6c18ca6b40227a4c90e9bdb586042628030cba004ec", size = 375031 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/7d/6dac2a6e1eba33ee43f318edbed4ff29151a49b5d37f080aad1e6469bca4/gunicorn-23.0.0-py3-none-any.whl", hash = "sha256:ec400d38950de4dfd418cff8328b2c8faed0edb0d517d3394e457c317908ca4d", size = 85029 },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2378,29 +2390,13 @@ wheels = [
 
 [[package]]
 name = "plastinka-sales-predictor"
-version = "0.1.0"
+version = "0.9.11"
 source = { editable = "." }
 dependencies = [
     { name = "build" },
     { name = "click" },
-    { name = "configspace" },
-    { name = "darts" },
-    { name = "dill" },
-    { name = "hpbandster" },
-    { name = "numpy" },
-    { name = "onnx" },
-    { name = "pandas" },
     { name = "pyyaml" },
-    { name = "ray", extra = ["train", "tune"] },
-    { name = "scikit-learn" },
-    { name = "scipy" },
     { name = "setuptools" },
-    { name = "tensorboard" },
-    { name = "torch", version = "2.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'" },
-    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
-    { name = "torch", version = "2.7.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine != 'x86_64' and sys_platform == 'darwin'" },
-    { name = "torch", version = "2.7.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'darwin') or sys_platform == 'win32'" },
-    { name = "torchmetrics" },
     { name = "wheel" },
 ]
 
@@ -2411,8 +2407,11 @@ deployment = [
     { name = "botocore" },
     { name = "datasphere" },
     { name = "fastapi" },
+    { name = "gunicorn" },
     { name = "httpx" },
+    { name = "numpy" },
     { name = "openpyxl" },
+    { name = "pandas" },
     { name = "psutil" },
     { name = "psycopg2-binary" },
     { name = "pydantic-settings" },
@@ -2435,6 +2434,24 @@ dev = [
     { name = "pytest-mock" },
     { name = "ruff" },
 ]
+ml = [
+    { name = "configspace" },
+    { name = "darts" },
+    { name = "dill" },
+    { name = "hpbandster" },
+    { name = "numpy" },
+    { name = "onnx" },
+    { name = "pandas" },
+    { name = "ray", extra = ["train", "tune"] },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "tensorboard" },
+    { name = "torch", version = "2.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
+    { name = "torch", version = "2.7.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "platform_machine != 'x86_64' and sys_platform == 'darwin'" },
+    { name = "torch", version = "2.7.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'darwin') or sys_platform == 'win32'" },
+    { name = "torchmetrics" },
+]
 notebook = [
     { name = "ipykernel" },
     { name = "ipywidgets" },
@@ -2450,22 +2467,25 @@ requires-dist = [
     { name = "botocore", marker = "extra == 'dev'", specifier = ">=1.38.2" },
     { name = "build", specifier = ">=1.2.2.post1" },
     { name = "click", specifier = ">=8.1.8" },
-    { name = "configspace", specifier = "<=0.7.1" },
-    { name = "darts", specifier = ">=0.34.0" },
+    { name = "configspace", marker = "extra == 'ml'", specifier = "<=0.7.1" },
+    { name = "darts", marker = "extra == 'ml'", specifier = ">=0.34.0" },
     { name = "datasphere", marker = "extra == 'deployment'", specifier = ">=0.10.0" },
     { name = "debugpy", marker = "extra == 'dev'", specifier = ">=1.8.13" },
-    { name = "dill", specifier = ">=0.3.9" },
+    { name = "dill", marker = "extra == 'ml'", specifier = ">=0.3.9" },
     { name = "fastapi", marker = "extra == 'deployment'", specifier = ">=0.115.12" },
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.115.12" },
-    { name = "hpbandster", specifier = ">=0.7.4" },
+    { name = "gunicorn", marker = "extra == 'deployment'", specifier = ">=23.0.0" },
+    { name = "hpbandster", marker = "extra == 'ml'", specifier = ">=0.7.4" },
     { name = "httpx", marker = "extra == 'deployment'", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.1" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=6.29.5" },
     { name = "ipywidgets", marker = "extra == 'notebook'", specifier = ">=8.1.5" },
-    { name = "numpy", specifier = ">=1.26.4" },
-    { name = "onnx", specifier = ">=1.18.0" },
+    { name = "numpy", marker = "extra == 'deployment'", specifier = ">=1.26.4" },
+    { name = "numpy", marker = "extra == 'ml'", specifier = ">=1.26.4" },
+    { name = "onnx", marker = "extra == 'ml'", specifier = ">=1.18.0" },
     { name = "openpyxl", marker = "extra == 'deployment'", specifier = ">=3.1.5" },
-    { name = "pandas", specifier = ">=2.2.3" },
+    { name = "pandas", marker = "extra == 'deployment'", specifier = ">=2.2.3" },
+    { name = "pandas", marker = "extra == 'ml'", specifier = ">=2.2.3" },
     { name = "psutil", marker = "extra == 'deployment'", specifier = ">=7.0.0" },
     { name = "psycopg2-binary", marker = "extra == 'deployment'", specifier = ">=2.9.10" },
     { name = "pydantic-settings", marker = "extra == 'deployment'", specifier = ">=2.9.1" },
@@ -2477,22 +2497,22 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
     { name = "python-multipart", marker = "extra == 'deployment'", specifier = ">=0.0.20" },
     { name = "pyyaml", specifier = ">=6.0.1" },
-    { name = "ray", extras = ["train", "tune"], specifier = ">=2.44.1" },
+    { name = "ray", extras = ["train", "tune"], marker = "extra == 'ml'", specifier = ">=2.44.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
-    { name = "scikit-learn", specifier = ">=1.6.1" },
-    { name = "scipy", specifier = ">=1.15.2" },
+    { name = "scikit-learn", marker = "extra == 'ml'", specifier = ">=1.6.1" },
+    { name = "scipy", marker = "extra == 'ml'", specifier = ">=1.15.2" },
     { name = "setuptools", specifier = ">=78.0.2" },
-    { name = "tensorboard", specifier = ">=2.19.0" },
-    { name = "torch", marker = "sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.6.0" },
-    { name = "torch", marker = "sys_platform == 'darwin'", specifier = ">=2.6.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.6.0", index = "https://download.pytorch.org/whl/cu124" },
-    { name = "torch", marker = "sys_platform == 'win32'", specifier = ">=2.6.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torchmetrics", specifier = ">=1.7.0" },
+    { name = "tensorboard", marker = "extra == 'ml'", specifier = ">=2.19.0" },
+    { name = "torch", marker = "sys_platform == 'darwin' and extra == 'ml'", specifier = ">=2.6.0", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32' and extra == 'ml'", specifier = ">=2.6.0" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'ml'", specifier = ">=2.6.0", index = "https://download.pytorch.org/whl/cu124" },
+    { name = "torch", marker = "sys_platform == 'win32' and extra == 'ml'", specifier = ">=2.6.0", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torchmetrics", marker = "extra == 'ml'", specifier = ">=1.7.0" },
     { name = "uvicorn", marker = "extra == 'deployment'", specifier = ">=0.34.2" },
     { name = "wheel", specifier = ">=0.45.1" },
     { name = "yandexcloud", marker = "extra == 'deployment'", specifier = ">=0.341.0" },
 ]
-provides-extras = ["notebook", "dev", "deployment"]
+provides-extras = ["ml", "notebook", "dev", "deployment"]
 
 [[package]]
 name = "platformdirs"

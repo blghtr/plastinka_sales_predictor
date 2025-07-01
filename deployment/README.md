@@ -12,6 +12,95 @@ This API provides endpoints for:
 
 All operations are handled as asynchronous jobs with status tracking and cloud computation offloading.
 
+## 🔐 Authentication Setup
+
+### Service Account Authentication (Recommended for Production)
+
+For production deployments, it's recommended to use service account authentication through YC CLI profiles instead of OAuth tokens.
+
+#### 1. Get Service Account Information from Terraform
+
+```bash
+cd deployment/infrastructure/envs/prod
+terraform output service_account_id
+terraform output -raw static_access_key_id  
+terraform output -raw static_secret_key
+```
+
+#### 2. Create Service Account Key
+
+```bash
+# Get the service account ID from terraform output
+SA_ID=$(terraform output -raw service_account_id)
+
+# Create JSON key for the service account
+yc iam key create --service-account-id $SA_ID --output sa-key.json
+```
+
+#### 3. Configure YC CLI Profile
+
+```bash
+# Create a new YC CLI profile for DataSphere
+yc config profile create datasphere-prod
+
+# Set the service account key
+yc config set service-account-key sa-key.json
+
+# Verify the profile configuration
+yc config list
+```
+
+#### 4. Configure Required Environment Variables
+
+Create a `.env` file with the following **REQUIRED** variables:
+
+```bash
+# Required DataSphere Configuration
+DATASPHERE_PROJECT_ID=$(terraform output -raw datasphere_project_id)
+DATASPHERE_FOLDER_ID=your-folder-id
+DATASPHERE_YC_PROFILE=datasphere-prod
+
+# Required API Security
+API_X_API_KEY=your-api-key
+
+# Optional: Authentication method (defaults to "auto")
+DATASPHERE_AUTH_METHOD=yc_profile
+```
+
+#### 5. Test the Configuration
+
+```bash
+# Start the API to test the configuration
+cd deployment
+python run.py
+```
+
+Check the logs for authentication method confirmation:
+```
+INFO - DataSphere client initialized with YC profile: datasphere-prod
+```
+
+### OAuth Token Authentication (Legacy/Development)
+
+For development or if you prefer OAuth tokens:
+
+```bash
+export DATASPHERE_AUTH_METHOD="oauth_token"
+export DATASPHERE_OAUTH_TOKEN="your-oauth-token"
+# YC profile settings are ignored in this mode
+```
+
+### Auto-Detection Mode (Default)
+
+The system will automatically choose the best authentication method:
+1. **YC Profile** (if `DATASPHERE_YC_PROFILE` is set)
+2. **OAuth Token** (if `DATASPHERE_OAUTH_TOKEN` is set and no YC profile)
+3. **SDK Auto-detection** (fallback to DataSphere SDK's built-in logic)
+
+```bash
+export DATASPHERE_AUTH_METHOD="auto"  # This is the default
+```
+
 ## System Architecture
 
 ```
@@ -73,20 +162,46 @@ This will generate a `.env.template` file that you can fill with your values.
 
 ### 2. Set Environment Variables
 
-```bash
-# Required Variables
-export YANDEX_CLOUD_ACCESS_KEY="your-access-key"
-export YANDEX_CLOUD_SECRET_KEY="your-secret-key"
-export YANDEX_CLOUD_FOLDER_ID="your-folder-id"
-export YANDEX_CLOUD_API_KEY="your-api-key"
-export CLOUD_CALLBACK_AUTH_TOKEN="your-callback-token"
+The `check_environment.py` script will generate a `.env.template` file that you can use as a starting point.
 
-# Optional Variables (defaults shown)
-export YANDEX_CLOUD_BUCKET="plastinka-ml-data"
-export YANDEX_CLOUD_STORAGE_ENDPOINT="https://storage.yandexcloud.net"
-export YANDEX_CLOUD_REGION="ru-central1"
-export MAX_UPLOAD_SIZE="52428800"  # 50MB
-export APP_ENV="development"  # Options: development, testing, production
+#### Required Variables (must be set in .env file):
+
+Create a `.env` file with these **REQUIRED** variables:
+```bash
+# DataSphere Configuration (REQUIRED)
+DATASPHERE_PROJECT_ID=your-project-id
+DATASPHERE_FOLDER_ID=your-folder-id
+DATASPHERE_YC_PROFILE=datasphere-prod
+
+# API Security (REQUIRED)
+API_X_API_KEY=your-api-key
+```
+
+Alternatively, you can export these as environment variables:
+```bash
+export DATASPHERE_PROJECT_ID="your-project-id"
+export DATASPHERE_FOLDER_ID="your-folder-id" 
+export DATASPHERE_YC_PROFILE="datasphere-prod"
+export API_X_API_KEY="your-api-key"
+```
+
+#### Optional Variables (have defaults):
+```bash
+# Authentication Method (defaults to "auto")
+DATASPHERE_AUTH_METHOD=auto
+
+# For legacy OAuth authentication (optional)
+DATASPHERE_OAUTH_TOKEN=your-oauth-token
+
+# API Configuration (optional, defaults shown)
+API_HOST=0.0.0.0
+API_PORT=8000
+API_DEBUG=false
+MAX_UPLOAD_SIZE=52428800
+APP_ENV=development
+
+# Data Storage (optional, defaults shown)
+DATA_ROOT_DIR=~/.plastinka_sales_predictor
 ```
 
 ### 3. Deploy Cloud Infrastructure (Optional)

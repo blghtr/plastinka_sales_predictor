@@ -21,13 +21,15 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
 # Define required environment variables
 REQUIRED_VARS = {
-    # Datasphere Integration
-    "DATASPHERE_PROJECT_ID": "Datasphere project ID for ML model training and inference",
-    "DATASPHERE_FOLDER_ID": "Datasphere folder ID (may differ from YANDEX_CLOUD_FOLDER_ID)",
-    "DATASPHERE_OAUTH_TOKEN": "OAuth token for Datasphere authentication",
-    "API_X_API_KEY": "API key for Datasphere API access",
-    # Terraform
-    "TF_VAR_yc_token": "Yandex Cloud token for Terraform operations",
+    # DataSphere Integration
+    "DATASPHERE_PROJECT_ID": "DataSphere project ID for ML model training and inference",
+    "DATASPHERE_FOLDER_ID": "DataSphere folder ID (may differ from YANDEX_CLOUD_FOLDER_ID)",
+
+    # Service Account Authentication (Recommended for Production)
+    "DATASPHERE_YC_PROFILE": "YC CLI profile name for service account authentication (e.g., 'datasphere-prod')",
+        
+    # API Configuration
+    "API_X_API_KEY": "API key for DataSphere API access",
 }
 
 

@@ -223,3 +223,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Infrastructure
+.terraform.lock.hcl
+terraform.tfvars
+terraform.tfstate*
+sa-key.json
+.terraform/

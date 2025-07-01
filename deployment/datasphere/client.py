@@ -72,6 +72,7 @@ class DataSphereClient:
         folder_id: str,
         oauth_token: str = None,
         yc_profile: str = None,
+        auth_method: str = "auto",
     ):
         """
         Initializes the DataSphere client.
@@ -79,8 +80,9 @@ class DataSphereClient:
         Args:
             project_id: Yandex DataSphere project ID.
             folder_id: Yandex Cloud folder ID (may be used for future functionality).
-            oauth_token: Yandex Cloud OAuth token (optional, uses profile/env if None).
-            yc_profile: Yandex Cloud CLI profile name (optional).
+            oauth_token: Yandex Cloud OAuth token (optional, for user authentication).
+            yc_profile: Yandex Cloud CLI profile name (optional, for service account authentication).
+            auth_method: Authentication method - 'auto', 'yc_profile', or 'oauth_token'.
         """
 
         if not project_id:
@@ -91,11 +93,35 @@ class DataSphereClient:
         self.project_id = project_id
         self.folder_id = folder_id
 
+        client_oauth_token = None
+        client_yc_profile = None
+        
+        if auth_method == "yc_profile" or (auth_method == "auto" and yc_profile):
+            logger.info(f"Using YC CLI profile authentication: {yc_profile}")
+            client_yc_profile = yc_profile
+            client_oauth_token = None
+        elif auth_method == "oauth_token" or (auth_method == "auto" and oauth_token and not yc_profile):
+            logger.info("Using OAuth token authentication")
+            client_oauth_token = oauth_token
+            client_yc_profile = None
+        else:
+            logger.info("Using auto-detection authentication (delegating to DataSphere SDK)")
+            client_oauth_token = oauth_token
+            client_yc_profile = yc_profile
+
         try:
             self._client = DatasphereClient(
-                oauth_token=oauth_token, yc_profile=yc_profile
+                oauth_token=client_oauth_token, 
+                yc_profile=client_yc_profile
             )
-            logger.info("DataSphere client initialized successfully.")
+            
+            if client_yc_profile and not client_oauth_token:
+                logger.info(f"DataSphere client initialized with YC profile: {client_yc_profile}")
+            elif client_oauth_token and not client_yc_profile:
+                logger.info("DataSphere client initialized with OAuth token")
+            else:
+                logger.info("DataSphere client initialized with auto-detection")
+                
         except Exception as e:
             logger.exception(f"Failed to initialize DataSphere client: {e}")
             raise DataSphereClientError(

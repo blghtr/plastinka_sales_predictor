@@ -81,13 +81,30 @@ git clone <repository-url>
 cd plastinka_sales_predictor
 ```
 
-2. **Install dependencies**
-```bash
-# Using uv (recommended)
-uv sync
+2. **Install dependencies for your use case**
 
-# Or using pip
-pip install -e ".[dev,deployment]"
+**For ML Development & Training:**
+```bash
+# Full ML environment with PyTorch, Darts, Ray, etc.
+uv sync --extra ml --extra dev
+```
+
+**For Deployment Only (без ML библиотек):**
+```bash
+# Lightweight deployment with FastAPI, pandas, but no PyTorch
+uv sync --extra deployment
+```
+
+**For Notebook Development:**
+```bash
+# ML + Jupyter environment
+uv sync --extra ml --extra notebook
+```
+
+**For Full Development:**
+```bash
+# All dependencies for complete development
+uv sync --all-extras
 ```
 
 3. **Environment configuration**
@@ -104,8 +121,21 @@ cp .env.template .env
 
 ### Local Development
 
-**Start the API server:**
+**For ML Development:**
 ```bash
+# Install ML dependencies first
+uv sync --extra ml --extra dev
+
+# Run training or model development
+python -m plastinka_sales_predictor.datasphere_job.train_and_predict
+```
+
+**For Deployment/API Development:**
+```bash
+# Install deployment dependencies (lightweight, no PyTorch)
+uv sync --extra deployment --extra dev
+
+# Start the API server
 cd deployment
 python run.py --reload
 ```
@@ -220,20 +250,52 @@ Models are configured via JSON files with the following structure:
 ### Environment Variables
 Key environment variables for deployment:
 
+#### Required Variables (must be set in .env file):
+
+Create a `.env` file with these **REQUIRED** variables (the `check_environment.py` script can generate a template):
 ```bash
-# Yandex Cloud Configuration
-DATASPHERE_PROJECT_ID="your-project-id"
-DATASPHERE_FOLDER_ID="your-folder-id"
-DATASPHERE_OAUTH_TOKEN="your-oauth-token"
+# DataSphere Configuration (REQUIRED)
+DATASPHERE_PROJECT_ID=your-project-id
+DATASPHERE_FOLDER_ID=your-folder-id
+DATASPHERE_YC_PROFILE=datasphere-prod
 
-# API Configuration
-API_HOST="0.0.0.0"
-API_PORT="8000"
-API_DEBUG="false"
+# API Security (REQUIRED)
+API_X_API_KEY=your-api-key
+```
 
-# Data Storage
-DATA_ROOT_DIR="~/.plastinka_sales_predictor"
-MAX_UPLOAD_SIZE="52428800"  # 50MB
+Alternatively, you can export these as environment variables:
+```bash
+export DATASPHERE_PROJECT_ID="your-project-id"
+export DATASPHERE_FOLDER_ID="your-folder-id"
+export DATASPHERE_YC_PROFILE="datasphere-prod"
+export API_X_API_KEY="your-api-key"
+```
+
+#### Optional Variables (have defaults):
+```bash
+# Authentication Method (defaults to "auto")
+DATASPHERE_AUTH_METHOD=auto
+
+# For legacy/development OAuth authentication (optional)
+DATASPHERE_OAUTH_TOKEN=your-oauth-token
+
+# API Configuration (optional, defaults shown)
+API_HOST=0.0.0.0
+API_PORT=8000
+API_DEBUG=false
+
+# Data Storage (optional, defaults shown)
+DATA_ROOT_DIR=~/.plastinka_sales_predictor
+MAX_UPLOAD_SIZE=52428800
+```
+
+#### Terraform Variables:
+```bash
+# For terraform operations, set as environment variable:
+export TF_VAR_yc_token="your-oauth-token"
+
+# Or pass directly to terraform:
+terraform apply -var="yc_token=your-oauth-token"
 ```
 
 ## 🏗️ Project Structure
@@ -287,16 +349,26 @@ pytest --cov=plastinka_sales_predictor --cov=deployment
 ```bash
 cd deployment/infrastructure/envs/prod
 cp terraform.tfvars.example terraform.tfvars
-# Configure your Yandex Cloud credentials
+
+# Edit terraform.tfvars with your Yandex Cloud IDs:
+# yc_cloud_id        = "your-cloud-id-here"
+# yc_folder_id       = "your-folder-id-here"  
+# yc_organization_id = "your-organization-id-here"
+
+# Set OAuth token for terraform (choose one method):
+export TF_VAR_yc_token="your-oauth-token"
+# OR pass directly: terraform apply -var="yc_token=your-oauth-token"
+
 terraform init && terraform apply
 ```
 
 ### 2. Deploy Application
 ```bash
-# Get infrastructure outputs
+# Get infrastructure outputs and set required .env variables
 export DATASPHERE_PROJECT_ID=$(terraform output -raw datasphere_project_id)
-export YC_SERVICE_ACCOUNT_KEY_ID=$(terraform output -raw static_access_key_id)
-export YC_SERVICE_ACCOUNT_KEY=$(terraform output -raw static_secret_key)
+export DATASPHERE_FOLDER_ID="your-folder-id"
+export DATASPHERE_YC_PROFILE="datasphere-prod"
+export API_X_API_KEY="your-api-key"
 
 # Start the application
 cd deployment
@@ -324,24 +396,65 @@ python run.py
 
 ## 🛠️ Dependencies
 
-### Core ML Dependencies
+Проект использует модульную систему зависимостей с 4 окружениями:
+
+### 1. Base Dependencies (всегда устанавливаются)
+- `click>=8.1.8` - CLI interface
+- `PyYAML>=6.0.1` - Configuration files
+- `build>=1.2.2.post1`, `setuptools>=78.0.2`, `wheel>=0.45.1` - Build tools
+
+### 2. ML Environment (`--extra ml`)
+**Для машинного обучения (plastinka_sales_predictor/)**
 - `torch>=2.6.0` - PyTorch for deep learning
 - `darts>=0.34.0` - Time series forecasting library
 - `numpy>=1.26.4`, `pandas>=2.2.3` - Data manipulation
 - `ray[tune]>=2.44.1` - Hyperparameter optimization
 - `scikit-learn>=1.6.1` - Machine learning utilities
+- `tensorboard>=2.19.0` - Training visualization
 
-### Deployment Dependencies
+### 3. Deployment Environment (`--extra deployment`)
+**Для веб-сервиса БЕЗ тяжелых ML библиотек (deployment/)**
 - `fastapi>=0.115.12` - Modern web framework
-- `uvicorn>=0.34.2` - ASGI server
+- `uvicorn>=0.34.2`, `gunicorn>=23.0.0` - ASGI/WSGI servers
+- `pandas>=2.2.3`, `numpy>=1.26.4` - Data processing (lightweight)
 - `datasphere>=0.10.0` - Yandex DataSphere SDK
 - `pydantic-settings>=2.9.1` - Configuration management
 - `aiofiles>=24.1.0` - Async file operations
 
-### Development Dependencies
+### 4. Development Environment (`--extra dev`)
 - `pytest>=8.3.5` - Testing framework
 - `ruff>=0.8.0` - Fast Python linter
-- `mypy>=1.13.0` - Static type checking
+- `fastapi>=0.115.12` - For API development
+- `httpx>=0.28.1` - HTTP client for testing
+
+### 5. Notebook Environment (`--extra notebook`)
+- `ipykernel>=6.29.5` - Jupyter kernel
+- `ipywidgets>=8.1.5` - Interactive widgets
+
+### Installation Commands:
+```bash
+# ML разработка
+uv sync --extra ml --extra dev
+
+# Deployment (production, БЕЗ PyTorch)
+uv sync --extra deployment
+
+# Notebook разработка
+uv sync --extra ml --extra notebook
+
+# Полная разработка
+uv sync --all-extras
+```
+
+### PyTorch Backend Selection:
+Проект автоматически выбирает версию PyTorch:
+- **Windows/macOS**: CPU версия (автоматически)
+- **Linux**: CUDA версия (автоматически)
+
+**Принудительная установка CPU версии на любой платформе:**
+```bash
+uv sync --extra ml --index-url https://download.pytorch.org/whl/cpu
+```
 
 ## 📄 License
 

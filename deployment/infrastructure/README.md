@@ -54,21 +54,36 @@ Service account с необходимыми ролями для работы с 
 ## Быстрый старт
 
 ### 1. Подготовка переменных
-```powershell
-cd deployment\infrastructure\envs\prod
+
+```bash
+cd deployment/infrastructure/envs/prod
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Отредактируйте `terraform.tfvars`:
+#### Настройка terraform.tfvars:
+Отредактируйте `terraform.tfvars` (только эти переменные):
 ```hcl
-yc_token           = "your-oauth-token" # безопаснее: export TF_VAR_yc_token="your-token"
-yc_cloud_id        = "your-cloud-id"
-yc_folder_id       = "your-folder-id"
-yc_organization_id = "your-organization-id"
+yc_cloud_id        = "your-cloud-id-here"
+yc_folder_id       = "your-folder-id-here"
+yc_organization_id = "your-organization-id-here"
+```
+
+#### Настройка OAuth токена для Terraform:
+OAuth токен НЕ должен быть в `terraform.tfvars`. Используйте один из способов:
+
+**Способ 1 - Переменная окружения (рекомендуется):**
+```bash
+export TF_VAR_yc_token="your-oauth-token"
+terraform apply
+```
+
+**Способ 2 - Передача напрямую:**
+```bash
+terraform apply -var="yc_token=your-oauth-token"
 ```
 
 ### 2. Инициализация и применение
-```powershell
+```bash
 terraform init
 terraform plan
 terraform apply
@@ -77,7 +92,7 @@ terraform apply
 ## Получение данных после применения
 
 ### Основные выходные значения:
-```powershell
+```bash
 # Сводная информация о DataSphere
 terraform output datasphere_summary
 
@@ -107,15 +122,32 @@ client = DataSphereClient(
 ```
 
 ### В переменных окружения для FastAPI приложения
-```powershell
-# Windows PowerShell
-$env:DATASPHERE_PROJECT_ID = terraform output -raw datasphere_project_id
-$env:DATASPHERE_FOLDER_ID = "your-folder-id"
-$env:DATASPHERE_OAUTH_TOKEN = "your-oauth-token"
 
-# Или через .env файл (рекомендуется)
+#### Обязательные переменные для .env файла:
+
+**Рекомендуемый способ - создать .env файл:**
+```bash
+# Создать .env файл с обязательными переменными
 echo "DATASPHERE_PROJECT_ID=$(terraform output -raw datasphere_project_id)" >> ../.env
 echo "DATASPHERE_FOLDER_ID=your-folder-id" >> ../.env
+echo "DATASPHERE_YC_PROFILE=datasphere-prod" >> ../.env
+echo "API_X_API_KEY=your-api-key" >> ../.env
+```
+
+**Альтернативно - через переменные окружения:**
+```bash
+# Bash - установка обязательных переменных
+export DATASPHERE_PROJECT_ID=$(terraform output -raw datasphere_project_id)
+export DATASPHERE_FOLDER_ID="your-folder-id"
+export DATASPHERE_YC_PROFILE="datasphere-prod"
+export API_X_API_KEY="your-api-key"
+```
+
+#### Опциональные переменные:
+```bash
+# Только если используется OAuth аутентификация (не рекомендуется для продакшена)
+export DATASPHERE_OAUTH_TOKEN="your-oauth-token"
+export DATASPHERE_AUTH_METHOD="oauth_token"
 ```
 
 

@@ -1,7 +1,6 @@
 # Example variable values for prod environment
 
 # Yandex Cloud Authentication
-yc_token           = "your-oauth-token-here"
 yc_cloud_id        = "your-cloud-id-here"
 yc_folder_id       = "your-folder-id-here"
 yc_organization_id = "your-organization-id-here"
