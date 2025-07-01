@@ -372,7 +372,7 @@ export API_X_API_KEY="your-api-key"
 
 # Start the application
 cd deployment
-python run.py
+uv run --extra deployment python run.py
 ```
 
 ## 📊 Key Features

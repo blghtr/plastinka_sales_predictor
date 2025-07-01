@@ -50,13 +50,6 @@ async def lifespan(app: FastAPI):
         logger.error("Database initialization failed during startup. Check logs.")
         # Depending on policy, might raise an exception here to stop startup
 
-    # Only start debugger if not running tests
-    if not os.environ.get("PYTEST_CURRENT_TEST"):
-        import debugpy
-
-        debugpy.listen(5678)
-        debugpy.wait_for_client()
-
     yield
 
 
