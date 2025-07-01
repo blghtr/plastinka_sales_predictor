@@ -278,48 +278,6 @@ class DatabaseSettings(BaseSettings):
     # Removed reload method - paths are now computed automatically in AppSettings
 
 
-class TrainJobSettings(BaseSettings):
-    """Settings specific to the DataSphere training job submission."""
-
-    # Removed input_dir, output_dir, job_config_path - these are now computed properties in AppSettings
-    # Keeping only job-specific timeouts
-    wheel_build_timeout_seconds: int = Field(
-        default=300,  # Default 5 minutes
-        description="Timeout for building the project wheel in seconds",
-    )
-
-    # Removed validators for input_dir, output_dir, job_config_path - these are handled in AppSettings
-
-    @classmethod
-    def settings_customise_sources(
-        cls: type[BaseSettings],
-        settings_cls_arg: type[
-            BaseSettings
-        ],  # Parameter to accept Pydantic's settings_cls kwarg
-        init_settings: InitSettingsSource,
-        env_settings: EnvSettingsSource,
-        dotenv_settings: DotEnvSettingsSource,
-        file_secret_settings: SecretsSettingsSource,
-    ) -> tuple[Any, ...]:
-        # For TrainJobSettings, we don't have a dedicated file section,
-        # so we just return the standard sources in default order.
-        # Environment variables should be picked up by env_settings.
-        return (
-            init_settings,
-            env_settings,  # Ensure env_settings is explicitly included
-            dotenv_settings,
-            file_secret_settings,
-        )
-
-    model_config = SettingsConfigDict(
-        env_prefix="DATASPHERE_TRAIN_JOB_",
-        env_file=".env",
-        extra="ignore",
-        env_nested_delimiter="__",
-        customize_sources=settings_customise_sources,  # Added customize_sources
-    )
-
-
 class DataSphereSettings(BaseSettings):
     """DataSphere specific settings."""
 
@@ -345,8 +303,7 @@ class DataSphereSettings(BaseSettings):
         description="Authentication method: 'auto' (detect best), 'yc_profile' (SA), 'oauth_token' (user)"
     )
 
-    # Nested Train Job Settings
-    train_job: TrainJobSettings = Field(default_factory=TrainJobSettings)
+
 
     # Polling configuration
     max_polls: int = Field(
