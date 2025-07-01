@@ -9,9 +9,18 @@ description = "A machine learning model for predicting sales using advanced metr
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    # Базовые зависимости, нужные всем окружениям
     "click>=8.1.8",
+    "PyYAML>=6.0.1",
+    "build>=1.2.2.post1",
+    "setuptools>=78.0.2",
+    "wheel>=0.45.1",
+]
+
+[project.optional-dependencies]
+ml = [
     "configspace<=0.7.1",
-    "darts>=0.34.0",
+    "darts>=0.34.0", 
     "dill>=0.3.9",
     "hpbandster>=0.7.4",
     "numpy>=1.26.4",
@@ -22,14 +31,8 @@ dependencies = [
     "tensorboard>=2.19.0",
     "torch>=2.6.0",
     "torchmetrics>=1.7.0",
-    "build>=1.2.2.post1",
-    "setuptools>=78.0.2",
-    "wheel>=0.45.1",
     "onnx>=1.18.0",
-    "PyYAML>=6.0.1"
 ]
-
-[project.optional-dependencies]
 notebook = [
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
@@ -51,19 +54,21 @@ dev = [
 ]
 deployment = [
     "aiofiles>=24.1.0",
+    "fastapi>=0.115.12",
+    "uvicorn>=0.34.2",
+    "gunicorn>=23.0.0",
+    "pydantic-settings>=2.9.1",
+    "python-multipart>=0.0.20",
+    "httpx>=0.28.1",
+    "pandas>=2.2.3",
+    "numpy>=1.26.4",  
+    "openpyxl>=3.1.5",  
     "boto3>=1.38.2",
     "botocore>=1.38.2",
     "datasphere>=0.10.0",
-    "fastapi>=0.115.12",
-    "httpx>=0.28.1",
-    "openpyxl>=3.1.5",
+    "yandexcloud>=0.341.0",
     "psutil>=7.0.0",
     "psycopg2-binary>=2.9.10",
-    "pydantic-settings>=2.9.1",
-    "python-multipart>=0.0.20",
-    "uvicorn>=0.34.2",
-    "gunicorn>=23.0.0",
-    "yandexcloud>=0.341.0",
 ]
 
 [tool.setuptools.packages.find]
