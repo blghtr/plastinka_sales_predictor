@@ -505,6 +505,7 @@ class TestComponentHealthChecks:
             "DATASPHERE_PROJECT_ID": "project123",
             "DATASPHERE_FOLDER_ID": "folder456",
             "API_X_API_KEY": "api_key_789",
+            "API_ADMIN_API_KEY": "admin_key_123",
             "CALLBACK_AUTH_TOKEN": "token_abc",
             "DATASPHERE_OAUTH_TOKEN": "oauth_token_def",
         },
@@ -524,6 +525,7 @@ class TestComponentHealthChecks:
             "DATASPHERE_PROJECT_ID": "project123",
             "DATASPHERE_FOLDER_ID": "folder456",
             "API_X_API_KEY": "api_key_789",
+            "API_ADMIN_API_KEY": "admin_key_123",
             "CALLBACK_AUTH_TOKEN": "token_abc",
             "DATASPHERE_YC_PROFILE": "default",
         },
@@ -551,12 +553,13 @@ class TestComponentHealthChecks:
         expected_missing = [
             "DATASPHERE_PROJECT_ID (DataSphere project ID for ML model training and inference)",
             "DATASPHERE_FOLDER_ID (DataSphere folder ID (may differ from YANDEX_CLOUD_FOLDER_ID))",
-            "API_X_API_KEY (API key for DataSphere API access)",
+            "API_ADMIN_API_KEY (Admin API key for Bearer authentication (replaces API_API_KEY))",
+            "API_X_API_KEY (Public API key for X-API-Key header)",
             "DATASPHERE_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)",
         ]
 
         actual_missing = result.details["missing_variables"]
-        assert len(actual_missing) == 4
+        assert len(actual_missing) == 5
         for var_desc in expected_missing:
             assert var_desc in actual_missing, (
                 f"Expected '{var_desc}' to be in missing variables: {actual_missing}"

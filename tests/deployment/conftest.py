@@ -288,6 +288,7 @@ def base_client(
     # CRITICAL FIX: Set environment variables BEFORE importing the app
     # This ensures that the app's settings are loaded with the test values.
     session_monkeypatch.setenv("API_X_API_KEY", "test_x_api_key_conftest")
+    session_monkeypatch.setenv("API_ADMIN_API_KEY", "test_token")
     session_monkeypatch.setenv("API_API_KEY", "test_token")
 
     # Patch the functions in the module where they are *used* (the admin API module)

@@ -24,7 +24,8 @@ class EnvironmentConfig:
     REQUIRED_VARS = {
         "DATASPHERE_PROJECT_ID": "DataSphere project ID for ML model training and inference",
         "DATASPHERE_FOLDER_ID": "DataSphere folder ID (may differ from YANDEX_CLOUD_FOLDER_ID)",
-        "API_X_API_KEY": "API key for DataSphere API access",
+        "API_ADMIN_API_KEY": "Admin API key for Bearer authentication (replaces API_API_KEY)",
+        "API_X_API_KEY": "Public API key for X-API-Key header",
     }
     
     # DataSphere authentication alternatives (need at least one)
@@ -38,8 +39,13 @@ def get_missing_required_variables() -> List[str]:
     """Get list of missing required environment variables."""
     missing = []
     for var in EnvironmentConfig.REQUIRED_VARS:
-        if not os.environ.get(var):
-            missing.append(var)
+        if var == "API_ADMIN_API_KEY":
+            # Accept legacy variable as satisfying the requirement
+            if not os.environ.get("API_ADMIN_API_KEY") and not os.environ.get("API_API_KEY"):
+                missing.append(var)
+        else:
+            if not os.environ.get(var):
+                missing.append(var)
     return missing
 
 

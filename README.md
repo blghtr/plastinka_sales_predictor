@@ -266,7 +266,8 @@ DATASPHERE_FOLDER_ID=your-folder-id
 DATASPHERE_YC_PROFILE=datasphere-prod
 
 # API Security (REQUIRED)
-API_X_API_KEY=your-api-key
+API_ADMIN_API_KEY=admin-bearer-token  # Bearer <token> for admin-level endpoints
+API_X_API_KEY=public-api-key          # X-API-Key for regular endpoints
 ```
 
 Alternatively, you can export these as environment variables:
@@ -274,7 +275,8 @@ Alternatively, you can export these as environment variables:
 export DATASPHERE_PROJECT_ID="your-project-id"
 export DATASPHERE_FOLDER_ID="your-folder-id"
 export DATASPHERE_YC_PROFILE="datasphere-prod"
-export API_X_API_KEY="your-api-key"
+export API_ADMIN_API_KEY="admin-bearer-token"
+export API_X_API_KEY="public-api-key"
 ```
 
 #### Optional Variables (have defaults):
@@ -374,7 +376,8 @@ terraform init && terraform apply
 export DATASPHERE_PROJECT_ID=$(terraform output -raw datasphere_project_id)
 export DATASPHERE_FOLDER_ID="your-folder-id"
 export DATASPHERE_YC_PROFILE="datasphere-prod"
-export API_X_API_KEY="your-api-key"
+export API_ADMIN_API_KEY="admin-bearer-token"
+export API_X_API_KEY="public-api-key"
 
 # Start the application
 cd deployment

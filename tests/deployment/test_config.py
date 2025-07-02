@@ -306,6 +306,7 @@ class TestAPISettings:
             "API_API_KEY": "test-api-key",
             "API_X_API_KEY": "test-x-api-key",
             "API_LOG_LEVEL": "DEBUG",
+            "API_ADMIN_API_KEY": "test-api-key",
         },
     )
     @patch(

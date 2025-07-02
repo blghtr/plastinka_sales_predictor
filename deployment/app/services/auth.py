@@ -38,7 +38,7 @@ async def get_admin_user(
         HTTPException: If the token is missing or invalid
     """
 
-    if not settings.api.api_key:
+    if not settings.api.admin_api_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Admin API key not configured on server",
@@ -51,9 +51,9 @@ async def get_admin_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if credentials.credentials != settings.api.api_key:
+    if credentials.credentials != settings.api.admin_api_key:
         logger.warning(
-            f"[get_admin_user] Invalid Bearer token provided. Expected: {settings.api.api_key}, Got: {credentials.credentials}"
+            f"[get_admin_user] Invalid Bearer token provided. Expected: {settings.api.admin_api_key}, Got: {credentials.credentials}"
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

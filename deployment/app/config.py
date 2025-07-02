@@ -162,7 +162,11 @@ class APISettings(BaseSettings):
         default=["http://localhost:3000"],
         description="List of allowed origins for CORS",
     )
-    api_key: str = Field(default="", description="API key for authentication")
+    # Renamed in v0.2: admin_api_key (was api_key). Supports legacy env var `API_API_KEY`.
+    admin_api_key: str = Field(
+        default="",
+        description="Admin API key for Bearer authentication (set via API_ADMIN_API_KEY).",
+    )
     x_api_key: str = Field(
         default="", description="API key for X-API-Key header authentication"
     )
@@ -219,6 +223,35 @@ class APISettings(BaseSettings):
         env_nested_delimiter="__",
         customize_sources=settings_customise_sources,
     )
+
+    # --- Legacy compatibility helpers ---
+    @field_validator("admin_api_key", mode="before")
+    @classmethod
+    def _fallback_to_legacy_env(cls, v):
+        """Load deprecated `API_API_KEY` if new variable not provided."""
+        if v:
+            return v
+        legacy_val = os.getenv("API_API_KEY", "")
+        if legacy_val:
+            import warnings
+
+            warnings.warn(
+                "Environment variable 'API_API_KEY' is deprecated. Use 'API_ADMIN_API_KEY' instead.",
+                DeprecationWarning,
+            )
+        return legacy_val
+
+    @property
+    def api_key(self) -> str:  # noqa: D401  # Simple property
+        """Deprecated alias for :pyattr:`admin_api_key`. Will be removed in future releases."""
+        import warnings
+
+        warnings.warn(
+            "`api_key` is deprecated; use `admin_api_key` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.admin_api_key
 
 
 class DatabaseSettings(BaseSettings):
