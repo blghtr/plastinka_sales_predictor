@@ -35,14 +35,7 @@ logger = logging.getLogger(__name__)  # Use __name__ for module-specific logger
 # Lifespan context manager for application startup and shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Perform environment checks
-    """
-    env_health = "healthy" # check_environment()
-
-    if env_health.status != "healthy":
-        logger.warning(f"Missing environment variables: {env_health.details.get('missing_variables')}")
-        logger.warning("The application may not function correctly. See docs/environment_variables.md for details.")
-    """
+    # Environment checks are performed via the health endpoint
     settings = get_settings()
     # Initialize database
     db_initialized_successfully = init_db(db_path=settings.database_path)

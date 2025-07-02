@@ -50,7 +50,7 @@ from deployment.app.services.data_processor import process_data_files
 from deployment.app.services.datasphere_service import run_job
 from deployment.app.services.report_service import run_report_job
 from deployment.app.utils.error_handling import ErrorDetail
-from deployment.app.utils.file_validation import validate_excel_file_upload
+from deployment.app.utils.file_validation import validate_data_file_upload
 from deployment.app.utils.validation import (
     ValidationError,
     validate_date_format,
@@ -90,9 +90,9 @@ async def _save_uploaded_file(uploaded_file: UploadFile, directory: Path) -> Pat
 async def create_data_upload_job(
     request: Request,
     background_tasks: BackgroundTasks,
-    stock_file: UploadFile = File(..., description="Excel file with stock data"),
+    stock_file: UploadFile = File(..., description="Excel (.xlsx, .xls) or CSV file with stock data"),
     sales_files: list[UploadFile] = File(
-        ..., description="Excel files with sales data"
+        ..., description="Excel (.xlsx, .xls) or CSV files with sales data"
     ),
     cutoff_date: str = Form(
         "30.09.2022", description="Cutoff date for data processing (DD.MM.YYYY)"
@@ -121,11 +121,11 @@ async def create_data_upload_job(
             )
 
         # Validate stock file format and size
-        await validate_excel_file_upload(stock_file)
+        await validate_data_file_upload(stock_file)
 
         # Validate stock file content
         stock_content = await stock_file.read()
-        is_valid_stock, stock_error = validate_stock_file(stock_content)
+        is_valid_stock, stock_error = validate_stock_file(stock_content, stock_file.filename)
         if not is_valid_stock:
             raise ValidationError(
                 message=f"Invalid stock file: {stock_error}",
@@ -138,11 +138,11 @@ async def create_data_upload_job(
         # Validate sales files
         for i, sales_file in enumerate(sales_files):
             # Validate sales file format and size
-            await validate_excel_file_upload(sales_file)
+            await validate_data_file_upload(sales_file)
 
             # Validate sales file content
             sales_content = await sales_file.read()
-            is_valid_sales, sales_error = validate_sales_file(sales_content)
+            is_valid_sales, sales_error = validate_sales_file(sales_content, sales_file.filename)
             if not is_valid_sales:
                 raise ValidationError(
                     message=f"Invalid sales file ({sales_file.filename}): {sales_error}",

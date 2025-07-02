@@ -27,12 +27,11 @@ import pytest
 from fastapi import HTTPException
 
 from deployment.app.api.health import (
-    ComponentHealth,
     HealthResponse,
     RetryStatsResponse,
     SystemStatsResponse,
-    check_environment,
 )
+from deployment.app.utils.environment import ComponentHealth, get_environment_status
 from deployment.app.main import app
 
 TEST_X_API_KEY = "test_x_api_key_conftest"
@@ -42,7 +41,7 @@ class TestHealthCheckEndpoint:
     """Test suite for /health endpoint."""
 
     @patch("deployment.app.api.health.check_database")
-    @patch("deployment.app.api.health.check_environment")
+    @patch("deployment.app.api.health.get_environment_status")
     def test_health_check_endpoint_healthy(self, mock_check_env, mock_check_db, client):
         """Test /health endpoint returns healthy status when all components are healthy."""
         # Arrange
@@ -73,7 +72,7 @@ class TestHealthCheckEndpoint:
         mock_check_env.assert_called_once()
 
     @patch("deployment.app.api.health.check_database")
-    @patch("deployment.app.api.health.check_environment")
+    @patch("deployment.app.api.health.get_environment_status")
     def test_health_check_endpoint_unhealthy_db(
         self, mock_check_env, mock_check_db, client
     ):
@@ -99,7 +98,7 @@ class TestHealthCheckEndpoint:
         mock_check_env.assert_called_once()
 
     @patch("deployment.app.api.health.check_database")
-    @patch("deployment.app.api.health.check_environment")
+    @patch("deployment.app.api.health.get_environment_status")
     def test_health_check_endpoint_degraded_env(
         self, mock_check_env, mock_check_db, client
     ):
@@ -511,9 +510,9 @@ class TestComponentHealthChecks:
         },
     )
     def test_check_environment_healthy(self):
-        """Test check_environment returns healthy when all vars are set."""
+        """Test get_environment_status returns healthy when all vars are set."""
         # Act
-        result = check_environment()
+        result = get_environment_status()
 
         # Assert
         assert result.status == "healthy"
@@ -530,9 +529,9 @@ class TestComponentHealthChecks:
         },
     )
     def test_check_environment_healthy_with_yc_profile(self):
-        """Test check_environment returns healthy when using YC profile for DataSphere auth."""
+        """Test get_environment_status returns healthy when using YC profile for DataSphere auth."""
         # Act
-        result = check_environment()
+        result = get_environment_status()
 
         # Assert
         assert result.status == "healthy"
@@ -540,25 +539,24 @@ class TestComponentHealthChecks:
 
     @patch.dict(os.environ, {}, clear=True)
     def test_check_environment_degraded(self):
-        """Test check_environment returns degraded when vars are missing."""
+        """Test get_environment_status returns degraded when vars are missing."""
         # Act
-        result = check_environment()
+        result = get_environment_status()
 
         # Assert
         assert result.status == "degraded"
         assert "missing_variables" in result.details
 
-        # Expected missing variables with descriptions
+        # Expected missing variables with descriptions (updated for new environment module)
         expected_missing = [
-            "DATASPHERE_PROJECT_ID (DataSphere Project ID)",
-            "DATASPHERE_FOLDER_ID (Yandex Cloud Folder ID)",
-            "API_X_API_KEY (API Authentication Key)",
-            "CALLBACK_AUTH_TOKEN (Cloud Callback Authentication Token)",
+            "DATASPHERE_PROJECT_ID (DataSphere project ID for ML model training and inference)",
+            "DATASPHERE_FOLDER_ID (DataSphere folder ID (may differ from YANDEX_CLOUD_FOLDER_ID))",
+            "API_X_API_KEY (API key for DataSphere API access)",
             "DATASPHERE_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)",
         ]
 
         actual_missing = result.details["missing_variables"]
-        assert len(actual_missing) == 5
+        assert len(actual_missing) == 4
         for var_desc in expected_missing:
             assert var_desc in actual_missing, (
                 f"Expected '{var_desc}' to be in missing variables: {actual_missing}"
@@ -576,7 +574,9 @@ class TestIntegration:
 
             # Test that key components are available
             assert hasattr(deployment.app.api.health, "check_database")
-            assert hasattr(deployment.app.api.health, "check_environment")
+            # check_environment was moved to deployment.app.utils.environment as get_environment_status
+            from deployment.app.utils.environment import get_environment_status
+            assert callable(get_environment_status)
             assert hasattr(deployment.app.api.health, "get_retry_statistics")
             assert hasattr(deployment.app.api.health, "reset_retry_statistics")
         except ImportError as e:
@@ -607,9 +607,9 @@ class TestIntegration:
 
         # Test that expected routes exist
         route_paths = [route.path for route in router.routes]
-        expected_paths = ["/", "/system", "/retry-stats", "/retry-stats/reset"]
+        expected_paths = ["/health", "/health/system", "/health/retry-stats", "/health/retry-stats/reset"]
 
         for expected_path in expected_paths:
-            assert any(path.endswith(expected_path) for path in route_paths), (
-                f"Expected path ending with '{expected_path}' not found in {route_paths}"
+            assert expected_path in route_paths, (
+                f"Expected path '{expected_path}' not found in {route_paths}"
             )

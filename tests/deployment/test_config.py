@@ -35,7 +35,6 @@ from deployment.app.config import (
     DatabaseSettings,
     DataRetentionSettings,
     DataSphereSettings,
-    TrainJobSettings,
     _get_default_data_root_dir,
     ensure_directory_exists,
     get_api_config,
@@ -405,28 +404,6 @@ class TestDatabaseSettings:
         assert settings.filename == "config.db"
 
 
-class TestTrainJobSettings:
-    """Test suite for TrainJobSettings configuration."""
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_train_job_settings_defaults(self):
-        """Test TrainJobSettings uses correct default values."""
-        # Act
-        settings = TrainJobSettings()
-
-        # Assert
-        assert settings.wheel_build_timeout_seconds == 300
-
-    @patch.dict(os.environ, {"DATASPHERE_TRAIN_JOB_WHEEL_BUILD_TIMEOUT_SECONDS": "600"})
-    def test_train_job_settings_from_environment(self):
-        """Test TrainJobSettings loads values from environment variables."""
-        # Act
-        settings = TrainJobSettings()
-
-        # Assert
-        assert settings.wheel_build_timeout_seconds == 600
-
-
 class TestDataSphereSettings:
     """Test suite for DataSphereSettings configuration."""
 
@@ -447,7 +424,7 @@ class TestDataSphereSettings:
         assert settings.project_id == ""
         assert settings.folder_id == ""
         assert settings.oauth_token is None
-        assert settings.yc_profile is None
+        assert settings.yc_profile == "datasphere-prod"
         assert settings.max_polls == 72
         assert settings.poll_interval == 300.0
         assert settings.download_diagnostics_on_success is False
@@ -456,7 +433,6 @@ class TestDataSphereSettings:
         assert settings.client_status_timeout_seconds == 30
         assert settings.client_download_timeout_seconds == 600
         assert settings.client_cancel_timeout_seconds == 60
-        assert isinstance(settings.train_job, TrainJobSettings)
 
     @patch.dict(
         os.environ,
@@ -503,6 +479,7 @@ class TestDataSphereSettings:
             "folder_id": "test-folder",
             "oauth_token": "test-token",
             "yc_profile": "test-profile",
+            "auth_method": "yc_profile",
         }
         assert client_config == expected
 
@@ -862,7 +839,6 @@ class TestIntegration:
         assert load_config_file is not None
         assert APISettings is not None
         assert DatabaseSettings is not None
-        assert TrainJobSettings is not None
         assert DataSphereSettings is not None
         assert DataRetentionSettings is not None
         assert AppSettings is not None
@@ -873,14 +849,12 @@ class TestIntegration:
         # Verify all settings classes can be instantiated
         api_settings = APISettings()
         db_settings = DatabaseSettings()
-        train_job_settings = TrainJobSettings()
         datasphere_settings = DataSphereSettings()
         data_retention_settings = DataRetentionSettings()
         app_settings = AppSettings()
 
         assert isinstance(api_settings, APISettings)
         assert isinstance(db_settings, DatabaseSettings)
-        assert isinstance(train_job_settings, TrainJobSettings)
         assert isinstance(datasphere_settings, DataSphereSettings)
         assert isinstance(data_retention_settings, DataRetentionSettings)
         assert isinstance(app_settings, AppSettings)

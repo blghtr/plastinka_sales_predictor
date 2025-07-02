@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from deployment.app.config import get_settings
 from deployment.app.services.auth import get_current_api_key_validated
+from deployment.app.utils.environment import get_environment_status, ComponentHealth
 from deployment.app.utils.retry_monitor import (
     get_retry_statistics,
     reset_retry_statistics,
@@ -30,13 +31,7 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 
-class ComponentHealth(BaseModel):
-    """Component health status."""
 
-    status: str
-    details: dict[str, Any] = {}
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class HealthResponse(BaseModel):
@@ -84,37 +79,7 @@ class RetryStatsResponse(BaseModel):
 start_time = time.time()
 
 
-def check_environment() -> ComponentHealth:
-    """Check for required environment variables."""
-    required_vars = {
-        "DATASPHERE_PROJECT_ID": "DataSphere Project ID",
-        "DATASPHERE_FOLDER_ID": "Yandex Cloud Folder ID",
-        "API_X_API_KEY": "API Authentication Key",
-        "CALLBACK_AUTH_TOKEN": "Cloud Callback Authentication Token",
-    }
 
-    missing = []
-    for var, desc in required_vars.items():
-        if not os.environ.get(var):
-            missing.append(f"{var} ({desc})")
-
-    # Check for DataSphere authentication (need at least one)
-    has_oauth = bool(os.environ.get("DATASPHERE_OAUTH_TOKEN"))
-    has_profile = bool(os.environ.get("DATASPHERE_YC_PROFILE"))
-
-    if not (has_oauth or has_profile):
-        missing.append(
-            "DATASPHERE_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)"
-        )
-
-    if missing:
-        details = {
-            "missing_variables": missing,
-            "message": "Some required environment variables are missing",
-        }
-        return ComponentHealth(status="degraded", details=details)
-
-    return ComponentHealth(status="healthy")
 
 
 def check_database() -> ComponentHealth:
@@ -185,7 +150,7 @@ async def health_check():
     components = {
         "api": ComponentHealth(status="healthy"),
         "database": check_database(),
-        "config": check_environment(),
+        "config": get_environment_status(),
     }
 
     # Determine overall status and HTTP status code

@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+from deployment.app.utils.environment import get_missing_variables_simple, get_all_variable_descriptions
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -19,28 +21,7 @@ logger = logging.getLogger("env_checker")
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
-# Define required environment variables
-REQUIRED_VARS = {
-    # DataSphere Integration
-    "DATASPHERE_PROJECT_ID": "DataSphere project ID for ML model training and inference",
-    "DATASPHERE_FOLDER_ID": "DataSphere folder ID (may differ from YANDEX_CLOUD_FOLDER_ID)",
 
-    # Service Account Authentication (Recommended for Production)
-    "DATASPHERE_YC_PROFILE": "YC CLI profile name for service account authentication (e.g., 'datasphere-prod')",
-        
-    # API Configuration
-    "API_X_API_KEY": "API key for DataSphere API access",
-}
-
-
-def check_environment():
-    """Check environment variables and return missing required ones."""
-    missing = []
-    for var in REQUIRED_VARS:
-        if not os.environ.get(var):
-            missing.append(var)
-
-    return missing
 
 
 def generate_env_template(output_path=None):
@@ -57,13 +38,16 @@ def generate_env_template(output_path=None):
 
     logger.info(f"Generating environment template at {output_path}")
 
+    # Get all variables and descriptions from the centralized module
+    all_vars = get_all_variable_descriptions()
+
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("# Plastinka Sales Predictor API - Environment Variables\n")
         f.write("# Generated template - fill with your values\n\n")
 
-        # Required variables
-        f.write("# Required Variables\n")
-        for var, desc in REQUIRED_VARS.items():
+        # All variables
+        f.write("# Environment Variables\n")
+        for var, desc in all_vars.items():
             f.write(f"# {desc}\n{var}=\n\n")
 
     logger.info("Template generated. Please fill it with appropriate values.")
@@ -75,13 +59,16 @@ def main():
     logger.info(f"Project root directory: {PROJECT_ROOT}")
     logger.info("Checking environment variables...")
 
-    # Check for required environment variables
-    missing = check_environment()
+    # Check for required environment variables using the centralized module
+    missing = get_missing_variables_simple()
 
     if missing:
         logger.warning(f"Missing {len(missing)} required environment variables:")
+        # Get descriptions for better error messages
+        all_vars = get_all_variable_descriptions()
         for var in missing:
-            logger.warning(f"  - {var}: {REQUIRED_VARS[var]}")
+            desc = all_vars.get(var, "Unknown variable")
+            logger.warning(f"  - {var}: {desc}")
 
         # Create .env.template file in project root if .env or .env.template doesn't exist there
         env_file_path = PROJECT_ROOT / ".env"

@@ -189,7 +189,7 @@ def test_init_success():
         )
         # Check that DatasphereClient was initialized with correct params
         mock_client_class.assert_called_once_with(
-            oauth_token="fake-token", yc_profile="default"
+            oauth_token=None, yc_profile="default"
         )
         assert client.project_id == TEST_PROJECT_ID
         assert client.folder_id == TEST_FOLDER_ID

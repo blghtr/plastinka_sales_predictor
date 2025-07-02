@@ -233,7 +233,8 @@ The API will be available at http://localhost:8000
 ### Job Management
 
 - `POST /api/v1/jobs/data-upload` - Upload and process sales data
-  - Accepts Excel files for stock and sales data
+  - Accepts Excel (.xlsx, .xls) and CSV files for stock and sales data
+  - Supports automatic format detection and encoding handling
   - Performs validation and preprocessing
   - Stores structured data in the database
 
@@ -278,7 +279,9 @@ The API will be available at http://localhost:8000
 ## Data Flow
 
 1. **Data Upload**:
-   - Upload Excel files with stock and sales data
+   - Upload Excel (.xlsx, .xls) or CSV files with stock and sales data
+   - Automatic file format detection and encoding handling (UTF-8, Windows-1251, CP1252)
+   - Automatic CSV separator detection (comma, semicolon)
    - Data is validated, processed, and stored in SQLite database
    - Records are mapped to multi-index structure for time series analysis
 

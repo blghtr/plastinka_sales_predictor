@@ -50,7 +50,7 @@ class TestDataUploadEndpoint:
     @patch("deployment.app.api.jobs.create_job")
     @patch("deployment.app.api.jobs.validate_sales_file", return_value=(True, None))
     @patch("deployment.app.api.jobs.validate_stock_file", return_value=(True, None))
-    @patch("deployment.app.api.jobs.validate_excel_file_upload", new_callable=AsyncMock)
+    @patch("deployment.app.api.jobs.validate_data_file_upload", new_callable=AsyncMock)
     @patch(
         "deployment.app.api.jobs.validate_date_format",
         return_value=(True, "2022-09-30"),
@@ -60,7 +60,7 @@ class TestDataUploadEndpoint:
         self,
         mock_get_settings,
         _mock_validate_date,
-        _mock_validate_excel,
+        _mock_validate_data,
         _mock_validate_stock,
         _mock_validate_sales,
         mock_create_job,
