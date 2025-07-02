@@ -371,19 +371,21 @@ class SQLFeatureStore:
             return None
 
         table = config["table"]
+        is_date_in_index = config["is_date_in_index"]
 
         # Build query with standardized column names
         query = f"SELECT multiindex_id, data_date, value FROM {table}"
         params = []
 
-        # Add date filters
-        if start_date:
-            query += " WHERE data_date >= ?"
-            params.append(start_date)
+        # Apply date filters ONLY for features where date is part of the index (e.g. sales & change)
+        if is_date_in_index:
+            if start_date:
+                query += " WHERE data_date >= ?"
+                params.append(start_date)
 
-        if end_date:
-            query += f"{' AND' if start_date else ' WHERE'} data_date <= ?"
-            params.append(end_date)
+            if end_date:
+                query += f"{' AND' if start_date else ' WHERE'} data_date <= ?"
+                params.append(end_date)
 
         # For prices, sort by date to get latest price later
         if feature_type == "prices":

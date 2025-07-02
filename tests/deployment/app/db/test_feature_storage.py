@@ -646,9 +646,12 @@ def test_load_stock_feature(feature_store_env):
         assert loaded_df[date1].iloc[0] == 10
         assert loaded_df[date2].iloc[0] == 12
 
+        # Date filters should not affect 'stock' features (date-agnostic)
         loaded_df_cutoff = store._load_feature("stock", end_date="2023-05-01")
-        assert list(loaded_df_cutoff.columns) == [date1]
-        assert loaded_df_cutoff.iloc[0, 0] == 10
+        # The result should be identical to the unfiltered load
+        assert sorted(loaded_df_cutoff.columns) == sorted([date1, date2])
+        assert loaded_df_cutoff[date1].iloc[0] == 10
+        assert loaded_df_cutoff[date2].iloc[0] == 12
 
         conn.execute("DELETE FROM fact_stock")
         conn.commit()
