@@ -83,28 +83,34 @@ cd plastinka_sales_predictor
 
 2. **Install dependencies for your use case**
 
-**For ML Development & Training:**
+**For ML Development & Training (CPU):**
 ```bash
-# Full ML environment with PyTorch, Darts, Ray, etc.
-uv sync --extra ml --extra dev
+# ML environment with CPU PyTorch (рекомендуется для разработки)
+uv sync --extra ml --extra cpu --extra dev
 ```
 
-**For Deployment Only (без ML библиотек):**
+**For ML Development & Training (GPU):**
 ```bash
-# Lightweight deployment with FastAPI, pandas, but no PyTorch
+# ML environment with CUDA PyTorch (для GPU обучения)
+uv sync --extra ml --extra cu118 --extra dev
+```
+
+**For Deployment Only:**
+```bash
+# Deployment with basic data processing (no PyTorch)
 uv sync --extra deployment
 ```
 
 **For Notebook Development:**
 ```bash
-# ML + Jupyter environment
-uv sync --extra ml --extra notebook
+# ML + Jupyter environment (CPU)
+uv sync --extra ml --extra cpu --extra notebook
 ```
 
 **For Full Development:**
 ```bash
-# All dependencies for complete development
-uv sync --all-extras
+# All dependencies except PyTorch (choose cpu or cu118 separately)
+uv sync --extra ml --extra dev --extra notebook --extra deployment --extra cpu
 ```
 
 3. **Environment configuration**
@@ -123,8 +129,8 @@ cp .env.template .env
 
 **For ML Development:**
 ```bash
-# Install ML dependencies first
-uv sync --extra ml --extra dev
+# Install ML dependencies with CPU PyTorch
+uv sync --extra ml --extra cpu --extra dev
 
 # Run training or model development
 python -m plastinka_sales_predictor.datasphere_job.train_and_predict
@@ -132,7 +138,7 @@ python -m plastinka_sales_predictor.datasphere_job.train_and_predict
 
 **For Deployment/API Development:**
 ```bash
-# Install deployment dependencies (lightweight, no PyTorch)
+# Install deployment dependencies (no PyTorch, but includes darts for data processing)
 uv sync --extra deployment --extra dev
 
 # Start the API server
@@ -401,25 +407,34 @@ uv run --extra deployment python run.py
 ### 1. Base Dependencies (всегда устанавливаются)
 - `click>=8.1.8` - CLI interface
 - `PyYAML>=6.0.1` - Configuration files
+- `dill>=0.3.9` - Serialization (needed for data processing)
+- `darts>=0.34.0` - Time series library (core functionality)
 - `build>=1.2.2.post1`, `setuptools>=78.0.2`, `wheel>=0.45.1` - Build tools
 
 ### 2. ML Environment (`--extra ml`)
 **Для машинного обучения (plastinka_sales_predictor/)**
-- `torch>=2.6.0` - PyTorch for deep learning
-- `darts>=0.34.0` - Time series forecasting library
+- `configspace<=0.7.1` - Configuration space for hyperparameter tuning
+- `hpbandster>=0.7.4` - Hyperparameter optimization backend
 - `numpy>=1.26.4`, `pandas>=2.2.3` - Data manipulation
 - `ray[tune]>=2.44.1` - Hyperparameter optimization
 - `scikit-learn>=1.6.1` - Machine learning utilities
+- `scipy>=1.15.2` - Scientific computing
 - `tensorboard>=2.19.0` - Training visualization
+- `torchmetrics>=1.7.0` - ML metrics
+- `onnx>=1.18.0` - Model export format
 
 ### 3. Deployment Environment (`--extra deployment`)
-**Для веб-сервиса БЕЗ тяжелых ML библиотек (deployment/)**
+**Для веб-сервиса с базовой обработкой данных (deployment/)**
 - `fastapi>=0.115.12` - Modern web framework
 - `uvicorn>=0.34.2`, `gunicorn>=23.0.0` - ASGI/WSGI servers
-- `pandas>=2.2.3`, `numpy>=1.26.4` - Data processing (lightweight)
+- `pandas>=2.2.3`, `numpy>=1.26.4` - Data processing
 - `datasphere>=0.10.0` - Yandex DataSphere SDK
 - `pydantic-settings>=2.9.1` - Configuration management
 - `aiofiles>=24.1.0` - Async file operations
+- `openpyxl>=3.1.5` - Excel file processing
+- `boto3>=1.38.2`, `botocore>=1.38.2` - AWS SDK
+- `psutil>=7.0.0` - System monitoring
+- `psycopg2-binary>=2.9.10` - PostgreSQL adapter
 
 ### 4. Development Environment (`--extra dev`)
 - `pytest>=8.3.5` - Testing framework
@@ -433,28 +448,41 @@ uv run --extra deployment python run.py
 
 ### Installation Commands:
 ```bash
-# ML разработка
-uv sync --extra ml --extra dev
+# ML разработка (CPU)
+uv sync --extra ml --extra cpu --extra dev
 
-# Deployment (production, БЕЗ PyTorch)
+# ML разработка (GPU)
+uv sync --extra ml --extra cu118 --extra dev
+
+# Deployment (production, no PyTorch)
 uv sync --extra deployment
 
-# Notebook разработка
-uv sync --extra ml --extra notebook
+# Notebook разработка (CPU)
+uv sync --extra ml --extra cpu --extra notebook
 
-# Полная разработка
-uv sync --all-extras
+# Полная разработка (CPU)
+uv sync --extra ml --extra dev --extra notebook --extra deployment --extra cpu
 ```
 
-### PyTorch Backend Selection:
-Проект автоматически выбирает версию PyTorch:
-- **Windows/macOS**: CPU версия (автоматически)
-- **Linux**: CUDA версия (автоматически)
+### 6. PyTorch Backend Selection:
+Выберите версию PyTorch в зависимости от ваших потребностей:
 
-**Принудительная установка CPU версии на любой платформе:**
+**CPU версия (рекомендуется для deployment и разработки):**
 ```bash
-uv sync --extra ml --index-url https://download.pytorch.org/whl/cpu
+# ML с CPU PyTorch
+uv sync --extra ml --extra cpu
+
+# Deployment не требует PyTorch (использует darts для базовой обработки)
+uv sync --extra deployment
 ```
+
+**CUDA версия (для GPU обучения):**
+```bash
+# ML с CUDA PyTorch
+uv sync --extra ml --extra cu118
+```
+
+**⚠️ Важно**: Нельзя одновременно устанавливать `cpu` и `cu118` - система предотвратит конфликты.
 
 ## 📄 License
 
