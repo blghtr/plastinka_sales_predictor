@@ -46,8 +46,14 @@ yc config profile create datasphere-prod
 # Set the service account key
 yc config set service-account-key sa-key.json
 
+# Set the OAuth token from environment variable (рекомендуется для автоматизации)
+yc config set token $TF_VAR_yc_token
+
 # Verify the profile configuration
 yc config list
+
+# Enable DataSphere service agent for the cloud (используйте datasphere_cloud_id из terraform outputs)
+yc iam service-control enable datasphere --cloud-id $(terraform output -raw datasphere_cloud_id)
 ```
 
 #### 4. Configure Required Environment Variables
@@ -435,7 +441,6 @@ This script will:
 ### Security Considerations
 
 **Authentication:**
-- Set strong `CLOUD_CALLBACK_AUTH_TOKEN` for DataSphere callbacks
 - Use HTTPS in production deployments
 - Configure appropriate CORS origins
 

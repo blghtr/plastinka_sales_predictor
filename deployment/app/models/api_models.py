@@ -22,6 +22,7 @@ class JobType(str, Enum):
     TRAINING = "training"
     PREDICTION = "prediction"
     REPORT = "report"
+    TUNING = "tuning"
 
 
 class JobResponse(BaseModel):

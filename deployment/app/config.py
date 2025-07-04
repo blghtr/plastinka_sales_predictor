@@ -516,6 +516,36 @@ class DataRetentionSettings(BaseSettings):
     )
 
 
+class TuningSettings(BaseSettings):
+    """Hyperparameter tuning specific settings."""
+
+    num_samples_light: int = Field(50, description="Samples for light mode")
+    num_samples_full: int = Field(200, description="Samples for full mode")
+    max_concurrent: int = Field(2, description="Max concurrent Ray trials")
+    resources: dict[str, int] = Field({"cpu": 8, "gpu": 1}, description="Resource allocation per trial")
+    best_configs_to_save: int = Field(5, description="How many best configs to persist after tuning")
+    seed_configs_limit: int = Field(10, description="How many historical configs to pass to tuning as starters")
+    metric_threshold: float = Field(0.8, description="Minimum metric for initial configs selection")
+
+    # NEW: default tuning mode (overridable per-job via API) – 'light' or 'full'
+    mode: str = Field("light", description="Default tuning mode: light or full")
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def validate_mode(cls, v: str):
+        allowed = {"light", "full"}
+        if v not in allowed:
+            raise ValueError(f"Invalid tuning mode '{v}'. Allowed values: {allowed}")
+        return v
+
+    model_config = SettingsConfigDict(
+        env_prefix="TUNING_",
+        env_file=".env",
+        extra="ignore",
+        env_nested_delimiter="__",
+    )
+
+
 class AppSettings(BaseSettings):
     """Main application settings container."""
 
@@ -524,21 +554,11 @@ class AppSettings(BaseSettings):
     db: DatabaseSettings = Field(default_factory=DatabaseSettings)
     datasphere: DataSphereSettings = Field(default_factory=DataSphereSettings)
     data_retention: DataRetentionSettings = Field(default_factory=DataRetentionSettings)
+    tuning: TuningSettings = Field(default_factory=TuningSettings)
 
     env: str = Field(
         default="development",
         description="Application environment (development, testing, production)",
-    )
-    callback_base_url: str = Field(
-        default="http://localhost:8000",
-        description="Base URL for cloud function callbacks",
-    )
-    callback_route: str = Field(
-        default="/api/v1/cloud/callback",
-        description="Route for cloud function callbacks",
-    )
-    callback_auth_token: str = Field(
-        default="", description="Authentication token for cloud function callbacks"
     )
     max_upload_size: int = Field(
         default=50 * 1024 * 1024,  # 50 MB default
@@ -640,16 +660,24 @@ class AppSettings(BaseSettings):
         return path
 
     @property
-    def datasphere_job_dir(self) -> str:
+    def datasphere_jobs_base_dir(self) -> str:
         """Directory containing DataSphere job scripts."""
-        return os.path.join(
-            self.project_root_dir, "plastinka_sales_predictor", "datasphere_job"
-        )
+        return os.path.join(self.project_root_dir, "plastinka_sales_predictor", "datasphere_jobs")
+
+    @property
+    def datasphere_train_dir(self) -> str:
+        """Directory for DataSphere train job scripts."""
+        return os.path.join(self.datasphere_jobs_base_dir, "train")
+
+    @property
+    def datasphere_tune_dir(self) -> str:
+        """Directory for DataSphere tune job scripts."""
+        return os.path.join(self.datasphere_jobs_base_dir, "tune")
 
     @property
     def datasphere_job_config_path(self) -> str:
         """Path to DataSphere job configuration file."""
-        return os.path.join(self.datasphere_job_dir, "config.yaml")
+        return os.path.join(self.datasphere_jobs_base_dir, "config.yaml")
 
     # Legacy compatibility properties (updated paths)
     @property
@@ -731,11 +759,6 @@ class AppSettings(BaseSettings):
         return str(Path(__file__).resolve().parents[2])
 
     @property
-    def callback_url(self) -> str:
-        """Get the full callback URL."""
-        return f"{self.callback_base_url}{self.callback_route}"
-
-    @property
     def is_development(self) -> bool:
         """Check if the application is running in development mode."""
         return self.env.lower() == "development"
@@ -754,6 +777,21 @@ class AppSettings(BaseSettings):
     def model_storage_dir(self) -> str:
         """Directory for storing model files (alias for models_dir)."""
         return self.models_dir
+
+    @property
+    def datasphere_job_train_dir(self) -> str:
+        """Alias for datasphere_train_dir for backward compatibility."""
+        return self.datasphere_train_dir
+
+    @property
+    def datasphere_job_tune_dir(self) -> str:
+        """Alias for datasphere_tune_dir for backward compatibility."""
+        return self.datasphere_tune_dir
+
+    @property
+    def datasphere_job_dir(self) -> str:
+        """Alias for datasphere_jobs_base_dir for backward compatibility."""
+        return self.datasphere_jobs_base_dir
 
 
 # Create a global instance of the settings

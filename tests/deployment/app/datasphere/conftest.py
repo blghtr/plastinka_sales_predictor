@@ -373,12 +373,14 @@ def mock_datasphere(fs, monkeypatch):
     # Create fake directories in pyfakefs
     input_dir = "/fake/datasphere_input"
     output_dir = "/fake/datasphere_output"
-    job_dir = "/fake/datasphere_job"
-    fake_config_path = "/fake/datasphere_job/config.yaml"
+    job_dir = "/fake/datasphere_jobs"
+    fake_config_path = "/fake/datasphere_jobs/train/config.yaml"
 
     fs.makedirs(input_dir, exist_ok=True)
     fs.makedirs(output_dir, exist_ok=True)
     fs.makedirs(job_dir, exist_ok=True)
+    fs.makedirs(os.path.join(job_dir, "train"), exist_ok=True)
+    fs.makedirs(os.path.join(job_dir, "tune"), exist_ok=True)
     fs.create_file(fake_config_path, contents="name: test_job\ntype: python")
 
     # Create a mock settings object with the computed properties overridden
@@ -396,6 +398,8 @@ def mock_datasphere(fs, monkeypatch):
         return_value=fake_config_path
     )
     type(mock_settings).datasphere_job_dir = PropertyMock(return_value=job_dir)
+    type(mock_settings).datasphere_job_train_dir = PropertyMock(return_value=os.path.join(job_dir, "train"))
+    type(mock_settings).datasphere_job_tune_dir = PropertyMock(return_value=os.path.join(job_dir, "tune"))
 
     # Set up other necessary attributes
     mock_settings.project_root_dir = "/fake/project"

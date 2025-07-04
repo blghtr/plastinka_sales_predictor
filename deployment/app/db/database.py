@@ -596,6 +596,7 @@ def create_data_upload_result(
 def create_or_get_config(
     config_dict: dict[str, Any],
     is_active: bool = False,
+    source: str | None = None,
     connection: sqlite3.Connection = None,
 ) -> str:
     """
@@ -606,6 +607,7 @@ def create_or_get_config(
     Args:
         config_dict: Dictionary of config
         is_active: Whether to explicitly set this config as active
+        source: Optional source for the config
         connection: Optional existing database connection to use
 
     Returns:
@@ -638,13 +640,13 @@ def create_or_get_config(
 
             cursor.execute(
                 """
-                INSERT INTO configs (config_id, config, is_active, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO configs (config_id, config, is_active, created_at, source)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (config_id, config_json, 1 if is_active else 0, now),
+                (config_id, config_json, 1 if is_active else 0, now, source),
             )
 
-            if is_active:
+            if is_active or source is not None:
                 # If this config should be active, deactivate all others
                 cursor.execute(
                     """
@@ -657,26 +659,18 @@ def create_or_get_config(
 
             if conn_created:  # Only commit if this function created the connection
                 conn.commit()
-            logger.info(f"Created config: {config_id}, active: {is_active}")
-        elif is_active:
-            # If the config already exists but needs to be set as active
-            cursor.execute(
-                """
-                UPDATE configs
-                SET is_active = 0
-                WHERE config_id != ?
-                """,
-                (config_id,),
+            logger.info(
+                f"Created config: {config_id}, active: {is_active}, source: {source}"
             )
+        elif is_active or source is not None:
+            # Handle active flag
+            if is_active:
+                cursor.execute("UPDATE configs SET is_active = 0 WHERE config_id != ?", (config_id,))
+                cursor.execute("UPDATE configs SET is_active = 1 WHERE config_id = ?", (config_id,))
 
-            cursor.execute(
-                """
-                UPDATE configs
-                SET is_active = 1
-                WHERE config_id = ?
-                """,
-                (config_id,),
-            )
+            # Optionally update source if provided
+            if source is not None:
+                cursor.execute("UPDATE configs SET source = ? WHERE config_id = ?", (source, config_id))
 
             if conn_created:  # Only commit if this function created the connection
                 conn.commit()
@@ -2000,3 +1994,184 @@ def get_effective_config(settings, logger=None, connection=None):
     if logger:
         logger.error(error_msg)
     raise ValueError(error_msg)
+
+
+def create_tuning_result(
+    job_id: str,
+    config_id: str,
+    metrics: dict[str, Any] | None,
+    duration: int | None,
+    connection: sqlite3.Connection = None,
+) -> str:
+    """Insert a single tuning attempt produced by Ray tuning.
+
+    Args:
+        job_id: ID of the tuning job (from jobs table)
+        config_id: ID of the configuration (hash, must already exist in configs)
+        metrics: Dict with metric values returned by Ray
+        duration: Wall-clock seconds spent on the trial
+        connection: Optional existing sqlite3 connection
+
+    Returns:
+        Newly created result_id (UUID4 string)
+    """
+    result_id = generate_id()
+    metrics_json = json.dumps(metrics or {}, default=json_default_serializer)
+    conn_created = False
+    try:
+        if connection:
+            conn = connection
+        else:
+            conn = get_db_connection()
+            conn_created = True
+
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO tuning_results (result_id, job_id, config_id, metrics, duration, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result_id,
+                job_id,
+                config_id,
+                metrics_json,
+                duration,
+                datetime.now().isoformat(),
+            ),
+        )
+
+        if conn_created:
+            conn.commit()
+        return result_id
+    except sqlite3.Error as e:
+        logger.error(f"Database error creating tuning_result for job {job_id}: {e}")
+        if conn_created and conn:
+            conn.rollback()
+        raise DatabaseError(
+            f"Failed to create tuning result: {e}", original_error=e
+        ) from e
+    finally:
+        if conn_created and conn:
+            conn.close()
+
+
+def get_top_tuning_results(
+    metric_name: str,
+    higher_is_better: bool = True,
+    limit: int = 10,
+    threshold: float | None = None,
+    connection: sqlite3.Connection = None,
+) -> list[dict[str, Any]]:
+    """Return top tuning_results ordered by specific metric.
+
+    Rows where metric is NULL are ignored.  Optionally filter by threshold.
+    """
+    if metric_name not in ALLOWED_METRICS:
+        raise ValueError(
+            f"Invalid metric_name: {metric_name}. Allowed: {ALLOWED_METRICS}"
+        )
+
+    conn_created = False
+    try:
+        if connection:
+            conn = connection
+        else:
+            conn = get_db_connection()
+            conn_created = True
+        conn.row_factory = dict_factory
+        cursor = conn.cursor()
+
+        order = "DESC" if higher_is_better else "ASC"
+        json_path = f"'$.{metric_name}'"
+
+        sql = f"""
+            SELECT result_id, job_id, config_id, metrics,
+                   JSON_EXTRACT(metrics, {json_path}) AS metric_value,
+                   duration, created_at
+            FROM tuning_results
+            WHERE JSON_VALID(metrics)=1
+              AND JSON_EXTRACT(metrics, {json_path}) IS NOT NULL
+        """
+        params: tuple = ()
+        if threshold is not None:
+            comp = ">=" if higher_is_better else "<="
+            sql += f" AND JSON_EXTRACT(metrics, {json_path}) {comp} ?"
+            params = (threshold,)
+        sql += f" ORDER BY metric_value {order} LIMIT ?"
+        params += (limit,)
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall() or []
+        # parse metrics JSON for convenience
+        for r in rows:
+            try:
+                r["metrics"] = json.loads(r["metrics"] or "{}")
+            except json.JSONDecodeError:
+                r["metrics"] = {}
+            r.pop("metric_value", None)
+        return rows
+    finally:
+        if conn_created and conn:
+            conn.close()
+
+
+def get_top_configs(
+    limit: int = 5,
+    metric_name: str | None = None,
+    higher_is_better: bool = True,
+    include_active: bool = True,
+    connection: sqlite3.Connection = None,
+) -> list[dict[str, Any]]:
+    """Return best historical configs for seeding tuning.
+
+    Selection rules:
+    1. Optionally include the currently active config first.
+    2. Then order configs by metric from *training_results* table.
+       Rows where metric is NULL are ignored.
+    3. Falls back to most recently created configs if no metrics.
+    """
+    metric_name = metric_name or "val_MIC"  # default if not provided
+    if metric_name not in ALLOWED_METRICS:
+        # allow dynamic metrics but warn
+        logger.warning(
+            "get_top_configs: metric %s not in ALLOWED_METRICS – proceeding anyway", metric_name
+        )
+    order = "DESC" if higher_is_better else "ASC"
+    conn_created = False
+    try:
+        if connection:
+            conn = connection
+        else:
+            conn = get_db_connection()
+            conn_created = True
+        conn.row_factory = dict_factory
+        cursor = conn.cursor()
+
+        # Build base SQL to fetch configs with metric value
+        json_path = f"'$.{metric_name}'"
+        sql = f"""
+            SELECT c.config_id, c.config, c.created_at, c.is_active,
+                   JSON_EXTRACT(tr.metrics, {json_path}) AS metric_value
+            FROM configs c
+            LEFT JOIN training_results tr ON c.config_id = tr.config_id
+            WHERE JSON_VALID(tr.metrics)=1 OR tr.metrics IS NULL
+        """
+        # Filter: if include_active false, remove active
+        if not include_active:
+            sql += " AND c.is_active = 0"
+        sql += f" GROUP BY c.config_id ORDER BY c.is_active DESC, metric_value {order}, c.created_at DESC LIMIT ?"
+        cursor.execute(sql, (limit,))
+        rows = cursor.fetchall() or []
+        # ensure config json parsed
+        top_cfgs = []
+        for r in rows:
+            try:
+                cfg = json.loads(r["config"])
+            except Exception:
+                continue
+            top_cfgs.append(cfg)
+        return top_cfgs
+    finally:
+        if conn_created and conn:
+            conn.close()

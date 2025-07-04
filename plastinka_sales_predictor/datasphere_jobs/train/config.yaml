@@ -11,7 +11,7 @@ cloud-instance-types:
 
 # --- Job Inputs ---
 inputs:
-  - plastinka_sales_predictor/datasphere_job/input.zip: INPUT 
+  - plastinka_sales_predictor/datasphere_jobs/train/input.zip: INPUT 
 
 # --- Job Outputs ---
 outputs:
@@ -22,14 +22,14 @@ env:
   python:
     type: manual
     version: 3.10.13
-    requirements-file: plastinka_sales_predictor/requirements.txt
+    requirements-file: plastinka_sales_predictor/datasphere_jobs/train/requirements.txt
     pip-options:
-      index-url: https://download.pytorch.org/whl/cu118
+      index-url: https://pypi.org/simple
       extra-index-urls:
-        - https://pypi.org/simple
+        - https://download.pytorch.org/whl/cpu
     local-paths:
       - plastinka_sales_predictor
 
 # --- Execution Command ---
 # The main command to execute in the manual Python environment  
-cmd: python -m plastinka_sales_predictor.datasphere_job.train_and_predict --input ${INPUT} --output ${OUTPUT} 
+cmd: python -m plastinka_sales_predictor.datasphere_jobs.train.train_and_predict --input ${INPUT} --output ${OUTPUT} 

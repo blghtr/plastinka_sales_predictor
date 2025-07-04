@@ -45,20 +45,6 @@ jobs:
         fi
         echo "✅ Version format is valid: $VERSION"
         
-    - name: Update version in setup.cfg
-      run: |
-        FILE="plastinka_sales_predictor/setup.cfg"
-        if [ -f "$FILE" ]; then
-          if grep -q "^version = " "$FILE"; then
-            sed -i "s/^version = .*/version = ${{ steps.extract_version.outputs.VERSION }}/" "$FILE"
-            echo "✅ Updated version in $FILE"
-          else
-            echo "⚠️ No version line found in $FILE"
-          fi
-        else
-          echo "⚠️ File $FILE not found, skipping"
-        fi
-        
     - name: Update version in pyproject.toml
       run: |
         FILE="pyproject.toml"
@@ -73,19 +59,23 @@ jobs:
           echo "⚠️ File $FILE not found, skipping"
         fi
         
-    - name: Update version in config.yaml
+    - name: Update version in DataSphere config files
       run: |
-        FILE="plastinka_sales_predictor/datasphere_job/config.yaml"
-        if [ -f "$FILE" ]; then
-          if grep -q "Sales prediction (v" "$FILE"; then
-            sed -i 's/Sales prediction (v[^)]*)/Sales prediction (v${{ steps.extract_version.outputs.VERSION }})/' "$FILE"
-            echo "✅ Updated version in $FILE"
+        for FILE in \
+          "plastinka_sales_predictor/datasphere_jobs/train/config.yaml" \
+          "plastinka_sales_predictor/datasphere_jobs/tune/config.yaml"
+        do
+          if [ -f "$FILE" ]; then
+            if grep -q "Sales prediction (v" "$FILE"; then
+              sed -i 's/Sales prediction (v[^)]*)/Sales prediction (v${{ steps.extract_version.outputs.VERSION }})/' "$FILE"
+              echo "✅ Updated version in $FILE"
+            else
+              echo "⚠️ No version pattern found in $FILE"
+            fi
           else
-            echo "⚠️ No version pattern found in $FILE"
+            echo "⚠️ File $FILE not found, skipping"
           fi
-        else
-          echo "⚠️ File $FILE not found, skipping"
-        fi
+        done
         
     - name: Check if changes were made
       id: check_changes
@@ -104,7 +94,9 @@ jobs:
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add plastinka_sales_predictor/setup.cfg pyproject.toml plastinka_sales_predictor/datasphere_job/config.yaml
+        git add pyproject.toml \
+          plastinka_sales_predictor/datasphere_jobs/train/config.yaml \
+          plastinka_sales_predictor/datasphere_jobs/tune/config.yaml
         git commit -m "chore: sync version to ${{ steps.extract_version.outputs.VERSION }} [skip ci]"
         git push origin HEAD:main
         
@@ -115,9 +107,9 @@ jobs:
         echo "**Version updated to:** \`${{ steps.extract_version.outputs.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Files updated:**" >> $GITHUB_STEP_SUMMARY
-        echo "- \`plastinka_sales_predictor/setup.cfg\`" >> $GITHUB_STEP_SUMMARY
-        echo "- \`pyproject.toml\`" >> $GITHUB_STEP_SUMMARY  
-        echo "- \`plastinka_sales_predictor/datasphere_job/config.yaml\`" >> $GITHUB_STEP_SUMMARY 
+        echo "- \`pyproject.toml\`" >> $GITHUB_STEP_SUMMARY
+        echo "- \`plastinka_sales_predictor/datasphere_jobs/train/config.yaml\`" >> $GITHUB_STEP_SUMMARY
+        echo "- \`plastinka_sales_predictor/datasphere_jobs/tune/config.yaml\`" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         if [ "${{ steps.check_changes.outputs.HAS_CHANGES }}" == "true" ]; then
           echo "**Status:** ✅ Changes committed and pushed" >> $GITHUB_STEP_SUMMARY

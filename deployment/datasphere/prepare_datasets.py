@@ -70,8 +70,11 @@ def load_data(start_date=None, end_date=None, feature_types=None):
     return features
 
 
+# type: ignore[override]
 def prepare_datasets(
-    raw_features: dict, config: dict, save_directory: str
+    raw_features: dict,
+    config: dict | None,
+    save_directory: str,
 ) -> tuple[PlastinkaTrainingTSDataset, PlastinkaTrainingTSDataset]:
     """
     Loads data from DB, prepares features, creates full dataset.
@@ -88,7 +91,11 @@ def prepare_datasets(
     logger.info("Starting feature preparation...")
 
     # Validate required raw features exist
-    if "sales" not in raw_features or "stock" not in raw_features:
+    if (
+        "sales" not in raw_features
+        or "stock" not in raw_features
+        or "change" not in raw_features
+    ):
         raise ValueError("Missing required raw feature data.")
 
     try:
@@ -104,7 +111,7 @@ def prepare_datasets(
     try:
         # 1. Stock Features (using get_stock_features from prepare_datasets.py)
         features["stock_features"] = get_stock_features(
-            features["stock"], features.get("change", pd.DataFrame())
+            features["stock"], features["change"]
         )
         logger.info("Step 1 completed: Stock features created successfully.")
 
@@ -118,7 +125,14 @@ def prepare_datasets(
 
         dataset_length = sales_pivot.shape[0]
         output_chunk_length = 1
-        lags = config.lags
+
+        # Determine lags: prefer value from config; else derive automatically
+        if config and hasattr(config, "lags") and getattr(config, "lags"):
+            lags = getattr(config, "lags")
+        else:
+            # Choose lags so that at least one training window exists, cap at 12
+            lags = max(1, min(12, dataset_length - 2))
+
         length = lags + 1
         train_end = max(length, dataset_length - length)
 

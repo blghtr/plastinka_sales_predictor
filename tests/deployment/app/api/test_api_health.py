@@ -506,7 +506,6 @@ class TestComponentHealthChecks:
             "DATASPHERE_FOLDER_ID": "folder456",
             "API_X_API_KEY": "api_key_789",
             "API_ADMIN_API_KEY": "admin_key_123",
-            "CALLBACK_AUTH_TOKEN": "token_abc",
             "DATASPHERE_OAUTH_TOKEN": "oauth_token_def",
         },
     )
@@ -526,12 +525,11 @@ class TestComponentHealthChecks:
             "DATASPHERE_FOLDER_ID": "folder456",
             "API_X_API_KEY": "api_key_789",
             "API_ADMIN_API_KEY": "admin_key_123",
-            "CALLBACK_AUTH_TOKEN": "token_abc",
             "DATASPHERE_YC_PROFILE": "default",
         },
     )
     def test_check_environment_healthy_with_yc_profile(self):
-        """Test get_environment_status returns healthy when using YC profile for DataSphere auth."""
+        """Test environment health check is healthy with full config (YC profile)."""
         # Act
         result = get_environment_status()
 

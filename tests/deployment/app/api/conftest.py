@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-# Добавляем корневую директорию проекта в sys.path для исправления импортов
-project_root = Path(__file__).parent.parent.parent.parent
+# Correctly resolve the project root (five levels up: api -> app -> deployment -> tests -> repo root)
+project_root = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(project_root))
 
 
@@ -76,6 +76,10 @@ def base_client(
     """
     session_monkeypatch.setenv("API_X_API_KEY", "test_x_api_key_conftest")
     session_monkeypatch.setenv("API_API_KEY", "test_token")
+
+    # Clear cached settings so that new environment variables are picked up
+    from deployment.app.config import get_settings
+    get_settings.cache_clear()
 
     with (
         patch("deployment.app.api.admin.run_cleanup_job", mock_run_cleanup_job_fixture),

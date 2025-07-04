@@ -13,6 +13,11 @@ output "datasphere_project_id" {
   value       = module.project.project_id
 }
 
+output "datasphere_cloud_id" {
+  description = "DataSphere Cloud ID"
+  value       = var.yc_cloud_id
+}
+
 output "service_account_id" {
   description = "ID of the DataSphere service account"
   value       = module.datasphere_service_account.service_account_id

@@ -26,10 +26,26 @@ import click.testing
 import numpy as np
 import pandas as pd
 import pytest
+import importlib
 
 # Import the module under test
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-from plastinka_sales_predictor.datasphere_job import train_and_predict
+sys.modules.setdefault(
+    "plastinka_sales_predictor.datasphere_job.train_and_predict",
+    importlib.import_module(
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict"
+    ),
+)
+# Ensure attribute is present on parent package for patch decorators
+parent_pkg = importlib.import_module("plastinka_sales_predictor.datasphere_job")
+setattr(
+    parent_pkg,
+    "train_and_predict",
+    importlib.import_module(
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict"
+    ),
+)
+from plastinka_sales_predictor.datasphere_jobs.train import train_and_predict
 
 
 class TestTrainModel:

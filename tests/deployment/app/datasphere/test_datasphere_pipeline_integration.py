@@ -113,7 +113,7 @@ async def test_end_to_end_datasphere_pipeline(mocked_db, mock_datasphere):
     with (
         patch("deployment.app.db.database.get_job", return_value=mock_job),
         patch(
-            "deployment.app.services.datasphere_service._process_job_results",
+            "deployment.app.services.datasphere_service.process_job_results_unified",
             side_effect=mock_process_job_results,
         ),
     ):
@@ -217,7 +217,7 @@ async def test_datasphere_job_polling_status_tracking(mocked_db, mock_datasphere
     with (
         patch("deployment.app.db.database.get_job", return_value=mock_job),
         patch(
-            "deployment.app.services.datasphere_service._process_job_results",
+            "deployment.app.services.datasphere_service.process_job_results_unified",
             side_effect=mock_process_job_results,
         ),
     ):
@@ -344,7 +344,7 @@ async def test_datasphere_pipeline_db_format_validation(mocked_db, mock_datasphe
     with (
         patch("deployment.app.db.database.get_job", return_value=mock_job),
         patch(
-            "deployment.app.services.datasphere_service._process_job_results",
+            "deployment.app.services.datasphere_service.process_job_results_unified",
             side_effect=mock_process_job_results,
         ),
     ):
@@ -548,7 +548,7 @@ async def test_datasphere_pipeline_rollback_cleanup(mocked_db, mock_datasphere, 
         patch("os.path.isdir", side_effect=mock_isdir),
         patch("os.makedirs"),
         patch(
-            "deployment.app.services.datasphere_service._process_job_results",
+            "deployment.app.services.datasphere_service.process_job_results_unified",
             side_effect=mock_process_job_results,
         ),
         patch(

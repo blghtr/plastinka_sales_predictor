@@ -212,7 +212,7 @@ grep "DataSphere" ~/.plastinka_sales_predictor/logs/app.log
 **Ошибки аутентификации:**
 ```bash
 # Проверить валидность токена
-yc config profile list
+
 yc config profile activate default
 ```
 

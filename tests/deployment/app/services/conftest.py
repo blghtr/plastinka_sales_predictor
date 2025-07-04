@@ -53,8 +53,8 @@ def temp_workspace():
             "output_dir": os.path.join(temp_dir, "datasphere_output"),
             "models_dir": os.path.join(temp_dir, "models"),
             "logs_dir": os.path.join(temp_dir, "logs"),
-            "job_dir": os.path.join(temp_dir, "datasphere_job"),
-            "config_path": os.path.join(temp_dir, "datasphere_job", "config.yaml"),
+            "job_dir": os.path.join(temp_dir, "datasphere_jobs"),
+            "config_path": os.path.join(temp_dir, "datasphere_jobs", "config.yaml"),
         }
 
         # Create all directories
@@ -65,8 +65,14 @@ def temp_workspace():
                 os.makedirs(os.path.dirname(dir_path), exist_ok=True)
                 with open(dir_path, "w") as f:
                     f.write(
-                        "# Fake DataSphere job config\nname: test_job\ntype: python"
+                        "# Fake DataSphere job config\nname: test_job\ndesc: Test job\ncmd: python -m test"
                     )
+        # Additionally, create train/ and tune/ subdirectories with stub config.yaml
+        for sub in ["train", "tune"]:
+            subdir = os.path.join(workspace["job_dir"], sub)
+            os.makedirs(subdir, exist_ok=True)
+            with open(os.path.join(subdir, "config.yaml"), "w") as f:
+                f.write("name: test_job\ndesc: Test job\ncmd: python -m test")
 
         yield workspace
 
@@ -131,6 +137,8 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
     mock_settings.datasphere_job_dir = temp_workspace["job_dir"]
     mock_settings.models_dir = temp_workspace["models_dir"]
     mock_settings.project_root_dir = temp_workspace["temp_dir"]
+    mock_settings.datasphere_job_train_dir = os.path.join(temp_workspace["job_dir"], "train")
+    mock_settings.datasphere_job_tune_dir = os.path.join(temp_workspace["job_dir"], "tune")
 
     # DataSphere client settings
     mock_settings.datasphere = MagicMock()

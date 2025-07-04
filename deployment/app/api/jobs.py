@@ -421,52 +421,87 @@ async def create_training_job(
         ) from e
 
 
-@router.post("/prediction", response_model=PredictionResponse)
-async def create_prediction_job(
+@router.post("/tuning", response_model=JobResponse)
+async def create_tuning_job(
     request: Request,
-    params: PredictionParams,
     background_tasks: BackgroundTasks,
+    dataset_start_date: str | None = None,
+    dataset_end_date: str | None = None,
+    mode: str | None = Query(None, regex="^(light|full)$", description="Tuning mode: light or full"),
+    time_budget_s: int | None = Query(
+        None,
+        gt=0,
+        description="Global time budget for Ray Tune in seconds (positive integer)",
+    ),
     api_key: bool = Depends(get_current_api_key_validated),
 ):
     """
-    Submit a job to generate predictions.
+    Submit a hyper-parameter tuning job.
 
-    This will:
-    1. Load the model specified by model_id
-    2. Generate predictions
-    3. Save the prediction results
-
-    Returns a job ID that can be used to check the job status.
+    Similar validation as /training, but optionally accepts `mode` (light/full).
+    Service will seed tuning with several best historical configs.
     """
+    logger.info("Received request to create tuning job")
     try:
-        raise NotImplementedError("Prediction job is not implemented yet")
+        # 1. Validate dates if provided
+        parsed_start_date = None
+        parsed_end_date = None
 
-    except DatabaseError as e:
-        logger.error(
-            f"Database error in prediction job creation: {str(e)}", exc_info=True
+        if dataset_start_date:
+            is_valid, parsed_start_date = validate_date_format(dataset_start_date, format_str="%d.%m.%Y")
+            if not is_valid:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid start date format. Expected DD.MM.YYYY.")
+        if dataset_end_date:
+            is_valid, parsed_end_date = validate_date_format(dataset_end_date, format_str="%d.%m.%Y")
+            if not is_valid:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid end date format. Expected DD.MM.YYYY.")
+
+        # Logical validation of range
+        if parsed_start_date and parsed_end_date:
+            is_valid, error_msg, _, _ = validate_historical_date_range(parsed_start_date, parsed_end_date, format_str="%d.%m.%Y")
+            if not is_valid:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg)
+
+        # 2. Формируем параметры задания
+        job_params = {
+            "mode": mode or get_settings().tuning.mode,
+        }
+        if parsed_start_date:
+            job_params["dataset_start_date"] = parsed_start_date
+        if parsed_end_date:
+            job_params["dataset_end_date"] = parsed_end_date
+        if time_budget_s is not None:
+            job_params["time_budget_s"] = time_budget_s
+
+        # 3. Создание задания в БД
+        job_id = create_job(JobType.TUNING, parameters=job_params)
+        logger.info(f"Tuning job created: {job_id}")
+
+        # 4. Подготовка динамических параметров задачи
+        additional_params: dict[str, int | str] = {}
+        if mode:
+            additional_params["mode"] = mode
+        if time_budget_s is not None:
+            additional_params["time_budget_s"] = time_budget_s
+
+        background_tasks.add_task(
+            run_job,
+            job_id=job_id,
+            training_config=None,
+            config_id=None,
+            job_type="tune",
+            dataset_start_date=parsed_start_date,
+            dataset_end_date=parsed_end_date,
+            additional_job_params=additional_params,
         )
-        error = ErrorDetail(
-            message="Failed to create prediction job due to database error",
-            code="database_error",
-            status_code=500,
-            details={"error": str(e)},
-        )
-        error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
+
+        return JobResponse(job_id=job_id, status=JobStatus.PENDING)
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(
-            f"Unexpected error in prediction job creation: {str(e)}", exc_info=True
-        )
-        error = ErrorDetail(
-            message="Failed to create prediction job",
-            code="internal_error",
-            status_code=500,
-            details={"error": str(e)},
-            exception=e,
-        )
-        error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
-
+        logger.error(f"Unexpected error in create_tuning_job: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
 
 @router.post("/reports", response_model=JobResponse)
 async def create_prediction_report_job(

@@ -217,22 +217,32 @@ def train_model(config, ds, val_ds, random_state=42, model_name="TiDE"):
     return model
 
 
-def train_fn(config, fixed_config, ds):
+def train_fn(config, fixed_config, ds, val_ds=None):
+    """Ray Tune trainable wrapper.
+
+    If *val_ds* provided, use it directly; otherwise split *ds* into
+    train/val windows (legacy behaviour).
+    """
+
     config = merge_with_fixed_params(config, fixed_config)
 
-    L = ds.L
-    lags = config["lags"]
-    length = lags + 1
+    if val_ds is None:
+        L = ds.L
+        lags = config["lags"]
+        length = lags + 1
 
-    temp_train = ds.setup_dataset(
-        input_chunk_length=lags, output_chunk_length=1, window=(0, L - 1)
-    )
-    temp_val = ds.setup_dataset(
-        input_chunk_length=lags, output_chunk_length=1, window=(L - length, L)
-    )
+        temp_train = ds.setup_dataset(
+            input_chunk_length=lags, output_chunk_length=1, window=(0, L - 1)
+        )
+        temp_val = ds.setup_dataset(
+            input_chunk_length=lags, output_chunk_length=1, window=(L - length, L)
+        )
 
-    assert temp_train.L < ds.L and temp_val.end < ds._n_time_steps
-    train_model(config, temp_train, temp_val)
+        assert temp_train.L < ds.L and temp_val.end < ds._n_time_steps
+        train_model(config, temp_train, temp_val)
+    else:
+        # Use provided datasets directly
+        train_model(config, ds, val_ds)
 
 
 def trial_name_creator(trial):

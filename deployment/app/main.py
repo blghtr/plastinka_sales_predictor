@@ -24,6 +24,9 @@ from deployment.app.logger_config import configure_logging
 # Import utils
 from deployment.app.utils.error_handling import configure_error_handlers
 
+# Получаем актуальную версию пакета
+from plastinka_sales_predictor import __version__ as app_version
+
 # This sets up a single console handler that integrates with Uvicorn / FastAPI
 # and avoids spawning extra threads or writing to dataset-specific files.
 configure_logging()
@@ -50,7 +53,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Plastinka Sales Predictor API",
     description="API for predicting vinyl record sales",
-    version="0.1.0",
+    version=app_version,
     lifespan=lifespan,
 )
 
@@ -79,7 +82,7 @@ async def root():
     return {
         "message": "Plastinka Sales Predictor API",
         "docs": "/docs",
-        "version": "0.1.0",
+        "version": app_version,
     }
 
 

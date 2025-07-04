@@ -15,19 +15,33 @@ import pandas as pd
 from deployment.app.config import get_settings
 from deployment.app.db.database import (
     create_model_record,
+    create_or_get_config,
     create_training_result,
+    create_tuning_result,
     delete_models_by_ids,
     execute_many,
+    execute_query,
     get_all_models,
     get_db_connection,
     get_job,
     get_or_create_multiindex_id,
     get_recent_models,
+    get_top_configs,
     update_job_status,
 )
 from deployment.app.models.api_models import JobStatus, TrainingConfig
+from deployment.app.services.job_registries.input_preparator_registry import (
+    get_input_preparator,
+)
+from deployment.app.services.job_registries.job_type_registry import (
+    JobTypeConfig,
+    get_job_type_config,
+)
 from deployment.datasphere.client import DataSphereClient
 from deployment.datasphere.prepare_datasets import get_datasets
+from deployment.app.services.job_registries.result_processor_registry import (
+    process_job_results_unified,
+)
 
 # Initialize settings
 # settings = AppSettings()
@@ -105,7 +119,7 @@ def cleanup_project_input_link(project_root: str) -> None:
 
 async def _prepare_job_datasets(
     job_id: str,
-    config: TrainingConfig,
+    config: TrainingConfig | None,
     start_date_for_dataset: str = None,
     end_date_for_dataset: str = None,
     output_dir: str = None,
@@ -122,6 +136,7 @@ async def _prepare_job_datasets(
             end_date=end_date_for_dataset,
             config=config,
             output_dir=output_dir,
+            feature_types=["sales", "stock", "change"],
         )
         logger.info(f"[{job_id}] Datasets prepared in {output_dir}.")
         update_job_status(
@@ -201,66 +216,40 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
         raise RuntimeError(error_msg) from e
 
 
-async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path) -> None:
+async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path, job_config: JobTypeConfig) -> None:
     """
-    Verifies the integrity of all necessary DataSphere job input files before archiving and submission.
-    Ensures the input directory exists, is a directory, and contains the config and dataset files.
+    Verify that all required input files for the given job type exist.
 
     Args:
-        job_id: The ID of the current job.
-        input_dir_path: The path to the input directory to be verified.
-
-    Raises:
-        FileNotFoundError: If a critical file (config.json or dataset) is missing.
-        RuntimeError: If the input directory is invalid or other general integrity issues.
+        job_id: Internal job identifier.
+        input_dir_path: Directory that should contain the input files.
+        job_config: JobTypeConfig describing required/optional files.
     """
     logger.info(
-        f"[{job_id}] Stage 4a.1: Verifying DataSphere job inputs in {input_dir_path}..."
+        f"[{job_id}] Stage 4a.1: Verifying DataSphere job inputs (job_type={job_config.name}) in {input_dir_path}..."
     )
-
-    # 1. Verify Input Directory Existence and Type
-    if not input_dir_path.exists():
-        error_msg = (
-            f"Input directory '{input_dir_path}' does not exist for job {job_id}."
-        )
+    # Directory existence
+    if not input_dir_path.exists() or not input_dir_path.is_dir():
+        error_msg = f"Input directory '{input_dir_path}' is invalid for job {job_id}."
         logger.error(f"[{job_id}] {error_msg}")
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg)
 
-    if not input_dir_path.is_dir():
+    # Check required files
+    missing_required: list[str] = []
+    for req_file in job_config.required_input_files:
+        if not (input_dir_path / req_file).is_file():
+            missing_required.append(req_file)
+
+    if missing_required:
         error_msg = (
-            f"Input path '{input_dir_path}' is not a directory for job {job_id}."
+            f"Missing required input files for job {job_id}: {', '.join(missing_required)}"
         )
         logger.error(f"[{job_id}] {error_msg}")
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
-        raise RuntimeError(error_msg)
-
-    # 2. Validate config.json
-    config_json_file = input_dir_path / "config.json"
-    if not config_json_file.is_file():
-        error_msg = f"Required config.json not found in input directory '{input_dir_path}' for job {job_id}."
-        logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
 
-    # 3. Validate Dataset Files (e.g., train.dill, val.dill, full.dill)
-    # Based on prepare_datasets.py, it should produce 'train.dill' and 'val.dill'
-    train_data_file = input_dir_path / "train.dill"
-    val_data_file = input_dir_path / "val.dill"
-
-    if not train_data_file.is_file() or not val_data_file.is_file():
-        missing_datasets = []
-        if not train_data_file.is_file():
-            missing_datasets.append("train.dill")
-        if not val_data_file.is_file():
-            missing_datasets.append("val.dill")
-
-        error_msg = f"Missing required dataset files in input directory '{input_dir_path}' for job {job_id}: {', '.join(missing_datasets)}."
-        logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
-        raise FileNotFoundError(error_msg)
-
-    logger.info(f"[{job_id}] DataSphere job inputs verified successfully.")
+    logger.info(f"[{job_id}] All required input files verified successfully.")
     update_job_status(
         job_id,
         JobStatus.RUNNING.value,
@@ -269,18 +258,29 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path) -> No
     )
 
 
-async def _prepare_datasphere_job_submission(
-    job_id: str, config: TrainingConfig, target_input_dir: Path
+async def _prepare_job_inputs_unified(
+    job_id: str,
+    config: TrainingConfig | None,
+    target_input_dir: Path,
+    job_config: JobTypeConfig,
 ) -> str:
-    """Prepares the parameters file for job submission."""
-    logger.info(f"[{job_id}] Stage 4a: Preparing DataSphere job submission inputs...")
+    """
+    Prepares the input files for a DataSphere job submission using a registered preparator.
+    Returns the path to the main job config file (e.g., config.yaml).
+    """
+    logger.info(
+        f"[{job_id}] Stage 4a: Preparing DataSphere job submission inputs via '{job_config.input_preparator_name}'..."
+    )
 
-    # Save training config as JSON
-    config_json_path = str(target_input_dir / "config.json")
-    logger.info(f"[{job_id}] Saving training config to {config_json_path}")
-    with open(config_json_path, "w") as f:  # open() accepts string path
-        # Use model_dump_json for Pydantic v2+
-        json.dump(config.model_dump(), f, indent=2)  # Save training config
+    # Get and run the specific preparator for the job type
+    try:
+        preparator = get_input_preparator(job_config.input_preparator_name)
+        await preparator(job_id, config, target_input_dir, job_config)
+    except Exception as e:
+        error_msg = f"Failed during input preparation with '{job_config.input_preparator_name}': {e}"
+        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        raise RuntimeError(error_msg) from e
 
     logger.info(f"[{job_id}] DataSphere job submission inputs prepared.")
     update_job_status(
@@ -290,8 +290,10 @@ async def _prepare_datasphere_job_submission(
         status_message="Job submission inputs prepared.",
     )
 
-    # Return the path to the static template config file
-    return str(get_settings().datasphere_job_config_path)
+    # Return the path to the job-specific config file for DataSphere client
+    settings = get_settings()
+    script_dir = job_config.get_script_dir(settings)
+    return os.path.join(script_dir, job_config.config_filename)
 
 
 async def _archive_input_directory(
@@ -667,7 +669,8 @@ async def _process_datasphere_job(
     ds_job_specific_output_base_dir: str,
     ready_config_path: str,
     work_dir: str,
-) -> tuple[str, str, dict[str, Any] | None, str | None, str | None, int]:
+    job_config: JobTypeConfig,
+) -> tuple[str, str, dict[str, Any] | None, dict[str, str | None], int]:
     """
     Coordinates the DataSphere job lifecycle including submission, monitoring, and result fetching.
 
@@ -694,8 +697,7 @@ async def _process_datasphere_job(
     poll_interval = settings.datasphere.poll_interval
     polls = 0
     metrics_data = None
-    predictions_path = None
-    model_path = None
+    output_files = {}
 
     logger.info(
         f"[{job_id}] Polling DS Job {ds_job_id} status (max_polls={max_polls}, poll_interval={poll_interval}s)."
@@ -748,11 +750,22 @@ async def _process_datasphere_job(
             # Download and process results
             (
                 metrics_data,
-                predictions_path,
-                model_path,
+                _,  # predictions_path (deprecated)
+                _,  # model_path (deprecated)
             ) = await _download_datasphere_job_results(
                 job_id, ds_job_id, client, ds_job_specific_output_base_dir
             )
+            
+            # Dynamically find output files based on job configuration
+            output_files = {}
+            for expected_file in job_config.expected_output_files:
+                file_path = os.path.join(ds_job_specific_output_base_dir, expected_file)
+                if os.path.exists(file_path):
+                    output_files[expected_file] = file_path
+                    logger.info(f"[{job_id}] Found expected output file: {expected_file}")
+                else:
+                    logger.warning(f"[{job_id}] Expected output file '{expected_file}' not found")
+                    output_files[expected_file] = None
 
             # Download logs and diagnostics if configured
             download_diag_on_success = getattr(
@@ -800,8 +813,7 @@ async def _process_datasphere_job(
         ds_job_id,
         ds_job_specific_output_base_dir,
         metrics_data,
-        model_path,
-        predictions_path,
+        output_files,
         polls,
     )
 
@@ -866,116 +878,8 @@ async def _perform_model_cleanup(job_id: str, current_model_id: str) -> None:
         # Non-fatal, log and continue
 
 
-async def _process_job_results(
-    job_id: str,
-    ds_job_id: str,
-    results_dir: str,  # Base directory where results were downloaded.
-    config: TrainingConfig,
-    metrics_data: dict[str, Any] | None,
-    model_path: str | None,
-    predictions_path: str | None,
-    polls: int,
-    poll_interval: float,
-    config_id: str,
-):
-    """Processes the results of a completed DataSphere job, saving artifacts and updating the database."""
-    final_message = f"Job completed. DS Job ID: {ds_job_id}."
-    warnings_list = []
-    model_id_for_status = None
-
-    try:
-        # Save model and predictions if they exist
-        if model_path:
-            model_id_for_status = await save_model_file_and_db(
-                job_id=job_id,
-                model_path=model_path,
-                ds_job_id=ds_job_id,
-                config=config,
-                metrics_data=metrics_data,
-            )
-            logger.info(f"[{job_id}] Model saved with ID: {model_id_for_status}")
-
-            if predictions_path:
-                prediction_result_info = save_predictions_to_db(
-                    predictions_path=predictions_path,
-                    job_id=job_id,
-                    model_id=model_id_for_status,  # Pass current_model_id, which is confirmed not None here
-                )
-                logger.info(
-                    f"[{job_id}] Saved {prediction_result_info.get('predictions_count', 'N/A')} predictions to database with result_id: {prediction_result_info.get('result_id', 'N/A')}"
-                )
-            else:
-                logger.warning(
-                    f"[{job_id}] No predictions file found, cannot save predictions to DB."
-                )
-                warnings_list.append("Predictions file not found in results.")
-        else:
-            logger.warning(
-                f"[{job_id}] Model path is None or empty. Skipping model and prediction saving."
-            )
-            warnings_list.append("Model file not found in results.")
-
-        # Create a record of the training result with metrics
-        training_result_id = None
-        if metrics_data:
-            training_result_id = create_training_result(
-                job_id=job_id,
-                config_id=config_id,
-                metrics=metrics_data,  # Pass the dict directly
-                model_id=model_id_for_status,  # Can be None if model saving failed or no model
-                duration=int(polls * poll_interval),
-                config=config.model_dump(),  # Pass the dict directly
-            )
-            logger.info(
-                f"[{job_id}] Training result record created: {training_result_id}"
-            )
-            final_message += f" Training Result ID: {training_result_id}."
-        else:
-            logger.warning(
-                f"[{job_id}] No metrics data available. Training result record not created."
-            )
-            warnings_list.append("Metrics data not found in results.")
-
-        # Append warnings to the status message if any
-        if warnings_list:
-            final_message += " Processing warnings: " + "; ".join(warnings_list)
-
-        # Update job status to completed
-        update_job_status(
-            job_id,
-            JobStatus.COMPLETED.value,
-            progress=100,
-            status_message=final_message,
-            result_id=training_result_id,
-        )
-        logger.info(
-            f"[{job_id}] Job processing completed. Final status message: {final_message}"
-        )
-
-        # Perform model cleanup only if a model was successfully created in this run
-        if model_id_for_status:
-            await _perform_model_cleanup(job_id, model_id_for_status)
-        else:
-            logger.info(
-                f"[{job_id}] Skipping model cleanup as no new model was created in this job run."
-            )
-
-    except Exception as e:
-        error_msg = f"Error processing job results: {str(e)}"
-        logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        # Ensure final status is FAILED if not already set by a more specific handler
-        # Check if job status was already updated to FAILED by a helper, to avoid overwriting detailed message
-        job_details = get_job(
-            job_id
-        )  # This might fail if DB is unavailable, handle it.
-        if job_details and job_details.get("status") != JobStatus.FAILED.value:
-            update_job_status(
-                job_id,
-                JobStatus.FAILED.value,
-                error_message=error_msg,
-                status_message=error_msg,
-            )
-        raise
+# NOTE: _process_job_results has been moved to result_processors.py 
+# as process_training_results in the unified result processing architecture
 
 
 async def _cleanup_directories(job_id: str, dir_paths: list[str]) -> list[str]:
@@ -1217,13 +1121,26 @@ def save_predictions_to_db(
         raise ValueError(f"Error processing predictions: {str(e)}") from e
 
 
+# Allowed job types
+JOB_TYPE_TRAIN = "train"
+JOB_TYPE_TUNE = "tune"
+
+
+
+
+# NOTE: _process_tuning_job_results has been moved to result_processors.py
+# as part of the unified result processing architecture
+
+
 # Main Orchestrator Function
 async def run_job(
     job_id: str,
-    training_config: dict,
-    config_id: str,
+    training_config: dict | None = None,
+    config_id: str | None = None,
+    job_type: str = JOB_TYPE_TRAIN,
     dataset_start_date: str = None,
     dataset_end_date: str = None,
+    additional_job_params: dict | None = None,
 ) -> dict[str, Any] | None:
     """
     Runs a DataSphere training job pipeline: setup, execution, monitoring, result processing, cleanup.
@@ -1246,6 +1163,17 @@ async def run_job(
             temp_output_dir = Path(temp_output_dir_str)
 
             try:
+                # Get job configuration from registry (returns a COPY)
+                job_config = get_job_type_config(job_type)
+
+                # Merge dynamic parameters passed from API (if any)
+                if additional_job_params:
+                    job_config.additional_params.update(additional_job_params)
+
+                logger.info(
+                    f"[{job_id}] Using job configuration for type: {job_config.name} with additional_params={job_config.additional_params}"
+                )
+
                 # Initialize job status
                 update_job_status(
                     job_id,
@@ -1253,12 +1181,9 @@ async def run_job(
                     progress=0,
                     status_message="Initializing job.",
                 )
-
-                # Stage 1: Get Parameters (already provided)
-                if training_config is None:
-                    raise ValueError("No training configuration was provided or found.")
-
-                config = TrainingConfig(**training_config)
+                config = None
+                if training_config:
+                    config = TrainingConfig(**training_config)
 
                 # Stage 2: Prepare Datasets
                 await _prepare_job_datasets(
@@ -1273,12 +1198,15 @@ async def run_job(
                 client = await _initialize_datasphere_client(job_id)
 
                 # Stage 4a: Prepare DS Job Submission Inputs
-                static_config_path = await _prepare_datasphere_job_submission(
-                    job_id, config, temp_input_dir
+                config_path = await _prepare_job_inputs_unified(
+                    job_id,
+                    config,
+                    temp_input_dir,
+                    job_config,
                 )
 
                 # Stage 4a.1: Verify DataSphere job inputs
-                await _verify_datasphere_job_inputs(job_id, temp_input_dir)
+                await _verify_datasphere_job_inputs(job_id, temp_input_dir, job_config)
 
                 # Stage 4b: Archive Input Directory
                 archive_path = await _archive_input_directory(
@@ -1286,8 +1214,11 @@ async def run_job(
                 )
 
                 # Stage 4c: Create Project Link
+                # Put input.zip inside the specific job scripts directory so that
+                # DataSphere job picks it up correctly (train vs tune)
+                job_scripts_dir = job_config.get_script_dir(get_settings())
                 project_input_link_path = create_project_input_link(
-                    archive_path, str(get_settings().datasphere_job_dir)
+                    archive_path, job_scripts_dir
                 )
                 logger.info(
                     f"[{job_id}] Created project input link: {project_input_link_path}"
@@ -1304,29 +1235,29 @@ async def run_job(
                     ds_job_id,
                     results_dir_from_process,
                     metrics_data,
-                    model_path,
-                    predictions_path,
+                    output_files,
                     polls,
                 ) = await _process_datasphere_job(
                     job_id,
                     client,
                     temp_output_dir,
-                    static_config_path,
+                    config_path,
                     temp_input_dir_str,  # Pass temp_input_dir as work_dir for local modules
+                    job_config,
                 )
 
-                # Stage 6: Process Results
-                await _process_job_results(
-                    job_id,
-                    ds_job_id,
-                    results_dir_from_process,
-                    config,
-                    metrics_data,
-                    model_path,
-                    predictions_path,
-                    polls,
-                    get_settings().datasphere.poll_interval,
-                    config_id,
+                # Stage 6: Process Results using unified registry
+                await process_job_results_unified(
+                    job_id=job_id,
+                    processor_name=job_config.result_processor_name,
+                    ds_job_id=ds_job_id,
+                    results_dir=results_dir_from_process,
+                    config=config,
+                    metrics_data=metrics_data,
+                    output_files=output_files,
+                    polls=polls,
+                    poll_interval=get_settings().datasphere.poll_interval,
+                    config_id=config_id,
                 )
                 job_completed_successfully = True
                 logger.info(f"[{job_id}] Job pipeline completed successfully.")
@@ -1335,7 +1266,6 @@ async def run_job(
                     "job_id": job_id,
                     "status": JobStatus.COMPLETED.value,
                     "datasphere_job_id": ds_job_id,
-                    "model_id": model_path.split(os.sep)[-2] if model_path else None,
                     "message": "Job completed successfully",
                 }
             except asyncio.CancelledError:
@@ -1416,7 +1346,7 @@ async def run_job(
             finally:
                 # Cleanup project input link regardless of success/failure
                 if project_input_link_path:
-                    cleanup_project_input_link(str(get_settings().datasphere_job_dir))
+                    cleanup_project_input_link(job_scripts_dir)
 
                 # The temporary directories are cleaned up automatically by the context manager.
                 # Final log message for job run completion.

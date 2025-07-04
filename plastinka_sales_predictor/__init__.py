@@ -2,7 +2,12 @@
 Plastinka Sales Predictor - A machine learning model for sales prediction.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import version as _pkg_version, PackageNotFoundError as _PkgNF
+
+try:
+    __version__ = _pkg_version(__name__)
+except _PkgNF:
+    __version__ = "0.0.0+local"  # fallback для editable-install или запуска из исходников
 
 # Always available imports (no ML dependencies)
 from .data_preparation import GlobalLogMinMaxScaler, PlastinkaTrainingTSDataset

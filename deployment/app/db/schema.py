@@ -141,7 +141,8 @@ CREATE TABLE IF NOT EXISTS configs (
     config_id TEXT PRIMARY KEY, -- Could be a hash of the parameters
     config TEXT NOT NULL,        -- JSON string of the parameters
     created_at TIMESTAMP NOT NULL,
-    is_active BOOLEAN DEFAULT 0
+    is_active BOOLEAN DEFAULT 0,
+    source TEXT                 -- 'manual' | 'tuning' | NULL
 );
 
 CREATE TABLE IF NOT EXISTS training_results (
@@ -174,6 +175,17 @@ CREATE TABLE IF NOT EXISTS report_results (
     parameters TEXT,        -- JSON of report parameters
     output_path TEXT,       -- Path to generated report
     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+);
+
+CREATE TABLE IF NOT EXISTS tuning_results (
+    result_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    config_id TEXT NOT NULL,
+    metrics TEXT,           -- JSON of tuning metrics
+    duration INTEGER,       -- in seconds
+    created_at TIMESTAMP NOT NULL,
+    FOREIGN KEY (job_id) REFERENCES jobs(job_id),
+    FOREIGN KEY (config_id) REFERENCES configs(config_id)
 );
 
 -- Indexes for optimization
@@ -216,6 +228,11 @@ CREATE INDEX IF NOT EXISTS idx_models_created ON models(created_at);
 CREATE INDEX IF NOT EXISTS idx_models_active_created ON models(is_active, created_at);
 CREATE INDEX IF NOT EXISTS idx_training_results_config ON training_results(config_id);
 CREATE INDEX IF NOT EXISTS idx_training_results_model ON training_results(model_id);
+
+-- Indexes for tuning_results
+CREATE INDEX IF NOT EXISTS idx_tuning_results_config ON tuning_results(config_id);
+CREATE INDEX IF NOT EXISTS idx_tuning_results_job ON tuning_results(job_id);
+CREATE INDEX IF NOT EXISTS idx_tuning_results_created ON tuning_results(created_at);
 """
 
 

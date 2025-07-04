@@ -79,9 +79,6 @@ class RetryStatsResponse(BaseModel):
 start_time = time.time()
 
 
-
-
-
 def check_database() -> ComponentHealth:
     """Check database connection."""
     conn = None  # Initialize conn to None
