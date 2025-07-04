@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from deployment.app.config import get_settings
+from deployment.app.utils.retry import retry_with_backoff
 
 logger = logging.getLogger("plastinka.database")
 
@@ -264,6 +265,7 @@ def execute_query(
                 pass  # Ignore close errors
 
 
+@retry_with_backoff(max_tries=3, base_delay=1.0, max_delay=10.0, component="database_batch")
 def execute_many(
     query: str, params_list: list[tuple], connection: sqlite3.Connection = None
 ) -> None:
@@ -2175,3 +2177,42 @@ def get_top_configs(
     finally:
         if conn_created and conn:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Retry events persistence helpers (used by RetryMonitor)
+# ---------------------------------------------------------------------------
+
+
+def insert_retry_event(event: dict[str, Any], connection: sqlite3.Connection = None) -> None:
+    """Insert a single retry event into retry_events table.
+
+    Args:
+        event: Dict with keys matching retry_events columns.
+        connection: Optional existing DB connection.
+    """
+
+    query = (
+        "INSERT INTO retry_events (timestamp, component, operation, attempt, max_attempts, "
+        "successful, duration_ms, exception_type, exception_message) "
+        "VALUES (:timestamp, :component, :operation, :attempt, :max_attempts, :successful, "
+        ":duration_ms, :exception_type, :exception_message)"
+    )
+
+    # Ensure boolean stored as int (SQLite lacks boolean)
+    event = event.copy()
+    event["successful"] = 1 if event.get("successful") else 0
+
+    execute_query(query, event, connection=connection)
+    # Commit if using external connection to ensure persistence
+    if connection:
+        connection.commit()
+
+
+def fetch_recent_retry_events(limit: int = 1000, connection: sqlite3.Connection = None) -> list[dict[str, Any]]:
+    """Fetch most recent retry events ordered oldest->newest up to *limit*."""
+
+    query = "SELECT * FROM retry_events ORDER BY id DESC LIMIT ?"
+    rows = execute_query(query, (limit,), fetchall=True, connection=connection) or []
+    rows.reverse()
+    return rows

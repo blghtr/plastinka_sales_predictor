@@ -42,6 +42,7 @@ from deployment.datasphere.prepare_datasets import get_datasets
 from deployment.app.services.job_registries.result_processor_registry import (
     process_job_results_unified,
 )
+from deployment.app.utils.retry import retry_async_with_backoff
 
 # Initialize settings
 # settings = AppSettings()
@@ -364,6 +365,7 @@ async def _archive_input_directory(
         raise RuntimeError(error_msg) from e
 
 
+@retry_async_with_backoff(max_tries=3, base_delay=2.0, max_delay=30.0, component="datasphere_submit")
 async def _create_new_datasphere_job(
     job_id: str, client: DataSphereClient, ready_config_path: str, work_dir: str
 ) -> str:
@@ -456,6 +458,7 @@ async def _submit_datasphere_job(
         raise
 
 
+@retry_async_with_backoff(max_tries=2, base_delay=1.0, max_delay=10.0, component="datasphere_status")
 async def _check_datasphere_job_status(
     job_id: str, ds_job_id: str, client: DataSphereClient
 ) -> str:
@@ -499,6 +502,7 @@ async def _check_datasphere_job_status(
         raise RuntimeError(error_msg) from status_exc
 
 
+@retry_async_with_backoff(max_tries=3, base_delay=5.0, max_delay=60.0, component="datasphere_download")
 async def _download_datasphere_job_results(
     job_id: str, ds_job_id: str, client: DataSphereClient, results_dir: str
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:

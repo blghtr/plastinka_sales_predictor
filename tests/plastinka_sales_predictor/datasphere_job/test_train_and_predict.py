@@ -31,13 +31,13 @@ import importlib
 # Import the module under test
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 sys.modules.setdefault(
-    "plastinka_sales_predictor.datasphere_job.train_and_predict",
+    "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict",
     importlib.import_module(
         "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict"
     ),
 )
 # Ensure attribute is present on parent package for patch decorators
-parent_pkg = importlib.import_module("plastinka_sales_predictor.datasphere_job")
+parent_pkg = importlib.import_module("plastinka_sales_predictor.datasphere_jobs.train")
 setattr(
     parent_pkg,
     "train_and_predict",
@@ -51,12 +51,12 @@ from plastinka_sales_predictor.datasphere_jobs.train import train_and_predict
 class TestTrainModel:
     """Test suite for train_model function."""
 
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict._train_model")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict._train_model")
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.prepare_for_training"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_for_training"
     )
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.extract_early_stopping_callback"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.extract_early_stopping_callback"
     )
     def test_train_model_success(
         self, mock_extract_callback, mock_prepare, mock_train_model
@@ -125,7 +125,7 @@ class TestTrainModel:
         config = {"model_config": {"n_epochs": 10}, "model_id": "test_model"}
 
         with patch(
-            "plastinka_sales_predictor.datasphere_job.train_and_predict.prepare_for_training"
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_for_training"
         ) as mock_prepare:
             mock_prepare.side_effect = RuntimeError("Training failed")
 
@@ -140,7 +140,7 @@ class TestPredictSales:
     """Test suite for predict_sales function."""
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.get_predictions_df"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.get_predictions_df"
     )
     def test_predict_sales_success(self, mock_get_predictions_df):
         """Test successful sales prediction."""
@@ -416,10 +416,10 @@ class TestLoadConfiguration:
     """Test suite for load_configuration function."""
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_input_directory"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_input_directory"
     )
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_config_file"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_file"
     )
     def test_load_configuration_success(
         self, mock_validate_config, mock_validate_input
@@ -446,10 +446,10 @@ class TestLoadConfiguration:
         input_dir = "/test/input"
 
         with patch(
-            "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_input_directory"
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_input_directory"
         ):
             with patch(
-                "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_config_file"
+                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_file"
             ):
                 with patch("builtins.open", mock_open(read_data="invalid json")):
                     with pytest.raises(SystemExit):
@@ -460,10 +460,10 @@ class TestLoadConfiguration:
         input_dir = "/test/input"
 
         with patch(
-            "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_input_directory"
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_input_directory"
         ):
             with patch(
-                "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_config_file"
+                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_file"
             ):
                 with patch("builtins.open", side_effect=OSError("File read error")):
                     with pytest.raises(SystemExit):
@@ -474,13 +474,13 @@ class TestLoadDatasets:
     """Test suite for load_datasets function."""
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_dataset_file"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_file"
     )
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_dataset_objects"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_objects"
     )
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.PlastinkaTrainingTSDataset"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaTrainingTSDataset"
     )
     def test_load_datasets_success(
         self, mock_dataset_class, mock_validate_objects, mock_validate_file
@@ -515,10 +515,10 @@ class TestLoadDatasets:
         mock_dataset_class.from_dill.assert_any_call(expected_val_path)
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_dataset_file"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_file"
     )
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.PlastinkaTrainingTSDataset"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaTrainingTSDataset"
     )
     def test_load_datasets_exception(self, mock_dataset_class, mock_validate_file):
         """Test load_datasets with loading exception."""
@@ -534,7 +534,7 @@ class TestLoadDatasets:
 class TestRunTraining:
     """Test suite for run_training function."""
 
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.train_model")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.train_model")
     @patch("time.monotonic")
     def test_run_training_success(self, mock_time, mock_train_model):
         """Test successful training execution."""
@@ -562,7 +562,7 @@ class TestRunTraining:
             mock_train_dataset, mock_val_dataset, config
         )
 
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.train_model")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.train_model")
     def test_run_training_no_model_returned(self, mock_train_model):
         """Test run_training when no model is returned."""
         # Arrange
@@ -576,7 +576,7 @@ class TestRunTraining:
         with pytest.raises(SystemExit):
             train_and_predict.run_training(mock_train_dataset, mock_val_dataset, config)
 
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.train_model")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.train_model")
     def test_run_training_exception(self, mock_train_model):
         """Test run_training with training exception."""
         # Arrange
@@ -595,12 +595,12 @@ class TestRunPrediction:
     """Test suite for run_prediction function."""
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_config_parameters"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_parameters"
     )
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_prediction_window"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_prediction_window"
     )
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.predict_sales")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.predict_sales")
     def test_run_prediction_success(
         self, mock_predict, mock_validate_window, mock_validate_config
     ):
@@ -634,9 +634,9 @@ class TestRunPrediction:
         assert mock_predict_dataset.minimum_sales_months == 1
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_config_parameters"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_parameters"
     )
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.predict_sales")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.predict_sales")
     def test_run_prediction_no_result(self, mock_predict, mock_validate_config):
         """Test run_prediction when no predictions returned."""
         # Arrange
@@ -718,7 +718,7 @@ class TestSaveModelFile:
     """Test suite for save_model_file function."""
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_file_created"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
     )
     @patch("os.path.getsize")
     def test_save_model_file_success(self, mock_getsize, mock_validate):
@@ -737,7 +737,7 @@ class TestSaveModelFile:
         mock_getsize.assert_called_once_with(output_path)
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_file_created"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
     )
     def test_save_model_file_exception(self, mock_validate):
         """Test save_model_file with saving exception."""
@@ -755,7 +755,7 @@ class TestSavePredictionsFile:
     """Test suite for save_predictions_file function."""
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_file_created"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
     )
     def test_save_predictions_file_success(self, mock_validate):
         """Test successful predictions saving."""
@@ -787,7 +787,7 @@ class TestSaveMetricsFile:
     """Test suite for save_metrics_file function."""
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_file_created"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
     )
     def test_save_metrics_file_success(self, mock_validate):
         """Test successful metrics saving."""
@@ -823,10 +823,10 @@ class TestCreateOutputArchive:
     """Test suite for create_output_archive function."""
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_archive_files"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_archive_files"
     )
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_file_created"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
     )
     @patch("os.path.getsize")
     @patch("zipfile.ZipFile")
@@ -866,7 +866,7 @@ class TestCreateOutputArchive:
         mock_getsize.assert_called_once_with(output_path)
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.validate_archive_files"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_archive_files"
     )
     def test_create_output_archive_exception(self, mock_validate_files):
         """Test create_output_archive with archiving exception."""
@@ -885,21 +885,21 @@ class TestMainFunction:
 
     @patch("click.Path.convert")  # Mock Click's path validation
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.load_configuration"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_configuration"
     )
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.load_datasets")
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.run_training")
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.run_prediction")
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.prepare_metrics")
-    @patch("plastinka_sales_predictor.datasphere_job.train_and_predict.save_model_file")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_datasets")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_training")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_prediction")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_metrics")
+    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_model_file")
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.save_predictions_file"
-    )
-    @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.save_metrics_file"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_predictions_file"
     )
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.create_output_archive"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_metrics_file"
+    )
+    @patch(
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.create_output_archive"
     )
     @patch("tempfile.TemporaryDirectory")
     def test_main_success(
@@ -988,11 +988,11 @@ class TestMainFunction:
         with patch("click.Path.convert") as mock_path_convert:  # Mock path validation
             mock_path_convert.return_value = "/test/input"
             with patch(
-                "plastinka_sales_predictor.datasphere_job.train_and_predict.load_configuration"
+                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_configuration"
             ) as mock_load_config:
                 mock_load_config.return_value = {"model_id": "test", "lags": 12}
                 with patch(
-                    "plastinka_sales_predictor.datasphere_job.train_and_predict.load_datasets"
+                    "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_datasets"
                 ) as mock_load_datasets:
                     # Fix: load_datasets should return a tuple of (train_dataset, val_dataset)
                     mock_train_dataset = MagicMock()
@@ -1002,7 +1002,7 @@ class TestMainFunction:
                         mock_val_dataset,
                     )
                     with patch(
-                        "plastinka_sales_predictor.datasphere_job.train_and_predict.run_training"
+                        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_training"
                     ) as mock_run_training:
                         # Fix: run_training should return a tuple of (model, metrics, duration)
                         mock_model = MagicMock()
@@ -1012,29 +1012,29 @@ class TestMainFunction:
                             60.0,
                         )
                         with patch(
-                            "plastinka_sales_predictor.datasphere_job.train_and_predict.run_prediction"
+                            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_prediction"
                         ) as mock_run_prediction:
                             mock_run_prediction.return_value = pd.DataFrame(
                                 {"pred": [1, 2, 3]}
                             )
                             with patch(
-                                "plastinka_sales_predictor.datasphere_job.train_and_predict.prepare_metrics"
+                                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_metrics"
                             ) as mock_prepare_metrics:
                                 mock_prepare_metrics.return_value = {
                                     "val_loss": 0.5,
                                     "training_duration_seconds": 60.0,
                                 }
                                 with patch(
-                                    "plastinka_sales_predictor.datasphere_job.train_and_predict.save_model_file"
+                                    "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_model_file"
                                 ):
                                     with patch(
-                                        "plastinka_sales_predictor.datasphere_job.train_and_predict.save_predictions_file"
+                                        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_predictions_file"
                                     ):
                                         with patch(
-                                            "plastinka_sales_predictor.datasphere_job.train_and_predict.save_metrics_file"
+                                            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_metrics_file"
                                         ):
                                             with patch(
-                                                "plastinka_sales_predictor.datasphere_job.train_and_predict.create_output_archive"
+                                                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.create_output_archive"
                                             ) as mock_archive:
                                                 with patch(
                                                     "tempfile.TemporaryDirectory"
@@ -1070,7 +1070,7 @@ class TestIntegration:
     """Integration tests for the complete pipeline."""
 
     @patch(
-        "plastinka_sales_predictor.datasphere_job.train_and_predict.configure_logger"
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.configure_logger"
     )
     def test_module_imports_successfully(self, mock_logger):
         """Test that the module can be imported without errors."""

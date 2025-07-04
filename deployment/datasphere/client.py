@@ -10,6 +10,7 @@ from datasphere.client import Client as DatasphereClient
 from datasphere.config import check_limits, parse_config
 from datasphere.files import prepare_inputs, prepare_local_modules
 from datasphere.pyenv import define_py_env
+from deployment.app.utils.retry import retry_cloud_operation
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,7 @@ class DataSphereClient:
             logger.error(f"Failed to prepare job parameters: {e}")
             raise DataSphereClientError(f"Failed to prepare job parameters: {e}") from e
 
+    @retry_cloud_operation(max_tries=3, base_delay=2.0, max_delay=30.0, component="datasphere_sdk_submit")
     def submit_job(self, config_path: str, work_dir: str) -> str:
         """
         Submits a DataSphere Job using the official client API.
@@ -277,6 +279,7 @@ class DataSphereClient:
                 f"Failed to read configuration file: {e}"
             ) from e
 
+    @retry_cloud_operation(max_tries=2, base_delay=1.0, max_delay=10.0, component="datasphere_sdk_status")
     def get_job_status(self, job_id: str) -> str:
         """Gets and normalises the status of a DataSphere Job.
 
@@ -301,6 +304,7 @@ class DataSphereClient:
             logger.error(f"Failed to get status for Job ID {job_id}: {e}")
             raise DataSphereClientError(f"Failed to get job status: {e}") from e
 
+    @retry_cloud_operation(max_tries=3, base_delay=5.0, max_delay=60.0, component="datasphere_sdk_download")
     def download_job_results(
         self,
         job_id: str,

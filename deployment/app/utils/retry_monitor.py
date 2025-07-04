@@ -30,6 +30,9 @@ class RetryMonitor:
         log_interval_seconds: int = 300,
         persistence_file: str | None = None,
         save_interval_seconds: int = 600,
+        *,
+        persistence_backend: str = "json",  # "json" | "db"
+        db_path: str | None = None,
     ):
         """
         Initialize retry monitor.
@@ -39,6 +42,8 @@ class RetryMonitor:
             log_interval_seconds: Interval for periodic logging of statistics
             persistence_file: Path to file for persisting statistics (None to disable)
             save_interval_seconds: Interval for saving statistics to file
+            persistence_backend: Type of persistence backend ("json" | "db")
+            db_path: Path to SQLite database for "db" backend
         """
         self._retry_events = []
         self._capacity = capacity
@@ -47,7 +52,9 @@ class RetryMonitor:
         self._last_log_time = time.time()
 
         # Persistence settings
-        self._persistence_file = persistence_file
+        self._persistence_backend = persistence_backend  # json | db
+        self._persistence_file = persistence_file if persistence_backend == "json" else None
+        self._db_path = db_path  # Used only if persistence_backend == "db"
         self._save_interval = save_interval_seconds
         self._last_save_time = time.time()
 
@@ -220,9 +227,19 @@ class RetryMonitor:
                 self._log_statistics()
                 self._last_log_time = current_time
 
-            # Check if it's time to save statistics
+            # Persist the event depending on backend
+            if self._persistence_backend == "db":
+                try:
+                    self._insert_event_db(event)
+                except Exception as db_exc:
+                    logger.error(
+                        "Failed to persist retry event to DB: %s", db_exc, exc_info=True
+                    )
+
+            # JSON backend periodic save remains as before
             if (
-                self._persistence_file
+                self._persistence_backend == "json"
+                and self._persistence_file
                 and current_time - self._last_save_time > self._save_interval
             ):
                 self._save_to_file()
@@ -261,8 +278,13 @@ class RetryMonitor:
         Returns:
             Dictionary with retry statistics
         """
+        # If backend is DB, aggregate on-the-fly from database to include
+        # persisted events (survives restarts). Otherwise fall back to in-memory.
+        if self._persistence_backend == "db":
+            return self._get_db_statistics()
+
         with self._lock:
-            stats = {
+            return {
                 "total_retries": self._total_retries,
                 "successful_retries": self._successful_retries,
                 "exhausted_retries": self._exhausted_retries,
@@ -274,8 +296,6 @@ class RetryMonitor:
                 "exception_stats": self._get_exception_stats(),
                 "timestamp": datetime.now().isoformat(),
             }
-
-            return stats
 
     def get_high_failure_operations(self) -> set[str]:
         """
@@ -525,19 +545,117 @@ class RetryMonitor:
 
         return exception_stats
 
+    # ---------------------------------------------------------------------
+    # DB aggregation helpers (for persistence_backend == "db")
+    # ---------------------------------------------------------------------
 
-# Global singleton instance of RetryMonitor
-# Default persistence file in logs directory
+    def _fetch_recent_events_db(self) -> list[dict[str, Any]]:
+        """Fetch recent retry_events rows up to self._capacity."""
+        try:
+            from deployment.app.db.database import fetch_recent_retry_events, get_db_connection
+
+            conn = get_db_connection(db_path_override=self._db_path)
+            try:
+                return fetch_recent_retry_events(limit=self._capacity, connection=conn)
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error("Failed to fetch retry events from DB: %s", e, exc_info=True)
+            return []
+
+    def _get_db_statistics(self) -> dict[str, Any]:
+        """Aggregate statistics from retry_events table."""
+        events = self._fetch_recent_events_db()
+        if not events:
+            # No events – return empty stats structure
+            return {
+                "total_retries": 0,
+                "successful_retries": 0,
+                "exhausted_retries": 0,
+                "successful_after_retry": 0,
+                "high_failure_operations": [],
+                "alerted_operations": [],
+                "alert_thresholds": self._alert_thresholds.copy(),
+                "operation_stats": {},
+                "exception_stats": {},
+                "timestamp": datetime.now().isoformat(),
+            }
+
+        # Re-use existing helper methods but on local list
+        # Temporarily assign to utilize self._get_operation_stats logic
+        with self._lock:
+            original_events = self._retry_events
+            self._retry_events = events
+            try:
+                total = len(events)
+                successful = sum(1 for e in events if e["successful"])
+                exhausted = sum(
+                    1
+                    for e in events
+                    if (not e["successful"]) and e["attempt"] == e["max_attempts"]
+                )
+                successful_after_retry = sum(
+                    1 for e in events if e["successful"] and e["attempt"] > 1
+                )
+
+                op_stats = self._get_operation_stats()
+                exc_stats = self._get_exception_stats()
+
+                # Identify high failure operations (>5 exhausted retries)
+                high_fail_ops = [
+                    op
+                    for op, st in op_stats.items()
+                    if st["count"] >= 5 and st["success_rate"] < 0.5
+                ]
+
+                return {
+                    "total_retries": total,
+                    "successful_retries": successful,
+                    "exhausted_retries": exhausted,
+                    "successful_after_retry": successful_after_retry,
+                    "high_failure_operations": high_fail_ops,
+                    "alerted_operations": [],  # Alerts not recomputed here
+                    "alert_thresholds": self._alert_thresholds.copy(),
+                    "operation_stats": op_stats,
+                    "exception_stats": exc_stats,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            finally:
+                # Restore original list to avoid side-effects
+                self._retry_events = original_events
+
+    def _insert_event_db(self, event: dict[str, Any]) -> None:
+        """Insert single retry event into SQLite database."""
+        try:
+            from deployment.app.db.database import get_db_connection, insert_retry_event
+
+            conn = get_db_connection(db_path_override=self._db_path)
+            try:
+                insert_retry_event(event, connection=conn)
+            finally:
+                conn.close()
+        except Exception as e:
+            raise e
+
+
+# -------------------- Global singleton instance -----------------------------------
+
+# Default JSON persistence file (legacy)
 DEFAULT_PERSISTENCE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "logs",
     "retry_statistics.json",
 )
 
-# Create logs directory if it doesn't exist
-os.makedirs(os.path.dirname(DEFAULT_PERSISTENCE_PATH), exist_ok=True)
+# Ensure main database path exists and instantiate monitor with DB backend only
+from deployment.app.config import get_settings
 
-retry_monitor = RetryMonitor(persistence_file=DEFAULT_PERSISTENCE_PATH)
+db_path = get_settings().database_path
+retry_monitor = RetryMonitor(
+    persistence_backend="db",
+    db_path=db_path,
+)
+logger.info("RetryMonitor initialized with DB backend at %s", db_path)
 
 
 def record_retry(

@@ -188,6 +188,19 @@ CREATE TABLE IF NOT EXISTS tuning_results (
     FOREIGN KEY (config_id) REFERENCES configs(config_id)
 );
 
+CREATE TABLE IF NOT EXISTS retry_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    component TEXT,
+    operation TEXT,
+    attempt INTEGER,
+    max_attempts INTEGER,
+    successful BOOLEAN,
+    duration_ms INTEGER,
+    exception_type TEXT,
+    exception_message TEXT
+);
+
 -- Indexes for optimization
 CREATE INDEX IF NOT EXISTS idx_multiindex_barcode ON dim_multiindex_mapping(barcode);
 CREATE INDEX IF NOT EXISTS idx_multiindex_artist_album ON dim_multiindex_mapping(artist, album);
@@ -233,6 +246,9 @@ CREATE INDEX IF NOT EXISTS idx_training_results_model ON training_results(model_
 CREATE INDEX IF NOT EXISTS idx_tuning_results_config ON tuning_results(config_id);
 CREATE INDEX IF NOT EXISTS idx_tuning_results_job ON tuning_results(job_id);
 CREATE INDEX IF NOT EXISTS idx_tuning_results_created ON tuning_results(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_retry_events_op ON retry_events(component, operation);
+CREATE INDEX IF NOT EXISTS idx_retry_events_time ON retry_events(timestamp);
 """
 
 
