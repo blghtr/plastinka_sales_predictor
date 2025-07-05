@@ -20,6 +20,7 @@ import sqlite3
 import uuid
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+import re
 
 import pytest
 
@@ -46,6 +47,8 @@ from deployment.app.db.database import (
     set_model_active,
     update_job_status,
     update_processing_run,
+    get_top_tuning_results,
+    get_top_configs,
 )
 
 # =============================================
@@ -994,3 +997,169 @@ def test_get_effective_config_no_config(in_memory_db):
         get_effective_config(
             mock_settings, logger=MagicMock(), connection=in_memory_db["conn"]
         )
+
+
+# =============================================
+# Tests for get_top_tuning_results and get_top_configs
+# =============================================
+
+@pytest.fixture
+def tuning_results_data(in_memory_db):
+    """
+    Заполняет таблицу tuning_results тестовыми данными для проверки сортировки, threshold и лимитов.
+    Создает необходимые записи в jobs для соблюдения FOREIGN KEY.
+    """
+    conn = in_memory_db["conn"]
+    cursor = conn.cursor()
+    # Создаем конфиг для связи
+    config_id = "cfg-1"
+    cursor.execute("INSERT INTO configs (config_id, config, is_active, created_at) VALUES (?, ?, 0, ?)", (config_id, json.dumps({"param": 1}), datetime.now().isoformat()))
+    # Создаем job для каждой записи
+    for i in range(5):
+        job_id = f"job-{i}"
+        cursor.execute("INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, parameters, progress) VALUES (?, 'tuning', 'completed', ?, ?, ?, 100)",
+            (job_id, datetime.now().isoformat(), datetime.now().isoformat(), json.dumps({}),))
+    # Добавляем несколько tuning_results с разными метриками
+    for i, mape in enumerate([10.0, 5.0, 20.0, None, 15.0]):
+        metrics = {"mape": mape, "rmse": 1.0 * i} if mape is not None else {"rmse": 1.0 * i}
+        cursor.execute(
+            "INSERT INTO tuning_results (result_id, job_id, config_id, metrics, duration, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (f"res-{i}", f"job-{i}", config_id, json.dumps(metrics), 100 + i, datetime.now().isoformat())
+        )
+    conn.commit()
+    return config_id
+
+
+def test_get_top_tuning_results_empty(in_memory_db):
+    """Пустая таблица tuning_results — должен вернуть пустой список."""
+    results = get_top_tuning_results("mape", connection=in_memory_db["conn"])
+    assert results == []
+
+
+def test_get_top_tuning_results_basic_sorting(in_memory_db, tuning_results_data):
+    """Проверяет сортировку по mape (higher_is_better=False)."""
+    results = get_top_tuning_results("mape", higher_is_better=False, connection=in_memory_db["conn"])
+    # mape: 5.0, 10.0, 15.0, 20.0 (None пропущен)
+    assert [r["metrics"]["mape"] for r in results] == [5.0, 10.0, 15.0, 20.0]
+
+
+def test_get_top_tuning_results_limit(in_memory_db, tuning_results_data):
+    """Проверяет работу лимита."""
+    results = get_top_tuning_results("mape", higher_is_better=False, limit=2, connection=in_memory_db["conn"])
+    assert len(results) == 2
+    assert [r["metrics"]["mape"] for r in results] == [5.0, 10.0]
+
+
+def test_get_top_tuning_results_threshold(in_memory_db, tuning_results_data):
+    """Проверяет фильтрацию по threshold (higher_is_better=False)."""
+    results = get_top_tuning_results("mape", higher_is_better=False, threshold=12.0, connection=in_memory_db["conn"])
+    # mape <= 12.0: 5.0, 10.0
+    assert [r["metrics"]["mape"] for r in results] == [5.0, 10.0]
+
+
+def test_get_top_tuning_results_invalid_metric(in_memory_db):
+    """Проверяет, что при невалидной метрике выбрасывается ValueError."""
+    with pytest.raises(ValueError, match=re.escape("Invalid metric_name: not_a_metric. Allowed:")):
+        get_top_tuning_results("not_a_metric", connection=in_memory_db["conn"])
+
+
+def test_get_top_tuning_results_all_metrics_null(in_memory_db):
+    """Все метрики NULL — должен вернуть пустой список."""
+    conn = in_memory_db["conn"]
+    cursor = conn.cursor()
+    config_id = "cfg-2"
+    cursor.execute("INSERT INTO configs (config_id, config, is_active, created_at) VALUES (?, ?, 0, ?)", (config_id, json.dumps({"param": 2}), datetime.now().isoformat()))
+    # Создаем jobs для каждой записи
+    for i in range(3):
+        job_id = f"job-null-{i}"
+        cursor.execute("INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, parameters, progress) VALUES (?, 'tuning', 'completed', ?, ?, ?, 100)",
+            (job_id, datetime.now().isoformat(), datetime.now().isoformat(), json.dumps({}),))
+    for i in range(3):
+        cursor.execute(
+            "INSERT INTO tuning_results (result_id, job_id, config_id, metrics, duration, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (f"null-{i}", f"job-null-{i}", config_id, json.dumps({}), 100, datetime.now().isoformat())
+        )
+    conn.commit()
+    results = get_top_tuning_results("mape", connection=conn)
+    assert results == []
+
+# ---- get_top_configs ----
+@pytest.fixture
+def configs_with_metrics(in_memory_db):
+    """
+    Заполняет таблицу configs и training_results для проверки сортировки, лимитов и include_active.
+    Создает необходимые записи в jobs и models для соблюдения FOREIGN KEY.
+    """
+    conn = in_memory_db["conn"]
+    cursor = conn.cursor()
+    # Активный конфиг
+    active_cfg = {"param": "active"}
+    active_id = "active-cfg"
+    cursor.execute("INSERT INTO configs (config_id, config, is_active, created_at) VALUES (?, ?, 1, ?)", (active_id, json.dumps(active_cfg), datetime.now().isoformat()))
+    # Неактивные с метриками
+    for i, mape in enumerate([2.0, 1.0, 3.0]):
+        cfg = {"param": f"cfg-{i}"}
+        cfg_id = f"cfg-{i}"
+        # Создаем job и model для каждой training_result
+        job_id = f"job-{i}"
+        model_id = f"model-{i}"
+        cursor.execute("INSERT INTO configs (config_id, config, is_active, created_at) VALUES (?, ?, 0, ?)", (cfg_id, json.dumps(cfg), datetime.now().isoformat()))
+        cursor.execute("INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, parameters, progress) VALUES (?, 'training', 'completed', ?, ?, ?, 100)",
+            (job_id, datetime.now().isoformat(), datetime.now().isoformat(), json.dumps({}),))
+        cursor.execute("INSERT INTO models (model_id, job_id, model_path, created_at, is_active) VALUES (?, ?, ?, ?, 0)",
+            (model_id, job_id, f"/tmp/model-{i}.bin", datetime.now().isoformat()))
+        cursor.execute("INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics, duration) VALUES (?, ?, ?, ?, ?, ?)", (f"res-{i}", job_id, model_id, cfg_id, json.dumps({"mape": mape}), 100))
+    conn.commit()
+    return active_id, ["cfg-0", "cfg-1", "cfg-2"]
+
+def test_get_top_configs_empty(in_memory_db):
+    """Пустая таблица configs — должен вернуть пустой список."""
+    results = get_top_configs(connection=in_memory_db["conn"])
+    assert results == []
+
+def test_get_top_configs_include_active(configs_with_metrics, in_memory_db):
+    """Проверяет, что активный конфиг возвращается первым при include_active=True."""
+    active_id, cfg_ids = configs_with_metrics
+    results = get_top_configs(limit=2, metric_name="mape", higher_is_better=False, include_active=True, connection=in_memory_db["conn"])
+    # Первый — активный, далее — лучший по mape (меньше — лучше)
+    assert results[0]["param"] == "active"
+    assert any(r["param"] == "cfg-1" for r in results)  # cfg-1 с mape=1.0
+
+def test_get_top_configs_sorting_by_metric(configs_with_metrics, in_memory_db):
+    """Проверяет сортировку по mape (higher_is_better=False)."""
+    _, cfg_ids = configs_with_metrics
+    results = get_top_configs(limit=3, metric_name="mape", higher_is_better=False, include_active=False, connection=in_memory_db["conn"])
+    # cfg-1 (mape=1.0), cfg-0 (2.0), cfg-2 (3.0)
+    assert [r["param"] for r in results] == ["cfg-1", "cfg-0", "cfg-2"]
+
+def test_get_top_configs_limit(configs_with_metrics, in_memory_db):
+    """Проверяет работу лимита."""
+    _, cfg_ids = configs_with_metrics
+    results = get_top_configs(limit=2, metric_name="mape", higher_is_better=False, include_active=False, connection=in_memory_db["conn"])
+    assert len(results) == 2
+
+def test_get_top_configs_include_active_false(configs_with_metrics, in_memory_db):
+    """Проверяет, что при include_active=False активные конфиги не возвращаются."""
+    active_id, cfg_ids = configs_with_metrics
+    results = get_top_configs(limit=5, metric_name="mape", higher_is_better=False, include_active=False, connection=in_memory_db["conn"])
+    assert all(r["param"] != "active" for r in results)
+
+def test_get_top_configs_invalid_metric(configs_with_metrics, in_memory_db):
+    """Проверяет, что при невалидной метрике функция не падает, а выдает warning и возвращает результат."""
+    # Не должно быть исключения, но warning в логах
+    results = get_top_configs(limit=2, metric_name="not_a_metric", connection=in_memory_db["conn"])
+    assert isinstance(results, list)
+
+
+def test_get_top_configs_all_metrics_null(in_memory_db):
+    """Все метрики NULL — сортировка только по created_at."""
+    conn = in_memory_db["conn"]
+    cursor = conn.cursor()
+    for i in range(3):
+        cfg = {"param": f"null-{i}"}
+        cfg_id = f"null-{i}"
+        cursor.execute("INSERT INTO configs (config_id, config, is_active, created_at) VALUES (?, ?, 0, ?)", (cfg_id, json.dumps(cfg), datetime.now().isoformat()))
+    conn.commit()
+    results = get_top_configs(limit=3, metric_name="mape", connection=conn)
+    assert len(results) == 3
+    assert all(r["param"].startswith("null-") for r in results)

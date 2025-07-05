@@ -123,6 +123,24 @@ class TestHealthCheckEndpoint:
         mock_check_db.assert_called_once()
         mock_check_env.assert_called_once()
 
+    @patch("deployment.app.api.health.check_database")
+    @patch("deployment.app.api.health.get_environment_status")
+    def test_health_check_endpoint_unhealthy_missing_months(self, mock_check_env, mock_check_db, client):
+        """Test /health endpoint returns unhealthy and details[missing_months] if months are missing."""
+        mock_check_db.return_value = ComponentHealth(
+            status="unhealthy", details={"missing_months": {"fact_sales": ["2024-02-01"]}}
+        )
+        mock_check_env.return_value = ComponentHealth(
+            status="healthy", details={}
+        )
+        response = client.get("/health/")
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "unhealthy"
+        assert "missing_months" in data["components"]["database"]["details"]
+        assert "fact_sales" in data["components"]["database"]["details"]["missing_months"]
+        assert data["components"]["database"]["details"]["missing_months"]["fact_sales"] == ["2024-02-01"]
+
 
 class TestSystemStatsEndpoint:
     """Test suite for /system/stats endpoint."""
@@ -404,32 +422,23 @@ class TestComponentHealthChecks:
 
     def test_check_database_healthy(self):
         """Test check_database returns healthy when connection and tables are ok."""
-        # Arrange
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         mock_conn.cursor.return_value = mock_cursor
 
-        # Simulate finding all required tables
-        mock_cursor.fetchall.return_value = [
-            ("jobs",),
-            ("models",),
-            ("configs",),
-            ("training_results",),
-            ("prediction_results",),
-            ("job_status_history",),
-            ("dim_multiindex_mapping",),
-            ("fact_sales",),
-            ("fact_stock",),
-            ("fact_prices",),
-            ("fact_stock_changes",),
-            ("fact_predictions",),
-            ("sqlite_sequence",),
-            ("processing_runs",),
-            ("data_upload_results",),
-            ("report_results",),
+        # Simulate finding all required tables, затем даты для fact_sales и fact_stock_changes
+        mock_cursor.fetchall.side_effect = [
+            [
+                ("jobs",), ("models",), ("configs",), ("training_results",), ("prediction_results",),
+                ("job_status_history",), ("dim_multiindex_mapping",), ("fact_sales",), ("fact_stock",),
+                ("fact_prices",), ("fact_stock_changes",), ("fact_predictions",), ("sqlite_sequence",),
+                ("processing_runs",), ("data_upload_results",), ("report_results",),
+            ],
+            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_sales
+            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_stock_changes
         ]
+        mock_cursor.execute.side_effect = lambda *a, **kw: None
 
-        # Act & Assert
         with patch(
             "deployment.app.api.health.sqlite3.connect", return_value=mock_conn
         ) as mock_connect:
@@ -442,14 +451,12 @@ class TestComponentHealthChecks:
             call_args = mock_connect.call_args[0][0]
             assert isinstance(call_args, str)
             assert call_args.endswith(".db")
-            mock_conn.cursor.assert_called_once()
-            assert mock_cursor.execute.call_count == 2
+            assert mock_cursor.execute.call_count >= 2
             assert mock_cursor.execute.call_args_list[0][0][0] == "SELECT 1"
             assert (
                 "SELECT name FROM sqlite_master WHERE type='table'"
                 in mock_cursor.execute.call_args_list[1][0][0]
             )
-            mock_cursor.fetchall.assert_called_once()
             mock_conn.close.assert_called_once()
 
     def test_check_database_degraded_missing_tables(self):
@@ -562,6 +569,58 @@ class TestComponentHealthChecks:
             assert var_desc in actual_missing, (
                 f"Expected '{var_desc}' to be in missing variables: {actual_missing}"
             )
+
+    def test_check_database_unhealthy_missing_months(self):
+        """Test check_database returns unhealthy if there are missing months in fact_sales or fact_stock_changes."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        # Первый вызов fetchall — все таблицы найдены
+        # Второй и третий вызовы — имитация пропусков месяцев
+        mock_cursor.fetchall.side_effect = [
+            [
+                ("jobs",), ("models",), ("configs",), ("training_results",), ("prediction_results",),
+                ("job_status_history",), ("dim_multiindex_mapping",), ("fact_sales",), ("fact_stock",),
+                ("fact_prices",), ("fact_stock_changes",), ("fact_predictions",), ("sqlite_sequence",),
+                ("processing_runs",), ("data_upload_results",), ("report_results",),
+            ],
+            [("2024-01-01",), ("2024-03-01",)],  # fact_sales (пропущен 2024-02-01)
+            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_stock_changes
+        ]
+        mock_cursor.execute.side_effect = lambda *a, **kw: None
+
+        with patch("deployment.app.api.health.sqlite3.connect", return_value=mock_conn):
+            from deployment.app.api.health import check_database
+            result = check_database()
+            assert result.status == "unhealthy"
+            assert "missing_months" in result.details
+            assert "fact_sales" in result.details["missing_months"]
+            assert result.details["missing_months"]["fact_sales"] == ["2024-02-01"]
+            assert "fact_stock_changes" not in result.details["missing_months"]
+
+    def test_check_database_healthy_no_missing_months(self):
+        """Test check_database returns healthy if all months are present in both tables."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        mock_cursor.fetchall.side_effect = [
+            [
+                ("jobs",), ("models",), ("configs",), ("training_results",), ("prediction_results",),
+                ("job_status_history",), ("dim_multiindex_mapping",), ("fact_sales",), ("fact_stock",),
+                ("fact_prices",), ("fact_stock_changes",), ("fact_predictions",), ("sqlite_sequence",),
+                ("processing_runs",), ("data_upload_results",), ("report_results",),
+            ],
+            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_sales
+            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_stock_changes
+        ]
+        mock_cursor.execute.side_effect = lambda *a, **kw: None
+
+        with patch("deployment.app.api.health.sqlite3.connect", return_value=mock_conn):
+            from deployment.app.api.health import check_database
+            result = check_database()
+            assert result.status == "healthy"
 
 
 class TestIntegration:

@@ -39,8 +39,8 @@ async def process_training_results(
 ) -> None:
     """Process training job results - handles model and predictions."""
 
-    model_path = output_files.get("model.onnx")
-    predictions_path = output_files.get("predictions.csv")
+    model_path = output_files.get("model")
+    predictions_path = output_files.get("predictions")
 
     final_message = f"Job completed. DS Job ID: {ds_job_id}."
     warnings_list = []
@@ -148,10 +148,10 @@ def process_tuning_results(
 ) -> None:
     """Process tuning job results - handles best configs and metrics."""
 
-    best_configs_path = output_files.get("best_configs.json")
+    best_configs_path = output_files.get("configs")
 
     if not best_configs_path or not os.path.exists(best_configs_path):
-        logger.error(f"[{job_id}] best_configs.json not found in results")
+        logger.error(f"[{job_id}] best_configs.json (role: configs) not found in results")
         update_job_status(
             job_id,
             JobStatus.FAILED.value,

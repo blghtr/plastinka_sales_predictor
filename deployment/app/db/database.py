@@ -38,9 +38,26 @@ ALLOWED_METRICS = [
     "mean_squared_log_error",
     "explained_variance_score",
     "max_error",
-    "val_MIC",  # Added based on test failures
-    "accuracy",  # Added based on test failures
-    # Add other allowed metric names as needed
+    # Standardized metric names from training phases (with prefixes)
+    "val_MIC",
+    "val_accuracy",
+    "train_accuracy",
+    "train_mae",
+    "train_mse",
+    "train_rmse",
+    "train_r2",
+    "train_mape",
+    "train_smape",
+    "train_median_absolute_error",
+    "train_mean_squared_log_error",
+    "train_explained_variance_score",
+    "train_max_error",
+    "training_duration_seconds",
+    # Metrics from Ray Tune results
+    "val_MIWS",
+    "val_MIWS_MIC_Ratio",
+    # Add other allowed metric names as needed, especially for tuning results
+    # (e.g., 'tuning_loss', 'tuning_accuracy' if Ray metrics are flattened this way)
 ]
 
 # Use database path from settings

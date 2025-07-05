@@ -22,6 +22,9 @@ from deployment.app.utils.retry_monitor import (
     reset_retry_statistics,
 )
 
+import calendar
+from datetime import timedelta
+
 router = APIRouter(
     prefix="/health",
     tags=["health"],
@@ -79,8 +82,38 @@ class RetryStatsResponse(BaseModel):
 start_time = time.time()
 
 
+def check_monotonic_months(table_name: str, conn) -> list[str]:
+    """
+    Проверяет, что месяцы в data_date идут подряд без пропусков (по всей таблице).
+    Возвращает список пропущенных месяцев в формате YYYY-MM-01.
+    """
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT DISTINCT data_date FROM {table_name}")
+    dates = sorted(row[0] for row in cursor.fetchall())
+    if not dates:
+        return []
+    # Преобразуем к datetime.date
+    date_objs = [datetime.strptime(d, "%Y-%m-%d").date() for d in dates]
+    # Строим полный диапазон месяцев
+    min_date, max_date = date_objs[0], date_objs[-1]
+    current = min_date
+    missing = []
+    while current <= max_date:
+        if current not in date_objs:
+            missing.append(current.strftime("%Y-%m-%d"))
+        # Переход к следующему месяцу
+        year, month = current.year, current.month
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+        current = current.replace(year=year, month=month, day=1)
+    return missing
+
+
 def check_database() -> ComponentHealth:
-    """Check database connection."""
+    """Check database connection and monotonicity of months in sales & changes."""
     conn = None  # Initialize conn to None
     try:
         conn = sqlite3.connect(get_settings().database_path)
@@ -89,7 +122,6 @@ def check_database() -> ComponentHealth:
         cursor.fetchone()
 
         # Check if required tables exist
-        # These should be the actual critical tables for the application
         required_tables = [
             "jobs",
             "models",
@@ -112,17 +144,25 @@ def check_database() -> ComponentHealth:
         # Construct the query to check for these tables efficiently
         placeholders = ", ".join(["?" for _ in required_tables])
         query_check_tables = f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
-
         cursor.execute(query_check_tables, tuple(required_tables))
         tables_found = [row[0] for row in cursor.fetchall()]
-        missing_tables = [
-            table for table in required_tables if table not in tables_found
-        ]
-
+        missing_tables = [table for table in required_tables if table not in tables_found]
         if missing_tables:
             logger.warning(f"Database degraded: missing tables {missing_tables}")
             return ComponentHealth(
                 status="degraded", details={"missing_tables": missing_tables}
+            )
+
+        # --- Проверка монотонности месяцев ---
+        monotonicity_issues = {}
+        for table in ["fact_sales", "fact_stock_changes"]:
+            missing_months = check_monotonic_months(table, conn)
+            if missing_months:
+                monotonicity_issues[table] = missing_months
+        if monotonicity_issues:
+            logger.error(f"Database unhealthy: missing months in tables: {monotonicity_issues}")
+            return ComponentHealth(
+                status="unhealthy", details={"missing_months": monotonicity_issues}
             )
 
         return ComponentHealth(status="healthy")

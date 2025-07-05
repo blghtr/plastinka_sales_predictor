@@ -61,10 +61,10 @@ JOB_TYPE_CONFIGS = {
         config_filename="config.yaml",
         required_input_files=["train.dill", "val.dill", "config.json"],
         optional_input_files=[],
-        expected_output_files=["model.onnx", "predictions.csv"],
+        expected_output_files=["model.onnx", "predictions.csv", "metrics.json"],
         result_processor_name="process_training_results",
         input_preparator_name="training_input_preparator",
-        output_file_roles={"model.onnx": "model", "predictions.csv": "predictions"},
+        output_file_roles={"model.onnx": "model", "predictions.csv": "predictions", "metrics.json": "metrics"},
         async_processor=True,
     ),
     "tune": JobTypeConfig(

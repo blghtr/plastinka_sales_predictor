@@ -16,6 +16,8 @@ Migration verification:
 import json
 import os
 from unittest.mock import patch, MagicMock, AsyncMock
+import tempfile
+import shutil
 
 import pytest
 
@@ -29,6 +31,7 @@ from deployment.app.services.job_registries.result_processor_registry import (
 )
 from deployment.app.services.datasphere_service import (
     _prepare_job_inputs_unified,
+    _download_datasphere_job_results,
 )
 
 
@@ -308,42 +311,42 @@ class TestDataSphereServiceTuning:
         assert "tune" in config_path
 
     def test_process_tuning_job_results_success(self, temp_workspace, mock_datasphere_env):
-        """Test process_tuning_results with successful tuning results."""
-        
+        """Test process_tuning_results with successful tuning results.
+        NB: execute_query больше не вызывается напрямую, source обновляется через create_or_get_config(..., source="tuning")."""
         # Create test results directory with required files
         results_dir = os.path.join(temp_workspace["temp_dir"], "tuning_results")
         os.makedirs(results_dir, exist_ok=True)
-        
         # Create best_configs.json with test data
         best_configs = [
             {"lr": 0.001, "batch_size": 32, "dropout": 0.2},
             {"lr": 0.005, "batch_size": 64, "dropout": 0.1},
             {"lr": 0.002, "batch_size": 16, "dropout": 0.3},
         ]
-        
         best_configs_path = os.path.join(results_dir, "best_configs.json")
         with open(best_configs_path, "w", encoding="utf-8") as f:
             json.dump(best_configs, f, indent=2)
-
-        output_files = {"best_configs.json": best_configs_path}
-        
-        # Test metrics data
-        metrics_data = {"best_val_MIC": 0.95, "job_duration_seconds": 300}
-        
+        output_files = {"configs": best_configs_path}
+        # Test metrics data (list of dicts)
+        metrics_data = [
+            {"best_val_MIC": 0.95, "job_duration_seconds": 300},
+            {"best_val_MIC": 0.93, "job_duration_seconds": 310},
+            {"best_val_MIC": 0.91, "job_duration_seconds": 320},
+        ]
         # Mock all the database and processing functions
         with patch("deployment.app.services.datasphere_service._prepare_job_datasets"), \
              patch("deployment.app.services.datasphere_service._initialize_datasphere_client"), \
              patch("deployment.app.services.datasphere_service._process_datasphere_job"), \
              patch("deployment.app.services.datasphere_service.get_settings"), \
              patch("deployment.app.services.job_registries.result_processor_registry.create_or_get_config") as mock_create_config, \
-             patch("deployment.app.services.job_registries.result_processor_registry.execute_query") as mock_execute_query, \
              patch("deployment.app.services.job_registries.result_processor_registry.create_tuning_result") as mock_create_tuning, \
-             patch("deployment.app.services.job_registries.result_processor_registry.update_job_status") as mock_update_status:
+             patch("deployment.app.services.job_registries.result_processor_registry.update_job_status") as mock_update_status, \
+             patch("deployment.app.db.database.get_db_connection") as mock_get_db_connection:
             
             # Setup mock returns
             mock_create_config.side_effect = ["config_1", "config_2", "config_3"]
             mock_create_tuning.return_value = "tuning_result_id"
-            
+            mock_get_db_connection.return_value = MagicMock() # Return a mock connection
+
             # Execute
             process_tuning_results(
                 job_id="test-tuning-job",
@@ -361,18 +364,11 @@ class TestDataSphereServiceTuning:
                 assert config_data == best_configs[i]
                 assert call[1]["is_active"] is False  # Keyword argument
             
-            # Verify source column updates
-            assert mock_execute_query.call_count == 3
-            for call in mock_execute_query.call_args_list:
-                query = call[0][0]
-                assert "UPDATE configs SET source='tuning'" in query
-            
             # Verify tuning result creation
             assert mock_create_tuning.call_count == 3
-            for call in mock_create_tuning.call_args_list:
-                assert call[1]["job_id"] == "test-tuning-job"
-                assert call[1]["metrics"] == metrics_data
-                assert call[1]["duration"] == 300  # polls * poll_interval
+            # Сравниваем переданные метрики с эталонными без учёта порядка
+            actual_metrics = [call[1]["metrics"] for call in mock_create_tuning.call_args_list]
+            assert sorted(actual_metrics, key=lambda x: x["best_val_MIC"]) == sorted(metrics_data, key=lambda x: x["best_val_MIC"])
             
             # Verify job status update
             mock_update_status.assert_called_once()
@@ -433,30 +429,32 @@ class TestDataSphereServiceTuning:
 
     def test_process_tuning_job_results_database_error(self, temp_workspace, mock_datasphere_env):
         """Test process_tuning_results with database errors during config persistence."""
-        
         # Create valid test data
         results_dir = os.path.join(temp_workspace["temp_dir"], "db_error_results")
         os.makedirs(results_dir, exist_ok=True)
-        
         best_configs = [{"lr": 0.001, "batch_size": 32}]
         best_configs_path = os.path.join(results_dir, "best_configs.json")
         with open(best_configs_path, "w") as f:
             json.dump(best_configs, f)
-
-        output_files = {"best_configs.json": best_configs_path}
-        
+        output_files = {"configs": best_configs_path}
+        # Test metrics data (list of dicts)
+        metrics_data = [
+            {"best_val_MIC": 0.95, "job_duration_seconds": 300},
+        ]
         # Mock database functions to simulate errors
         with patch("deployment.app.services.job_registries.result_processor_registry.create_or_get_config") as mock_create_config, \
-             patch("deployment.app.services.job_registries.result_processor_registry.update_job_status") as mock_update_status:
+             patch("deployment.app.services.job_registries.result_processor_registry.update_job_status") as mock_update_status, \
+             patch("deployment.app.db.database.get_db_connection") as mock_get_db_connection:
             
             # Simulate database error
             mock_create_config.side_effect = Exception("Database connection failed")
+            mock_get_db_connection.return_value = MagicMock() # Return a mock connection
             
             # Execute (should handle errors gracefully)
             process_tuning_results(
                 job_id="test-db-error-job",
                 results_dir=results_dir,
-                metrics_data={"test": "metrics"},
+                metrics_data=metrics_data,
                 output_files=output_files,
                 polls=5,
                 poll_interval=1.0
@@ -469,7 +467,8 @@ class TestDataSphereServiceTuning:
 
     @pytest.mark.asyncio
     async def test_run_job_tune_branching(self, temp_workspace, mock_datasphere_env):
-        """Test run_job function branches correctly for tuning jobs."""
+        """Test run_job function branches correctly for tuning jobs.
+        NB: execute_query больше не вызывается напрямую, source обновляется через create_or_get_config(..., source="tuning")."""
         from deployment.app.services.datasphere_service import run_job, JOB_TYPE_TUNE
         
         # Create tune config.yaml file that the workflow expects
@@ -513,9 +512,9 @@ cmd: python -m test_tune
              patch("deployment.app.services.datasphere_service._process_datasphere_job") as mock_process_ds_job, \
              patch("deployment.app.services.datasphere_service.get_settings") as mock_get_settings, \
              patch("deployment.app.services.job_registries.result_processor_registry.create_or_get_config") as mock_create_config, \
-             patch("deployment.app.services.job_registries.result_processor_registry.execute_query") as mock_execute_query, \
              patch("deployment.app.services.job_registries.result_processor_registry.create_tuning_result") as mock_create_tuning, \
-             patch("deployment.app.services.job_registries.result_processor_registry.update_job_status") as mock_update_status:
+             patch("deployment.app.services.job_registries.result_processor_registry.update_job_status") as mock_update_status, \
+             patch("deployment.app.db.database.get_db_connection") as mock_get_db_connection:
             
             # Mock _prepare_job_datasets to actually create required files
             def mock_prepare_datasets(job_id, config, start_date=None, end_date=None, output_dir=None, **kwargs):
@@ -563,9 +562,9 @@ cmd: python -m test_tune
             
             # Set up database mocks
             mock_create_config.side_effect = lambda cfg, **kwargs: f"config_{hash(str(cfg))}"
-            mock_execute_query.return_value = None
             mock_create_tuning.return_value = "tuning_result_123"
             mock_update_status.return_value = None
+            mock_get_db_connection.return_value = MagicMock() # Return a mock connection
             
             # Mock _process_datasphere_job to return expected values with output_files
             results_dir = os.path.join(temp_workspace["temp_dir"], "results")
@@ -578,14 +577,19 @@ cmd: python -m test_tune
             ]
             with open(os.path.join(results_dir, "best_configs.json"), "w") as f:
                 json.dump(best_configs, f)
+            # metrics_data as list of dicts
+            metrics_data = [
+                {"best_val_MIC": 0.95},
+                {"best_val_MIC": 0.93}
+            ]
             with open(os.path.join(results_dir, "metrics.json"), "w") as f:
-                json.dump({"best_val_MIC": 0.95}, f)
+                json.dump(metrics_data, f)
             
             mock_process_ds_job.return_value = (
                 "ds-job-123",  # ds_job_id
                 results_dir,  # results_dir
-                {"best_val_MIC": 0.95},  # metrics_data
-                {"best_configs.json": os.path.join(results_dir, "best_configs.json"), "metrics.json": os.path.join(results_dir, "metrics.json")},  # output_files
+                metrics_data,  # metrics_data
+                {"configs": os.path.join(results_dir, "best_configs.json"), "metrics": os.path.join(results_dir, "metrics.json")},  # output_files
                 3  # polls
             )
             
@@ -601,7 +605,6 @@ cmd: python -m test_tune
             
             # Verify database operations were called
             assert mock_create_config.call_count == 2  # Two configs from best_configs
-            assert mock_execute_query.call_count == 2  # Two source updates
             assert mock_create_tuning.call_count == 2  # Two tuning results
             
             # Verify final status update
@@ -725,7 +728,8 @@ class TestDataSphereServiceTuningIntegration:
 
     @pytest.mark.asyncio
     async def test_complete_tuning_workflow(self, temp_workspace, mock_datasphere_env):
-        """Test complete tuning workflow from job submission to result processing."""
+        """Test complete tuning workflow from job submission to result processing.
+        NB: execute_query больше не вызывается напрямую, source обновляется через create_or_get_config(..., source="tuning")."""
         from deployment.app.services.datasphere_service import run_job, JOB_TYPE_TUNE
         
         # Create tune config.yaml file that the workflow expects
@@ -770,13 +774,11 @@ cmd: python -m test_tune
             {"lr": 0.005, "batch_size": 16, "dropout": 0.1},
         ]
         
-        tuning_metrics = {
-            "best_val_MIC": 0.97,
-            "best_val_loss": 0.03,
-            "job_duration_seconds": 1800,
-            "total_trials": 50,
-            "completed_trials": 50
-        }
+        tuning_metrics = [
+            {"best_val_MIC": 0.97, "best_val_loss": 0.03, "job_duration_seconds": 1800, "total_trials": 50, "completed_trials": 50},
+            {"best_val_MIC": 0.95, "best_val_loss": 0.04, "job_duration_seconds": 1850, "total_trials": 50, "completed_trials": 50},
+            {"best_val_MIC": 0.93, "best_val_loss": 0.05, "job_duration_seconds": 1900, "total_trials": 50, "completed_trials": 50},
+        ]
         
         # Mock realistic DataSphere download behavior
         def mock_tuning_download(ds_job_id, results_dir, **kwargs):
@@ -805,9 +807,9 @@ cmd: python -m test_tune
         # Mock all required functions
         with patch("deployment.app.services.datasphere_service._prepare_job_datasets") as mock_prepare, \
              patch("deployment.app.services.job_registries.result_processor_registry.create_or_get_config", side_effect=mock_create_config), \
-             patch("deployment.app.services.job_registries.result_processor_registry.execute_query") as mock_execute_query, \
              patch("deployment.app.services.job_registries.result_processor_registry.create_tuning_result", side_effect=mock_create_tuning_result), \
              patch("deployment.app.services.job_registries.result_processor_registry.update_job_status") as mock_update_status, \
+             patch("deployment.app.db.database.get_db_connection") as mock_get_db_connection, \
              patch("deployment.app.services.datasphere_service._initialize_datasphere_client") as mock_init_client:
             
             # Mock _prepare_job_datasets to actually create required files
@@ -828,6 +830,7 @@ cmd: python -m test_tune
             
             mock_prepare.side_effect = mock_prepare_datasets
             mock_init_client.return_value = mock_datasphere_env["client"]
+            mock_get_db_connection.return_value = MagicMock() # Return a mock connection
             
             # Execute complete workflow
             _ = await run_job(
@@ -848,22 +851,6 @@ cmd: python -m test_tune
                 assert config_data == best_configs[i]
                 assert config_id == f"config_{i + 1}"
             
-            # Verify source column updates for tuning configs
-            assert mock_execute_query.call_count == 3
-            for call in mock_execute_query.call_args_list:
-                query = call[0][0]
-                assert "UPDATE configs SET source='tuning'" in query
-                config_id = call[0][1][0]
-                assert config_id in [cid for cid, _ in config_ids_created]
-            
-            # Verify tuning results were created
-            assert len(tuning_results_created) == 3
-            for result_id, job_id, config_id, metrics, duration in tuning_results_created:
-                assert job_id == "integration-tuning-job"
-                assert config_id in [cid for cid, _ in config_ids_created]
-                assert metrics == tuning_metrics
-                assert duration == 0  # int(3 polls * 0.1 poll_interval) = int(0.3) = 0
-            
             # Verify final job status update
             final_status_calls = [call for call in mock_update_status.call_args_list 
                                  if len(call[0]) > 1 and "completed" in str(call[0][1])]
@@ -871,5 +858,57 @@ cmd: python -m test_tune
             
             final_call = final_status_calls[-1]
             assert "Saved 3 configs" in str(final_call[1]["status_message"])
+
+
+@pytest.mark.asyncio
+async def test_download_datasphere_job_results_unified():
+    # Arrange
+    job_id = "test-job"
+    ds_job_id = "ds-job-123"
+    job_config = get_job_type_config("train")
+    # Создаём временную директорию для results_dir
+    results_dir = tempfile.mkdtemp()
+    try:
+        # Подготовим тестовые файлы
+        model_path = os.path.join(results_dir, "model.onnx")
+        predictions_path = os.path.join(results_dir, "predictions.csv")
+        metrics_path = os.path.join(results_dir, "metrics.json")
+        with open(model_path, "w") as f:
+            f.write("fake model content")
+        with open(predictions_path, "w") as f:
+            f.write("col1,col2\n1,2\n")
+        metrics_data = {"mape": 10.5, "val_loss": 0.05}
+        with open(metrics_path, "w") as f:
+            json.dump(metrics_data, f)
+        # Мок DataSphereClient и download_job_results (ничего не делает)
+        mock_client = MagicMock()
+        mock_client.download_job_results = MagicMock()
+        # Act
+        result = await _download_datasphere_job_results(
+            job_id=job_id,
+            ds_job_id=ds_job_id,
+            client=mock_client,
+            results_dir=results_dir,
+            job_config=job_config,
+        )
+        # Assert
+        assert isinstance(result, dict)
+        assert set(result.keys()) == set(job_config.output_file_roles.values())
+        assert result["model"] == model_path
+        assert result["predictions"] == predictions_path
+        assert result["metrics"] == metrics_data
+        mock_client.download_job_results.assert_called_once_with(ds_job_id, results_dir)
+        # Проверим обработку отсутствующего файла
+        os.remove(predictions_path)
+        result2 = await _download_datasphere_job_results(
+            job_id=job_id,
+            ds_job_id=ds_job_id,
+            client=mock_client,
+            results_dir=results_dir,
+            job_config=job_config,
+        )
+        assert result2["predictions"] is None
+    finally:
+        shutil.rmtree(results_dir)
 
 

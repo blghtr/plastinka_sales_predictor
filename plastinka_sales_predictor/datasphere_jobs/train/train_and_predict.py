@@ -519,25 +519,23 @@ def run_prediction(model, train_dataset, config: dict):
 def prepare_metrics(training_metrics: dict, training_duration_seconds: float) -> dict:
     """
     Prepare final metrics dictionary from training results.
-
-    Args:
-        training_metrics: Metrics from training process
-        training_duration_seconds: Training duration
-
-    Returns:
-        Combined metrics dictionary
+    Combines validation, training metrics, and duration into a single
+    flat dictionary with consistent naming (e.g., 'val_MIC', 'train_accuracy').
     """
     metrics = {}
 
-    # Add metrics from both training phases
+    # Add validation metrics with 'val_' prefix
     if "validation" in training_metrics:
-        metrics.update(training_metrics["validation"])
+        for k, v in training_metrics["validation"].items():
+            metrics[f"val_{k}"] = v
         logger.info(
             f"Added {len(training_metrics['validation'])} validation metrics from first training phase"
         )
 
+    # Add training metrics with 'train_' prefix
     if "training" in training_metrics:
-        metrics.update(training_metrics["training"])
+        for k, v in training_metrics["training"].items():
+            metrics[f"train_{k}"] = v
         logger.info(
             f"Added {len(training_metrics['training'])} training metrics from second training phase"
         )

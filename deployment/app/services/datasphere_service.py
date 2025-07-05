@@ -504,16 +504,28 @@ async def _check_datasphere_job_status(
 
 @retry_async_with_backoff(max_tries=3, base_delay=5.0, max_delay=60.0, component="datasphere_download")
 async def _download_datasphere_job_results(
-    job_id: str, ds_job_id: str, client: DataSphereClient, results_dir: str
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Downloads and processes the results from a DataSphere job."""
+    job_id: str,
+    ds_job_id: str,
+    client: DataSphereClient,
+    results_dir: str,
+    job_config: JobTypeConfig,
+) -> dict[str, Any]:
+    """
+    Downloads and processes the results from a DataSphere job in a unified way using job_config.
+
+    Args:
+        job_id: Internal job identifier.
+        ds_job_id: DataSphere job identifier.
+        client: DataSphere client instance.
+        results_dir: Directory to download results to.
+        job_config: JobTypeConfig describing expected output files and their roles.
+
+    Returns:
+        Dictionary {role: value}, where value is a path to file or parsed data (for 'metrics'), or None if not found.
+    """
     logger.info(
         f"[{job_id}] Stage 5a: Downloading results for ds_job '{ds_job_id}' to '{results_dir}'..."
     )
-
-    metrics_data = None
-    model_path = None
-    predictions_path = None
 
     os.makedirs(results_dir, exist_ok=True)
     logger.info(
@@ -521,7 +533,7 @@ async def _download_datasphere_job_results(
     )
 
     try:
-        # client.download_job_results is synchronous, run in a thread with timeout
+        # Download results (sync, so run in thread)
         await asyncio.wait_for(
             asyncio.to_thread(client.download_job_results, ds_job_id, results_dir),
             timeout=get_settings().datasphere.client_download_timeout_seconds,
@@ -530,68 +542,45 @@ async def _download_datasphere_job_results(
             f"[{job_id}] Results for DS Job {ds_job_id} downloaded to {results_dir}"
         )
 
-        # Check if there's an output.zip archive that needs to be extracted
+        # Extract output.zip if present
         output_zip_path = os.path.join(results_dir, "output.zip")
         if os.path.exists(output_zip_path):
-            logger.info(
-                f"[{job_id}] Found output.zip archive, extracting to {results_dir}"
-            )
+            logger.info(f"[{job_id}] Found output.zip archive, extracting to {results_dir}")
             try:
                 with zipfile.ZipFile(output_zip_path, "r") as zip_ref:
                     zip_ref.extractall(results_dir)
                 logger.info(f"[{job_id}] Successfully extracted output.zip archive")
-
-                # Optional: Remove the archive file after extraction
                 os.remove(output_zip_path)
             except zipfile.BadZipFile as e:
                 logger.error(f"[{job_id}] Invalid zip file format for output.zip: {e}")
-                # Continue processing in case individual files exist
             except Exception as e:
-                logger.error(
-                    f"[{job_id}] Error extracting output.zip: {e}", exc_info=True
-                )
-                # Continue processing in case individual files exist
+                logger.error(f"[{job_id}] Error extracting output.zip: {e}", exc_info=True)
 
-        # Check for model, predictions, and metrics files
-        model_path = os.path.join(results_dir, "model.onnx")
-        predictions_path = os.path.join(results_dir, "predictions.csv")
-        metrics_path = os.path.join(results_dir, "metrics.json")
+        # Унифицированная обработка по ролям
+        results_by_role = {}
+        for expected_file in job_config.expected_output_files:
+            file_path = os.path.join(results_dir, expected_file)
+            role = job_config.output_file_roles.get(expected_file, expected_file)
+            if os.path.exists(file_path):
+                if role == "metrics":
+                    try:
+                        with open(file_path) as f:
+                            results_by_role[role] = json.load(f)
+                        logger.info(f"[{job_id}] Loaded metrics from {file_path}")
+                    except json.JSONDecodeError as e:
+                        logger.error(f"[{job_id}] Failed to parse metrics.json from {file_path}: {e}", exc_info=True)
+                        results_by_role[role] = None
+                else:
+                    results_by_role[role] = file_path
+                    logger.info(f"[{job_id}] Found output file for role '{role}': {file_path}")
+            else:
+                logger.warning(f"[{job_id}] Expected output file '{expected_file}' (role '{role}') not found in {results_dir}")
+                results_by_role[role] = None
 
-        if not os.path.exists(model_path):
-            logger.warning(
-                f"[{job_id}] Model file 'model.onnx' not found at {model_path}. Model will not be saved."
-            )
-            model_path = None
-
-        if not os.path.exists(predictions_path):
-            logger.warning(
-                f"[{job_id}] Predictions file 'predictions.csv' not found at {predictions_path}. Predictions will not be saved."
-            )
-            predictions_path = None
-
-        if not os.path.exists(metrics_path):
-            logger.warning(
-                f"[{job_id}] Metrics file 'metrics.json' not found at {metrics_path}. Metrics will not be saved."
-            )
-            metrics_data = None
-        else:
-            try:
-                with open(metrics_path) as f:
-                    metrics_data = json.load(f)
-                logger.info(f"[{job_id}] Loaded metrics from {metrics_path}")
-            except json.JSONDecodeError as e:
-                logger.error(
-                    f"[{job_id}] Failed to parse metrics.json from {metrics_path}: {e}",
-                    exc_info=True,
-                )
-                metrics_data = None  # Ensure it's None if parsing fails
-                # Optionally, this could be a critical error causing the job to fail
-
-        return metrics_data, predictions_path, model_path
+        return results_by_role
     except asyncio.TimeoutError:
         error_msg = f"DataSphere job results download timed out after {get_settings().datasphere.client_download_timeout_seconds} seconds for DS Job ID: {ds_job_id}."
         logger.error(f"[{job_id}] {error_msg}")
-        # Update job status directly here if download failure is critical for the job outcome
         update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg) from asyncio.TimeoutError
     except Exception as e:
@@ -599,12 +588,10 @@ async def _download_datasphere_job_results(
             f"[{job_id}] DataSphere job '{ds_job_id}' failed with an exception during result download: {e}",
             exc_info=True,
         )
-        # It's not a timeout, but it's a failure in the download process itself
         raise RuntimeError(
             f"DataSphere job result download failed for job {job_id}. Details: {e}"
         ) from e
     finally:
-        # This block is for logging the downloaded files for debug purposes
         try:
             if os.path.exists(results_dir):
                 pass  # Debug logging removed
@@ -674,19 +661,10 @@ async def _process_datasphere_job(
     ready_config_path: str,
     work_dir: str,
     job_config: JobTypeConfig,
-) -> tuple[str, str, dict[str, Any] | None, dict[str, str | None], int]:
+) -> tuple[str, str, dict[str, Any] | None, dict[str, Any], int]:
     """
     Coordinates the DataSphere job lifecycle including submission, monitoring, and result fetching.
-
-    Args:
-        job_id: ID of the job
-        client: DataSphere client
-        ds_job_specific_output_base_dir: Directory for this run's outputs/results
-        ready_config_path: Path to the ready DataSphere config file
-        work_dir: Working directory for temporary files
-
-    Returns:
-        Tuple of (ds_job_id, results_dir, metrics_data, model_path, predictions_path, polls)
+    Returns: Tuple of (ds_job_id, results_dir, metrics_data, output_files_by_role, polls)
     """
     logger.info(f"[{job_id}] Stage 5: Processing DataSphere job...")
 
@@ -701,7 +679,7 @@ async def _process_datasphere_job(
     poll_interval = settings.datasphere.poll_interval
     polls = 0
     metrics_data = None
-    output_files = {}
+    output_files_by_role = {}
 
     logger.info(
         f"[{job_id}] Polling DS Job {ds_job_id} status (max_polls={max_polls}, poll_interval={poll_interval}s)."
@@ -751,25 +729,11 @@ async def _process_datasphere_job(
                 f"[{job_id}] DS Job {ds_job_id} completed. Downloading results..."
             )
 
-            # Download and process results
-            (
-                metrics_data,
-                _,  # predictions_path (deprecated)
-                _,  # model_path (deprecated)
-            ) = await _download_datasphere_job_results(
-                job_id, ds_job_id, client, ds_job_specific_output_base_dir
+            # Download and process results (унифицировано)
+            output_files_by_role = await _download_datasphere_job_results(
+                job_id, ds_job_id, client, ds_job_specific_output_base_dir, job_config
             )
-            
-            # Dynamically find output files based on job configuration
-            output_files = {}
-            for expected_file in job_config.expected_output_files:
-                file_path = os.path.join(ds_job_specific_output_base_dir, expected_file)
-                if os.path.exists(file_path):
-                    output_files[expected_file] = file_path
-                    logger.info(f"[{job_id}] Found expected output file: {expected_file}")
-                else:
-                    logger.warning(f"[{job_id}] Expected output file '{expected_file}' not found")
-                    output_files[expected_file] = None
+            metrics_data = output_files_by_role.get("metrics")
 
             # Download logs and diagnostics if configured
             download_diag_on_success = getattr(
@@ -817,7 +781,7 @@ async def _process_datasphere_job(
         ds_job_id,
         ds_job_specific_output_base_dir,
         metrics_data,
-        output_files,
+        output_files_by_role,
         polls,
     )
 
@@ -1239,7 +1203,7 @@ async def run_job(
                     ds_job_id,
                     results_dir_from_process,
                     metrics_data,
-                    output_files,
+                    output_files_by_role,
                     polls,
                 ) = await _process_datasphere_job(
                     job_id,
@@ -1258,7 +1222,7 @@ async def run_job(
                     results_dir=results_dir_from_process,
                     config=config,
                     metrics_data=metrics_data,
-                    output_files=output_files,
+                    output_files=output_files_by_role,
                     polls=polls,
                     poll_interval=get_settings().datasphere.poll_interval,
                     config_id=config_id,
