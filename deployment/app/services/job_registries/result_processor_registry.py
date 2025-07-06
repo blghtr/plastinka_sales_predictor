@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict
 
 from deployment.app.config import get_settings
 from deployment.app.db.database import (
+    auto_activate_best_config_if_enabled,
     create_or_get_config,
     create_tuning_result,
     execute_query,
@@ -203,6 +204,16 @@ def process_tuning_results(
             saved_count += 1
         except Exception as cfg_e:
             logger.warning(f"[{job_id}] Failed to persist tuning config #{idx}: {cfg_e}")
+
+    # Auto-activate best config if enabled in settings
+    try:
+        activated = auto_activate_best_config_if_enabled()
+        if activated:
+            logger.info(f"[{job_id}] Auto-activated best config after tuning")
+        else:
+            logger.debug(f"[{job_id}] Auto-activation of configs after tuning: disabled or no best config found")
+    except Exception as e:
+        logger.warning(f"[{job_id}] Failed to auto-activate best config after tuning: {e}")
 
     update_job_status(
         job_id,

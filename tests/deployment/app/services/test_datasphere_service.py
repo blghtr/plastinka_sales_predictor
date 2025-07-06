@@ -523,11 +523,13 @@ cmd: python -m test_tune
                 output_path = Path(output_dir) if output_dir else Path("/tmp")
                 train_file = output_path / "train.dill"
                 val_file = output_path / "val.dill"
+                inference_file = output_path / "inference.dill"
                 config_file = output_path / "config.json"
                 
                 # Create dummy files
                 train_file.write_text("dummy train data")
                 val_file.write_text("dummy val data")
+                inference_file.write_text("dummy inference data")
                 config_file.write_text('{"dummy": "config"}')
                 
                 return None
@@ -668,11 +670,13 @@ cmd: python -m test_train
                 output_path = Path(output_dir) if output_dir else Path("/tmp")
                 train_file = output_path / "train.dill"
                 val_file = output_path / "val.dill"
+                inference_file = output_path / "inference.dill"
                 config_file = output_path / "config.json"
                 
                 # Create dummy files
                 train_file.write_text("dummy train data")
                 val_file.write_text("dummy val data")
+                inference_file.write_text("dummy inference data")
                 config_file.write_text('{"dummy": "config"}')
                 
                 return None
@@ -819,11 +823,13 @@ cmd: python -m test_tune
                 output_path = Path(output_dir) if output_dir else Path("/tmp")
                 train_file = output_path / "train.dill"
                 val_file = output_path / "val.dill"
+                inference_file = output_path / "inference.dill"
                 config_file = output_path / "config.json"
                 
                 # Create dummy files
                 train_file.write_text("dummy train data")
                 val_file.write_text("dummy val data")
+                inference_file.write_text("dummy inference data")
                 config_file.write_text('{"dummy": "config"}')
                 
                 return None

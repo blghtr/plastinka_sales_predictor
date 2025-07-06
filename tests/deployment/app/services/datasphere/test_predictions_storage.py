@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from deployment.app.services.datasphere_service import save_predictions_to_db
-from tests.deployment.app.datasphere.conftest import verify_predictions_saved
+from tests.deployment.app.services.datasphere.conftest import verify_predictions_saved
 
 
 @patch("deployment.app.services.datasphere_service.get_db_connection")

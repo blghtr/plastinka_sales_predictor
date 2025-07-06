@@ -48,6 +48,9 @@ class JobTypeConfig:
     """Dynamic job-specific parameters (e.g., {"mode": "light"}).
     Filled/updated перед запуском run_job, не хранится в реестре глобально."""
 
+    datasets_to_generate: List[str] = field(default_factory=list)
+    """List of dataset types to generate by prepare_datasets (e.g., ["train", "val", "inference"])."""
+
     def get_script_dir(self, settings) -> str:
         """Get the script directory for this job type."""
         return self.script_dir_getter(settings)
@@ -59,13 +62,14 @@ JOB_TYPE_CONFIGS = {
         name="train",
         script_dir_getter=lambda s: s.datasphere_job_train_dir,
         config_filename="config.yaml",
-        required_input_files=["train.dill", "val.dill", "config.json"],
+        required_input_files=["train.dill", "val.dill", "config.json", "inference.dill"],
         optional_input_files=[],
         expected_output_files=["model.onnx", "predictions.csv", "metrics.json"],
         result_processor_name="process_training_results",
         input_preparator_name="training_input_preparator",
         output_file_roles={"model.onnx": "model", "predictions.csv": "predictions", "metrics.json": "metrics"},
         async_processor=True,
+        datasets_to_generate=["train", "val", "inference"],
     ),
     "tune": JobTypeConfig(
         name="tune",
@@ -78,6 +82,7 @@ JOB_TYPE_CONFIGS = {
         input_preparator_name="tuning_input_preparator",
         output_file_roles={"best_configs.json": "configs", "metrics.json": "metrics"},
         async_processor=False,
+        datasets_to_generate=["train", "val"],
     ),
 }
 

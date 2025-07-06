@@ -16,7 +16,7 @@ from plastinka_sales_predictor import (
     prepare_for_training,
 )
 from plastinka_sales_predictor import train_model as _train_model
-from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset
+from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset, PlastinkaInferenceTSDataset
 
 DEFAULT_CONFIG_PATH = "config/model_config.json"
 DEFAULT_MODEL_OUTPUT_REF = "model.onnx"
@@ -118,34 +118,32 @@ def train_model(
     return model, metrics_dict
 
 
-def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.DataFrame:
+def predict_sales(model, predict_dataset: PlastinkaInferenceTSDataset) -> pd.DataFrame:
     """Generates sales predictions using the trained model."""
     logger.info("Starting sales prediction...")
 
-    # Extract inputs from dataset object
-    data_dict = predict_dataset.to_dict()
-    series = data_dict["series"]
-    future_covariates = data_dict["future_covariates"]
-    past_covariates = data_dict["past_covariates"]
-    labels = data_dict["labels"]
-
     predictions = None
     try:
-        # Generate predictions
-        predictions = model.predict(
+        # Generate predictions using predict_from_dataset
+        predictions, _, _ = model.predict_from_dataset(
             1,
+            predict_dataset,
             num_samples=500,
-            series=series,
-            future_covariates=future_covariates,
-            past_covariates=past_covariates,
+            values_only=True,
+            mc_dropout=True
         )
 
         logger.info("Prediction generation complete.")
 
+        # Extract labels from dataset for creating the DataFrame
+        labels = []
+        for idx in range(len(predict_dataset)):
+            array_index, _, _ = predict_dataset._project_index(idx)
+            item_multiidx = predict_dataset._idx2multiidx[array_index]
+            labels.append(item_multiidx)
+
         predictions_df = get_predictions_df(
             predictions,
-            series,
-            future_covariates,
             labels,
             predict_dataset._index_names_mapping,
             predict_dataset.scaler,
@@ -160,8 +158,6 @@ def predict_sales(model, predict_dataset: PlastinkaTrainingTSDataset) -> pd.Data
 
 def get_predictions_df(
     preds,
-    series,
-    future_covariates,
     labels,
     index_names_mapping,
     scaler=None,
@@ -172,8 +168,9 @@ def get_predictions_df(
         return array
 
     preds_, labels_ = [], []
-    for p, _, _, label in zip(preds, series, future_covariates, labels, strict=False):
-        preds_.append(_maybe_inverse_transform(p.data_array().values))
+    for p, label in zip(preds, labels, strict=False):
+        # preds is already numpy.ndarray, no need for .data_array().values
+        preds_.append(_maybe_inverse_transform(p))
         labels_.append(label)
 
     preds_ = np.hstack(preds_).squeeze()
@@ -390,23 +387,25 @@ def load_configuration(input_path: str) -> tuple:
 
 def load_datasets(input_dir: str) -> tuple:
     """
-    Load and validate training and validation datasets.
+    Load and validate training, validation, and inference datasets.
 
     Args:
-        input_dir: Directory containing train.dill and val.dill files
+        input_dir: Directory containing train.dill, val.dill, and inference.dill files
 
     Returns:
-        Tuple of (train_dataset, val_dataset)
+        Tuple of (train_dataset, val_dataset, inference_dataset)
 
     Raises:
         SystemExit: If dataset loading fails
     """
     train_dill_path = os.path.join(input_dir, "train.dill")
     val_dill_path = os.path.join(input_dir, "val.dill")
+    inference_dill_path = os.path.join(input_dir, "inference.dill")
 
     # Validate dataset files exist
     validate_dataset_file(train_dill_path, "train")
     validate_dataset_file(val_dill_path, "validation")
+    validate_dataset_file(inference_dill_path, "inference")
 
     try:
         logger.info(f"Loading train_dataset from {train_dill_path}...")
@@ -417,11 +416,17 @@ def load_datasets(input_dir: str) -> tuple:
         val_dataset = PlastinkaTrainingTSDataset.from_dill(val_dill_path)
         logger.info("Validation dataset loaded successfully.")
 
-        # Validate loaded dataset objects
-        validate_dataset_objects(train_dataset, val_dataset)
+        logger.info(f"Loading inference_dataset from {inference_dill_path}...")
+        inference_dataset = PlastinkaInferenceTSDataset.from_dill(inference_dill_path)
+        logger.info("Inference dataset loaded successfully.")
 
-        logger.info("Datasets validated successfully.")
-        return train_dataset, val_dataset
+        # Validate loaded dataset objects
+        if train_dataset is None or val_dataset is None or inference_dataset is None:
+            logger.error("Failed to load datasets. One or more dataset objects are None.")
+            sys.exit(1)
+
+        logger.info("All datasets validated successfully.")
+        return train_dataset, val_dataset, inference_dataset
 
     except Exception as e:
         logger.error(f"Error loading datasets: {e}", exc_info=True)
@@ -467,13 +472,13 @@ def run_training(train_dataset, val_dataset, config: dict) -> tuple:
         sys.exit(1)
 
 
-def run_prediction(model, train_dataset, config: dict):
+def run_prediction(model, inference_dataset, config: dict):
     """
     Execute prediction using trained model.
 
     Args:
         model: Trained model
-        train_dataset: Training dataset for prediction setup
+        inference_dataset: Inference dataset for prediction
         config: Configuration dictionary
 
     Returns:
@@ -486,20 +491,7 @@ def run_prediction(model, train_dataset, config: dict):
         # Validate configuration parameters
         validate_config_parameters(config)
 
-        L = train_dataset._n_time_steps
-        lags_value = config["lags"]
-        length = lags_value + 1
-
-        # Validate window parameters
-        validate_prediction_window(L, length)
-
-        logger.info(f"Setting up prediction dataset with window ({L - length}, {L})")
-        predict_dataset = train_dataset.setup_dataset(
-            window=(L - length, L),
-        )
-        predict_dataset.minimum_sales_months = 1
-
-        predictions = predict_sales(model, predict_dataset)
+        predictions = predict_sales(model, inference_dataset)
         logger.info("Predictions generated successfully.")
 
         if predictions is None:
@@ -720,22 +712,15 @@ def main(input_dir, output):
         config, actual_input_dir = load_configuration(input_dir)
 
         # 2. Load datasets
-        train_dataset, val_dataset = load_datasets(actual_input_dir)
+        train_dataset, val_dataset, inference_dataset = load_datasets(actual_input_dir)
 
         # 3. Train model
         model, training_metrics, training_duration_seconds = run_training(
             train_dataset, val_dataset, config
         )
 
-        if hasattr(train_dataset, "reset_window"):
-            full_train_ds = train_dataset.reset_window()
-        else:
-            full_train_ds = train_dataset.setup_dataset(
-                window=(0, train_dataset._n_time_steps)
-            )
-
-        # 4. Generate predictions
-        predictions = run_prediction(model, full_train_ds, config)
+        # 4. Generate predictions using inference dataset
+        predictions = run_prediction(model, inference_dataset, config)
 
         # 5. Prepare final metrics
         metrics = prepare_metrics(training_metrics, training_duration_seconds)

@@ -20,6 +20,8 @@ from plastinka_sales_predictor import (
     configure_logger,
     get_model,
     prepare_for_training,
+    PlastinkaBaseTSDataset,
+    PlastinkaTrainingTSDataset,
 )
 
 filterwarnings("ignore")
@@ -232,10 +234,10 @@ def train_fn(config, fixed_config, ds, val_ds=None):
         length = lags + 1
 
         temp_train = ds.setup_dataset(
-            input_chunk_length=lags, output_chunk_length=1, window=(0, L - 1)
+            input_chunk_length=lags, output_chunk_length=1, window=(0, L - 1), copy=True
         )
         temp_val = ds.setup_dataset(
-            input_chunk_length=lags, output_chunk_length=1, window=(L - length, L)
+            input_chunk_length=lags, output_chunk_length=1, window=(L - length, L), copy=True
         )
 
         assert temp_train.L < ds.L and temp_val.end < ds._n_time_steps

@@ -721,7 +721,7 @@ class TestForeignKeyConstraints:
                 "INSERT INTO training_results (model_id, metrics, created_at) VALUES (?, ?, ?)",
                 (
                     "nonexistent-model",
-                    json.dumps({"accuracy": 0.95}),
+                    json.dumps({"val_loss": 0.95}),
                     datetime.now().isoformat(),
                 ),
                 connection=conn,
@@ -742,7 +742,7 @@ class TestForeignKeyConstraints:
                 "INSERT INTO training_results (config_id, metrics, created_at) VALUES (?, ?, ?)",
                 (
                     "nonexistent-config",
-                    json.dumps({"accuracy": 0.95}),
+                    json.dumps({"val_loss": 0.95}),
                     datetime.now().isoformat(),
                 ),
                 connection=conn,
@@ -826,7 +826,7 @@ class TestForeignKeyConstraints:
                 job_id,
                 model_id,
                 config_id,
-                json.dumps({"accuracy": 0.95}),
+                json.dumps({"val_loss": 0.95}),
             ),
             connection=conn,
         )
@@ -920,7 +920,7 @@ class TestIntegration:
             job_id=job_id,
             model_path="/test/model.onnx",
             created_at=datetime.now(),
-            metadata={"accuracy": 0.95},
+            metadata={"val_loss": 0.95},
             connection=conn,
         )
 

@@ -296,7 +296,7 @@ def test_get_best_model_by_metric(temp_db_with_data):
         job_id=temp_db_with_data["job_for_model_id"],
         model_id=temp_db_with_data["model_id"],
         config_id=temp_db_with_data["config_id"],
-        metrics={"mape": 10.5, "accuracy": 0.9},
+        metrics={"val_MIC": 10.5, "val_loss": 0.9},
         config={},
         duration=100,
         connection=conn,
@@ -315,7 +315,7 @@ def test_get_best_model_by_metric(temp_db_with_data):
         job_id=job2,
         model_id=model2_id,
         config_id=temp_db_with_data["config_id"],
-        metrics={"mape": 9.8, "accuracy": 0.92},  # Better MAPE
+        metrics={"val_MIC": 9.8, "val_loss": 0.92},  # Better MAPE
         config={},
         duration=100,
         connection=conn,
@@ -323,12 +323,12 @@ def test_get_best_model_by_metric(temp_db_with_data):
 
     # Get best model by MAPE (lower is better)
     best_model = get_best_model_by_metric(
-        "mape", higher_is_better=False, connection=conn
+        "val_MIC", higher_is_better=False, connection=conn
     )
 
     assert best_model is not None
     assert best_model["model_id"] == model2_id
-    assert best_model["metrics"]["mape"] == 9.8
+    assert best_model["metrics"]["val_MIC"] == 9.8
 
     # Get best model by non-existent metric
     with pytest.raises(ValueError) as excinfo_model:
@@ -348,18 +348,19 @@ def test_get_best_config_by_metric(temp_db_with_data):
     job_id = temp_db_with_data["job_id"]
     model_id = temp_db_with_data["model_id"]
     create_training_result(
-        job_id, model_id, config_id, {"accuracy": 0.88}, {}, 120, connection=conn
+        job_id, model_id, config_id, {"val_loss": 0.88}, {}, 120, connection=conn
     )
 
     best_config = get_best_config_by_metric(
-        "accuracy", higher_is_better=True, connection=conn
+        "val_loss", higher_is_better=True, connection=conn
     )
 
     assert best_config is not None
     assert best_config["config_id"] == config_id
 
 
-def test_delete_model_record_and_file(temp_db_with_data, fs):
+@patch("deployment.app.db.database._is_path_safe", return_value=True)
+def test_delete_model_record_and_file(mock_is_path_safe, temp_db_with_data, fs):
     """Test deleting a model record and its associated file"""
     conn = temp_db_with_data["conn"]
     model_id = temp_db_with_data["model_id"]
@@ -591,3 +592,52 @@ def test_database_error_propagation():
 
         # Verify error details
         assert "Database connection failed" in str(exc_info.value)
+
+
+@patch("deployment.app.db.database._is_path_safe", return_value=True)
+@patch("os.path.exists")
+@patch("os.remove")
+def test_delete_models_by_ids_with_path_traversal_attempt(
+    mock_remove, mock_exists, mock_is_path_safe, temp_db_with_data, fs
+):
+    """Test that delete_models_by_ids handles path traversal attempts for model files."""
+    conn = temp_db_with_data["conn"]
+    model_id_1 = temp_db_with_data["model_id"]
+
+    # Create another model that points to an unsafe path
+    model_id_unsafe = "unsafe_model_id"
+    unsafe_model_path = "/etc/passwd"  # An unsafe path
+    create_model_record(
+        model_id=model_id_unsafe,
+        job_id=temp_db_with_data["job_id"],
+        model_path=unsafe_model_path,
+        created_at=datetime.now(),
+        is_active=False,
+        connection=conn,
+    )
+    
+    # Ensure the test does not actually try to create /etc/passwd
+    mock_exists.return_value = True
+    
+    # Configure _is_path_safe to return False for the unsafe path
+    # This mock will be specific to this test
+    def custom_is_path_safe(base_dir, path_to_check):
+        if path_to_check == unsafe_model_path:
+            return False
+        return True # Allow safe paths
+        
+    mock_is_path_safe.side_effect = custom_is_path_safe
+
+    # Act: Try to delete both safe and unsafe models
+    result = delete_models_by_ids(
+        [model_id_1, model_id_unsafe], connection=conn
+    )
+
+    # Assert
+    assert result["deleted_count"] == 2
+    assert result["skipped_count"] == 0  # No active models were in the list
+    assert model_id_unsafe in result["failed_deletions"]
+    assert model_id_1 not in result["failed_deletions"]
+
+    # Verify that os.remove was called only for the safe model
+    mock_remove.assert_called_once()

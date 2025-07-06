@@ -45,9 +45,7 @@ async def lifespan(app: FastAPI):
     if not db_initialized_successfully:
         logger.error("Database initialization failed during startup. Check logs.")
         # Depending on policy, might raise an exception here to stop startup
-    import debugpy
-    debugpy.listen(("0.0.0.0", 5678))
-    debugpy.wait_for_client()
+
     yield
 
 

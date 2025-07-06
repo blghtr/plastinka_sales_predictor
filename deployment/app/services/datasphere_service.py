@@ -124,6 +124,7 @@ async def _prepare_job_datasets(
     start_date_for_dataset: str = None,
     end_date_for_dataset: str = None,
     output_dir: str = None,
+    job_config: JobTypeConfig | None = None,
 ) -> None:
     """Prepares datasets required for the job."""
     logger.info(f"[{job_id}] Stage 2: Preparing datasets...")
@@ -138,6 +139,7 @@ async def _prepare_job_datasets(
             config=config,
             output_dir=output_dir,
             feature_types=["sales", "stock", "change"],
+            datasets_to_generate=job_config.datasets_to_generate if job_config else [],
         )
         logger.info(f"[{job_id}] Datasets prepared in {output_dir}.")
         update_job_status(
@@ -1160,6 +1162,7 @@ async def run_job(
                     dataset_start_date,
                     dataset_end_date,
                     output_dir=str(temp_input_dir),
+                    job_config=job_config,
                 )
 
                 # Stage 3: Initialize Client

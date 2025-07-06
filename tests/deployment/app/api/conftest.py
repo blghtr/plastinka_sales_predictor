@@ -75,7 +75,8 @@ def base_client(
     This fixture is now localized to API tests to prevent conflicts.
     """
     session_monkeypatch.setenv("API_X_API_KEY", "test_x_api_key_conftest")
-    session_monkeypatch.setenv("API_API_KEY", "test_token")
+    # Use an isolated admin token for tests to avoid leaking real production secrets
+    session_monkeypatch.setenv("API_ADMIN_API_KEY", "test_admin_token")
 
     # Clear cached settings so that new environment variables are picked up
     from deployment.app.config import get_settings

@@ -1,14 +1,23 @@
 import logging
+import os
+from typing import Sequence
 
 import pandas as pd
+import numpy as np
 
 from deployment.app.db import feature_storage
+from deployment.app.config import get_settings
+from deployment.app.models.api_models import TrainingConfig
 from plastinka_sales_predictor.data_preparation import (
     GlobalLogMinMaxScaler,
     MultiColumnLabelBinarizer,
     PlastinkaTrainingTSDataset,
+    PlastinkaInferenceTSDataset,
+    OrdinalEncoder,
     get_monthly_sales_pivot,
     get_stock_features,
+    COLTYPES,
+    GROUP_KEYS,
 )
 
 DEFAULT_OUTPUT_DIR = "./datasets/"  # Default location if not specified
@@ -75,6 +84,7 @@ def prepare_datasets(
     raw_features: dict,
     config: dict | None,
     save_directory: str,
+    datasets_to_generate: Sequence[str] = ("train", "val"),
 ) -> tuple[PlastinkaTrainingTSDataset, PlastinkaTrainingTSDataset]:
     """
     Loads data from DB, prepares features, creates full dataset.
@@ -84,6 +94,7 @@ def prepare_datasets(
         raw_features: Dictionary of raw features loaded from the database.
         config: Dictionary containing training configuration.
         output_dir: Directory to save the prepared datasets.
+        datasets_to_generate: List of dataset types to generate (e.g., ["train", "val", "inference"])
 
     Returns:
         Tuple of (train_dataset, val_dataset)
@@ -142,34 +153,66 @@ def prepare_datasets(
                 f"Please provide more data. Dataset length: {dataset_length}, lags: {lags}"
             )
 
-        train_dataset = PlastinkaTrainingTSDataset(
-            stock_features=features["stock_features"],
-            monthly_sales=sales_pivot,
-            static_transformer=static_transformer,
-            static_features=DEFAULT_STATIC_FEATURES,
-            scaler=scaler,
-            input_chunk_length=lags,
-            output_chunk_length=output_chunk_length,
-            start=0,
-            end=train_end,
-            save_dir=save_directory,
-            dataset_name="train",
-            past_covariates_span=lags,
-            past_covariates_fnames=DEFAULT_PAST_COVARIATES_FNAMES,
-            minimum_sales_months=2,
-        )
+        # Common dataset parameters
+        dataset_params = {
+            "stock_features": features["stock_features"],
+            "monthly_sales": sales_pivot,
+            "static_transformer": static_transformer,
+            "static_features": DEFAULT_STATIC_FEATURES,
+            "scaler": scaler,
+            "input_chunk_length": lags,
+            "output_chunk_length": output_chunk_length,
+            "save_dir": save_directory,
+            "past_covariates_span": lags,
+            "past_covariates_fnames": DEFAULT_PAST_COVARIATES_FNAMES,
+            "minimum_sales_months": 2,
+        }
 
-        val_dataset = train_dataset.setup_dataset(
-            window=(dataset_length - length, dataset_length),
-        )
-        val_dataset.save(dataset_name="val")
+        train_dataset = None
+        val_dataset = None
+        inference_dataset = None
+
+        if "train" in datasets_to_generate:
+            train_dataset = PlastinkaTrainingTSDataset(
+                **dataset_params,
+                start=0,
+                end=train_end,
+                dataset_name="train",
+            )
+
+        if "val" in datasets_to_generate:
+            if train_dataset is not None:
+                val_dataset = train_dataset.setup_dataset(
+                    window=(dataset_length - length, dataset_length),
+                )
+                val_dataset.save(dataset_name="val")
+            else:
+                # Create val dataset directly if train dataset wasn't created
+                val_dataset = PlastinkaTrainingTSDataset(
+                    **dataset_params,
+                    start=dataset_length - length,
+                    end=dataset_length,
+                    dataset_name="val",
+                )
+
+        if "inference" in datasets_to_generate:
+            # Inference dataset uses the full data range for its initial setup
+            # The window will be adjusted later in train_and_predict.py
+            inference_dataset = PlastinkaInferenceTSDataset(
+                **dataset_params,
+                start=0,  # Start from the beginning of the available data
+                end=None,  # Use the full length, will be padded internally
+                dataset_name="inference",
+            )
+            logger.info("Inference dataset created and saved.")
+
         logger.info("Datasets created.")
 
     except Exception as e:
         logger.error(f"Error during feature preparation: {e}", exc_info=True)
         raise
 
-    return train_dataset, val_dataset
+    return train_dataset, val_dataset, inference_dataset
 
 
 def get_datasets(
@@ -178,6 +221,7 @@ def get_datasets(
     config=None,
     output_dir: str | None = None,
     feature_types=None,
+    datasets_to_generate: Sequence[str] = ("train", "val"),
 ):
     """
     Loads data from DB, prepares features, creates and saves datasets to output_dir.
@@ -188,6 +232,7 @@ def get_datasets(
         config: Dictionary containing training configuration.
         output_dir: Directory to save the prepared datasets.
         feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
+        datasets_to_generate: List of dataset types to generate (e.g., ["train", "val", "inference"])
 
     Returns:
         Tuple of (train_dataset, val_dataset)
@@ -199,14 +244,19 @@ def get_datasets(
 
         logger.info("Raw features loaded, calling prepare_datasets...")
 
-        # Pass the output_dir down to the preparation function
-        train_dataset, val_dataset = prepare_datasets(raw_features, config, output_dir)
+        # Pass the output_dir and datasets_to_generate down to the preparation function
+        train_dataset, val_dataset, inference_dataset = prepare_datasets(
+            raw_features,
+            config,
+            output_dir,
+            datasets_to_generate,
+        )
 
         logger.info(
             "prepare_datasets completed, returning datasets from get_datasets..."
         )
 
-        return train_dataset, val_dataset
+        return train_dataset, val_dataset, inference_dataset
     except Exception as e:
         logger.error(f"Error in get_datasets: {e}", exc_info=True)
         raise

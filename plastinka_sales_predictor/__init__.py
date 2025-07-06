@@ -10,7 +10,12 @@ except _PkgNF:
     __version__ = "0.0.0+local"  # fallback для editable-install или запуска из исходников
 
 # Always available imports (no ML dependencies)
-from .data_preparation import GlobalLogMinMaxScaler, PlastinkaTrainingTSDataset
+from .data_preparation import (
+    GlobalLogMinMaxScaler, 
+    PlastinkaBaseTSDataset,     
+    PlastinkaTrainingTSDataset,
+    PlastinkaInferenceTSDataset
+)
 from .logger_setup import configure_logger
 
 # Conditional imports for ML components (only if dependencies are available)
@@ -36,6 +41,7 @@ try:
     _ML_AVAILABLE = True
 except ImportError as e:
     # ML components not available (e.g., in deployment environment)
+    raise e
     import warnings
     warnings.warn(
         f"ML components not available: {e}. "
@@ -66,6 +72,8 @@ except ImportError as e:
 # Base exports (always available)
 _BASE_ALL = [
     "PlastinkaTrainingTSDataset",
+    "PlastinkaInferenceTSDataset",
+    "PlastinkaBaseTSDataset",
     "GlobalLogMinMaxScaler", 
     "configure_logger",
 ]

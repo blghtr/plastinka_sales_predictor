@@ -18,6 +18,7 @@ from typing_extensions import Any
 from plastinka_sales_predictor import (
     DEFAULT_METRICS,
     PlastinkaTrainingTSDataset,
+    PlastinkaBaseTSDataset,
     WQuantileRegression,
     configure_logger,
 )
@@ -28,8 +29,6 @@ if TYPE_CHECKING:
     from darts.utils.likelihood_models import Likelihood
     from torch.optim.lr_scheduler import LRScheduler
     from torchmetrics import Metric, MetricCollection
-
-    from plastinka_sales_predictor.data_preparation import PlastinkaBaseTSDataset
 
 
 logger = configure_logger(

@@ -244,19 +244,19 @@ def test_get_best_model_by_metric(create_test_db, test_model_path, monkeypatch):
                 f"result_{model['model_id']}",
                 job_id,
                 model["model_id"],
-                json.dumps({"accuracy": model["metric_value"]}),
+                json.dumps({"val_loss": model["metric_value"]}),
             ),
         )
         conn.commit()
 
     # Get the best model by accuracy with the same connection
     best_model = get_best_model_by_metric(
-        "accuracy", higher_is_better=True, connection=conn
+        "val_loss", higher_is_better=True, connection=conn
     )
 
     assert best_model is not None
     assert best_model["model_id"] == "model_2"
-    assert best_model["metrics"]["accuracy"] == 0.9
+    assert best_model["metrics"]["val_loss"] == 0.9
 
 
 def test_get_recent_models(create_test_db, test_model_path, monkeypatch):
@@ -328,12 +328,15 @@ def test_delete_model_record_and_file(create_test_db, test_model_path, monkeypat
     assert cursor.fetchone() is not None
 
     # Delete the model
-    with patch("os.path.exists", return_value=True):
-        with patch("os.remove") as mock_remove:
-            result = delete_model_record_and_file(model_id, connection=conn)
+    with (
+        patch("os.path.exists", return_value=True),
+        patch("os.remove") as mock_remove,
+        patch("deployment.app.db.database._is_path_safe", return_value=True),
+    ):
+        result = delete_model_record_and_file(model_id, connection=conn)
 
-            assert result is True
-            mock_remove.assert_called_once_with(test_model_path)
+        assert result is True
+        mock_remove.assert_called_once_with(test_model_path)
 
     # Verify model no longer exists in database with the same connection
     cursor = conn.cursor()
@@ -390,7 +393,7 @@ def test_model_registration_workflow(create_test_db, test_model_path, monkeypatc
                 f"result_{model['model_id']}",
                 job_id,
                 model["model_id"],
-                json.dumps({"accuracy": model["metric_value"]}),
+                json.dumps({"val_loss": model["metric_value"]}),
             ),
         )
         conn.commit()
@@ -402,7 +405,7 @@ def test_model_registration_workflow(create_test_db, test_model_path, monkeypatc
 
     # 3. Get the best model by metric with the same connection
     best_model = get_best_model_by_metric(
-        "accuracy", higher_is_better=True, connection=conn
+        "val_loss", higher_is_better=True, connection=conn
     )
     assert best_model["model_id"] == "workflow_model_2"
 

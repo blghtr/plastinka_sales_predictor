@@ -28,36 +28,16 @@ def json_default_serializer(obj):
 
 # Define allowed metric names for dynamic queries
 ALLOWED_METRICS = [
-    "mae",
-    "mse",
-    "rmse",
-    "r2",
-    "mape",
-    "smape",
-    "median_absolute_error",
-    "mean_squared_log_error",
-    "explained_variance_score",
-    "max_error",
     # Standardized metric names from training phases (with prefixes)
     "val_MIC",
-    "val_accuracy",
-    "train_accuracy",
-    "train_mae",
-    "train_mse",
-    "train_rmse",
-    "train_r2",
-    "train_mape",
-    "train_smape",
-    "train_median_absolute_error",
-    "train_mean_squared_log_error",
-    "train_explained_variance_score",
-    "train_max_error",
-    "training_duration_seconds",
-    # Metrics from Ray Tune results
     "val_MIWS",
     "val_MIWS_MIC_Ratio",
-    # Add other allowed metric names as needed, especially for tuning results
-    # (e.g., 'tuning_loss', 'tuning_accuracy' if Ray metrics are flattened this way)
+    "val_loss",
+    "train_loss",
+    "train_MIC",
+    "train_MIWS",
+    "train_MIWS_MIC_Ratio",
+    "training_duration_seconds",
 ]
 
 # Use database path from settings
@@ -79,6 +59,27 @@ class DatabaseError(Exception):
         self.params = params
         self.original_error = original_error
         super().__init__(self.message)
+
+
+def _is_path_safe(base_dir: str | Path, path_to_check: str | Path) -> bool:
+    """
+    Check if path_to_check is inside base_dir to prevent path traversal attacks.
+    
+    Args:
+        base_dir: The base directory that should contain the path
+        path_to_check: The path to validate
+        
+    Returns:
+        bool: True if the path is safe (inside base_dir), False otherwise
+    """
+    try:
+        # Resolve both paths to their absolute form
+        resolved_base = Path(base_dir).resolve()
+        resolved_path = Path(path_to_check).resolve()
+        # Check if the resolved path is a subpath of the base directory
+        return resolved_path.is_relative_to(resolved_base)
+    except Exception:
+        return False
 
 
 def get_db_connection(
@@ -1270,25 +1271,32 @@ def delete_model_record_and_file(
                 return False
 
             model_path = result["model_path"]
+            models_base_dir = get_settings().models_dir
 
-            # 1. Delete dependent records from training_results
+            # 1. Delete the model file safely (with path traversal protection)
+            if model_path and os.path.exists(model_path):
+                if not _is_path_safe(models_base_dir, model_path):
+                    logger.error(
+                        f"Path traversal attempt detected for model {model_id}. Path '{model_path}' is outside of designated models directory '{models_base_dir}'. File will not be deleted."
+                    )
+                else:
+                    try:
+                        os.remove(model_path)
+                        logger.info(f"Deleted model file: {model_path}")
+                    except OSError as e:
+                        logger.error(
+                            f"Error removing model file {model_path}: {e}", exc_info=True
+                        )
+                        # Depending on policy, we might still consider the DB part a success
+                        # For now, we'll let it be a success if the DB records are gone.
+
+            # 2. Delete dependent records from training_results
             cursor.execute(
                 "DELETE FROM training_results WHERE model_id = ?", (model_id,)
             )
 
-            # 2. Delete the model record
+            # 3. Delete the model record
             cursor.execute("DELETE FROM models WHERE model_id = ?", (model_id,))
-
-            # 3. Delete the model file
-            if model_path and os.path.exists(model_path):
-                try:
-                    os.remove(model_path)
-                except OSError as e:
-                    logger.error(
-                        f"Error removing model file {model_path}: {e}", exc_info=True
-                    )
-                    # Depending on policy, we might still consider the DB part a success
-                    # For now, we'll let it be a success if the DB records are gone.
 
         return True
 
@@ -1911,6 +1919,7 @@ def delete_models_by_ids(
 
         with conn:  # Use connection as a context manager for transaction
             cursor = conn.cursor()
+            models_base_dir = get_settings().models_dir
 
             placeholders = ",".join("?" for _ in model_ids)
 
@@ -1959,6 +1968,12 @@ def delete_models_by_ids(
                 model_id = model_info["model_id"]
                 model_path = model_info["model_path"]
                 if model_path and os.path.exists(model_path):
+                    if not _is_path_safe(models_base_dir, model_path):
+                        logger.error(
+                            f"Path traversal attempt detected for model {model_id}. Path '{model_path}' is outside of designated models directory. File will not be deleted."
+                        )
+                        summary["failed_deletions"].append(model_id)
+                        continue
                     try:
                         os.remove(model_path)
                         logger.info(f"Deleted model file: {model_path}")
@@ -1977,6 +1992,104 @@ def delete_models_by_ids(
             conn.close()
 
     return summary
+
+
+def auto_activate_best_config_if_enabled(connection: sqlite3.Connection = None) -> bool:
+    """
+    Automatically activates the best config by metric if auto_select_best_configs is enabled.
+    
+    Args:
+        connection: Optional existing database connection to use
+        
+    Returns:
+        bool: True if activation was performed, False if disabled or no config found
+        
+    Raises:
+        DatabaseError: If database operations fail
+    """
+    settings = get_settings()
+    
+    if not settings.auto_select_best_configs:
+        logger.debug("Auto-activation of best configs is disabled in settings")
+        return False
+        
+    try:
+        best_config = get_best_config_by_metric(
+            metric_name=settings.default_metric,
+            higher_is_better=settings.default_metric_higher_is_better,
+            connection=connection,
+        )
+        
+        if best_config and best_config.get("config_id"):
+            config_id = best_config["config_id"]
+            logger.info(f"Auto-activating best config by {settings.default_metric}: {config_id}")
+            
+            success = set_config_active(config_id, connection=connection)
+            if success:
+                logger.info(f"Successfully auto-activated config: {config_id}")
+                return True
+            else:
+                logger.warning(f"Failed to auto-activate config: {config_id}")
+                return False
+        else:
+            logger.warning(
+                f"Auto-activation enabled, but no best config found by metric '{settings.default_metric}'"
+            )
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error during auto-activation of best config: {e}", exc_info=True)
+        # Don't re-raise - auto-activation should not break the main flow
+        return False
+
+
+def auto_activate_best_model_if_enabled(connection: sqlite3.Connection = None) -> bool:
+    """
+    Automatically activates the best model by metric if auto_select_best_model is enabled.
+    
+    Args:
+        connection: Optional existing database connection to use
+        
+    Returns:
+        bool: True if activation was performed, False if disabled or no model found
+        
+    Raises:
+        DatabaseError: If database operations fail
+    """
+    settings = get_settings()
+    
+    if not settings.auto_select_best_model:
+        logger.debug("Auto-activation of best models is disabled in settings")
+        return False
+        
+    try:
+        best_model = get_best_model_by_metric(
+            metric_name=settings.default_metric,
+            higher_is_better=settings.default_metric_higher_is_better,
+            connection=connection,
+        )
+        
+        if best_model and best_model.get("model_id"):
+            model_id = best_model["model_id"]
+            logger.info(f"Auto-activating best model by {settings.default_metric}: {model_id}")
+            
+            success = set_model_active(model_id, connection=connection)
+            if success:
+                logger.info(f"Successfully auto-activated model: {model_id}")
+                return True
+            else:
+                logger.warning(f"Failed to auto-activate model: {model_id}")
+                return False
+        else:
+            logger.warning(
+                f"Auto-activation enabled, but no best model found by metric '{settings.default_metric}'"
+            )
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error during auto-activation of best model: {e}", exc_info=True)
+        # Don't re-raise - auto-activation should not break the main flow
+        return False
 
 
 def get_effective_config(settings, logger=None, connection=None):
@@ -2152,10 +2265,9 @@ def get_top_configs(
     """
     metric_name = metric_name or "val_MIC"  # default if not provided
     if metric_name not in ALLOWED_METRICS:
-        # allow dynamic metrics but warn
-        logger.warning(
-            "get_top_configs: metric %s not in ALLOWED_METRICS – proceeding anyway", metric_name
-        )
+        # SECURITY FIX: Strict validation to prevent SQL injection
+        logger.error("get_top_configs: Invalid metric name provided. Raising error.")
+        raise ValueError("Invalid metric_name")
     order = "DESC" if higher_is_better else "ASC"
     conn_created = False
     try:

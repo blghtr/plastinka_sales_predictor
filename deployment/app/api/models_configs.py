@@ -280,12 +280,22 @@ async def upload_config(
     api_key: bool = Depends(get_current_api_key_validated),
 ):
     """Upload (create) a new config."""
-    from deployment.app.db.database import create_or_get_config
+    from deployment.app.db.database import auto_activate_best_config_if_enabled, create_or_get_config
 
     try:
         config_id = create_or_get_config(
             request.json_payload, is_active=request.is_active
         )
+        
+        # Auto-activate best config if enabled in settings (unless user explicitly set this one as active)
+        if not request.is_active:
+            try:
+                activated = auto_activate_best_config_if_enabled()
+                if activated:
+                    logger.info(f"Auto-activated best config after manual config upload: {config_id}")
+            except Exception as e:
+                logger.warning(f"Failed to auto-activate best config after manual upload: {e}")
+        
         return ConfigResponse(
             config_id=config_id,
             configs=request.json_payload,
@@ -381,6 +391,17 @@ async def upload_model(
                 metadata=meta_dict,
                 is_active=is_active,
             )
+            
+            # Auto-activate best model if enabled in settings (unless user explicitly set this one as active)
+            if not is_active:
+                try:
+                    from deployment.app.db.database import auto_activate_best_model_if_enabled
+                    activated = auto_activate_best_model_if_enabled()
+                    if activated:
+                        logger.info(f"Auto-activated best model after manual model upload: {model_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to auto-activate best model after manual upload: {e}")
+                    
         except Exception as db_exc:
             logger.error(
                 f"Failed to create model record for model_id={model_id}: {db_exc}"

@@ -9,7 +9,8 @@ import dill
 import numpy as np
 import pandas as pd
 from darts.timeseries import TimeSeries
-from darts.utils.data.training_dataset import MixedCovariatesTrainingDataset
+from darts.utils.data.torch_datasets.training_dataset import TorchTrainingDataset
+from darts.utils.data.torch_datasets.inference_dataset import TorchInferenceDataset
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MultiLabelBinarizer, OrdinalEncoder, minmax_scale
 from typing_extensions import Self
@@ -47,7 +48,7 @@ GROUP_KEYS = [
 ]
 
 
-class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
+class PlastinkaBaseTSDataset:
     def __init__(
         self,
         stock_features: pd.DataFrame,
@@ -114,9 +115,8 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             copy=False,
             reindex=False,
         )
-        self.return_ts = False
-        self._allow_empty_stock = False
         self.minimum_sales_months = minimum_sales_months
+        self._allow_empty_stock = False
         self._idx_mapping = self._build_index_mapping()
         self.save_dir = save_dir
         self.dataset_name = dataset_name
@@ -367,122 +367,77 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
             ds = self.setup_dataset(window=(0, self._n_time_steps), copy=copy)
             return ds
 
-    @contextmanager
-    def pad_for_inference(self):
-        """Context manager to temporarily extend data arrays for inference."""
-        # ---- SAVE ORIGINAL STATE ----
-        orig_monthly_sales = self._monthly_sales
-        orig_stock_features = self._stock_features
-        orig_time_index = self._time_index
-        orig_n_time_steps = self._n_time_steps
-        orig_end = self.end
+    def _get_raw_sample_arrays(self, idx):
+        """
+        Extracts raw NumPy arrays for a given index, common to both training and inference datasets.
+        """
+        (array_index, start_index, end_index) = self._project_index(idx)
+        end_index_safe = end_index if end_index is not None else self._n_time_steps
+        
+        series_item = np.expand_dims(
+            self.monthly_sales[start_index:end_index, array_index], axis=1
+        )
+        item_multiidx = self._idx2multiidx[array_index]
+        # Renamed for clarity as per user's suggestion
+        historic_future_covariates_item = self.get_future_covariates(item_multiidx)[
+            start_index : end_index_safe - self.output_chunk_length
+        ]
+        future_covariates_item_output_chunk = self.get_future_covariates(item_multiidx)[
+            end_index_safe - self.output_chunk_length : end_index
+        ]
+        past_covariates_item = self.get_past_covariates(item_multiidx)[
+            start_index:end_index
+        ]
 
-        try:
-            # ---- CREATE PADDING ----
-            pad = self.output_chunk_length
-            zero_sales = np.zeros(
-                (pad, self._monthly_sales.shape[1]), dtype=self._monthly_sales.dtype
-            )
-            zero_stock = np.zeros(
-                (pad, *self._stock_features.shape[1:]), dtype=self._stock_features.dtype
-            )
+        static_covariates_item = None
+        if self.static_covariates_mapping is not None:
+            static_covariates_item = self.static_covariates_mapping.loc[item_multiidx]
 
-            # ---- EXTEND ARRAYS ----
-            self._monthly_sales = np.vstack([self._monthly_sales, zero_sales])
-            self._stock_features = np.vstack([self._stock_features, zero_stock])
+        if self.scaler is not None:
+            series_item = self.scaler.transform(series_item)
 
-            # ---- EXTEND TIME INDEX ----
-            last_date = orig_time_index[-1]
-            new_dates = pd.date_range(
-                start=last_date + pd.DateOffset(months=1), periods=pad, freq="MS"
-            )
-            self._time_index = orig_time_index.append(new_dates)
+        soft_availability = np.expand_dims(
+            past_covariates_item[: -self.output_chunk_length, -1], 1
+        )
+        reweight_fn_output = self.reweight_fn(
+            series_item[: -self.output_chunk_length] * soft_availability
+        )
 
-            # ---- UPDATE DERIVED ATTRIBUTES AND REBUILD CACHE ----
-            self._n_time_steps = self._monthly_sales.shape[0]  # Автоматически из shape
-            self.reset_window(
-                copy=False
-            )  # Автоматически установит self.end и пересоберет кеш
+        return (
+            series_item,
+            past_covariates_item,
+            historic_future_covariates_item,
+            future_covariates_item_output_chunk,
+            static_covariates_item,
+            reweight_fn_output,
+        )
 
-            yield
+    def __len__(self):
+        if self._index_mapping:
+            return len(self._index_mapping)
+        else:
+            return self.monthly_sales.shape[1] * self.outputs_per_array
 
-        finally:
-            # ---- ROLLBACK ALL CHANGES ----
-            self._monthly_sales = orig_monthly_sales
-            self._stock_features = orig_stock_features
-            self._time_index = orig_time_index
-            self._n_time_steps = orig_n_time_steps
-            self.end = orig_end
+    def _project_index(self, index):
+        if self._index_mapping:
+            index = self._index_mapping[index]
+        item = index // self.outputs_per_array
 
-    def to_dict(self, prefix=""):
-        dataset_dict = defaultdict(list)
-
-        # Сохраняем состояние флагов
-        self.return_ts = True
-        self._allow_empty_stock = True
-        old_idx_mapping = self._index_mapping
-
-        # Используем контекст-менеджер для временного расширения
-        with self.pad_for_inference():
-            self._build_index_mapping()
-
-            for i in range(len(self)):
-                (
-                    past_target,
-                    past_covariates,
-                    historic_future_covariates,
-                    future_covariates,
-                    _,
-                    _,
-                    _,  # Это последний элемент перед предсказанием
-                    ts,
-                ) = self[i]
-
-                time_index = ts.time_index
-                future_covariates = np.vstack(
-                    [historic_future_covariates, future_covariates]
-                )
-
-                # НЕ добавляем future_target к series - оставляем только историческую часть
-                series = past_target  # Только прошлое, без future_target
-
-                future_covariates = TimeSeries.from_times_and_values(
-                    time_index[: len(future_covariates)],  # Соответствующая длина
-                    future_covariates,
-                )
-                past_covariates = TimeSeries.from_times_and_values(
-                    time_index[: past_covariates.shape[0]], past_covariates
-                )
-                # Создаем новый TimeSeries с правильной длиной для series (только past_target)
-                ts = TimeSeries.from_times_and_values(
-                    time_index[: series.shape[0]],
-                    series,
-                    static_covariates=ts.static_covariates,
-                )
-
-                if self._index_mapping:
-                    i = self._index_mapping[i]
-
-                labels = self._idx2multiidx[i // self.outputs_per_array]
-
-                dataset_dict[f"{prefix}series"].append(ts)
-                dataset_dict[f"{prefix}future_covariates"].append(future_covariates)
-                dataset_dict[f"{prefix}past_covariates"].append(past_covariates)
-                dataset_dict[f"{prefix}labels"].append(labels)
-
-        # Откатываем флаги
-        self.return_ts = False
-        self._allow_empty_stock = False
-        self._index_mapping = old_idx_mapping
-
-        return dataset_dict
+        length = self.input_chunk_length + self.output_chunk_length
+        start_index = index % self.outputs_per_array
+        end_index = (
+            (start_index + length)
+            if (start_index + length) < self._n_time_steps
+            else None
+        )
+        return item, start_index, end_index
 
     def _get_item_sales(self, item_multiidx):
         return self.monthly_sales[:, self._multiidx2idx[item_multiidx]]
 
     def _get_item_stock(self, item_multiidx):
         return self.stock_features[:, :, self._multiidx2idx[item_multiidx]]
-
+    
     @property
     def monthly_sales(self):
         if self._monthly_sales is not None:
@@ -519,75 +474,123 @@ class PlastinkaTrainingTSDataset(MixedCovariatesTrainingDataset):
     def L(self):
         return self.end - self.start
 
-    def _project_index(self, index):
-        if self._index_mapping:
-            index = self._index_mapping[index]
-        item = index // self.outputs_per_array
 
-        length = self.input_chunk_length + self.output_chunk_length
-        start_index = index % self.outputs_per_array
-        end_index = (
-            (start_index + length)
-            if (start_index + length) < self._n_time_steps
-            else None
+class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, TorchTrainingDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, idx):
+        (
+            series_item,
+            past_covariates_item,
+            historic_future_covariates_item,
+            future_covariates_item_output_chunk,
+            static_covariates_item,
+            reweight_fn_output,
+        ) = self._get_raw_sample_arrays(idx)
+
+        past_target = series_item[: -self.output_chunk_length]
+        future_target = series_item[-self.output_chunk_length :]
+
+        static_covariates_item_array = None
+        if static_covariates_item is not None:
+            static_covariates_item_array = np.expand_dims(
+                static_covariates_item.values, 1
+            ).T
+        output = (
+            past_target,
+            past_covariates_item[: -self.output_chunk_length], # Past part of past_covariates
+            historic_future_covariates_item,
+            future_covariates_item_output_chunk,
+            static_covariates_item_array,
+            reweight_fn_output,
+            future_target,
         )
-        return item, start_index, end_index
+        return output
 
-    def __len__(self):
-        if self._index_mapping:
-            return len(self._index_mapping)
-        else:
-            return self.monthly_sales.shape[1] * self.outputs_per_array
+
+class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._allow_empty_stock = True # This flag was part of the original training dataset but makes sense for inference too
+
+        # --- Restore padding logic directly in __init__ for inference dataset ---
+        pad = self.output_chunk_length
+
+        # Create padding arrays
+        zero_sales = np.zeros(
+            (pad, self._monthly_sales.shape[1]), dtype=self._monthly_sales.dtype
+        )
+        zero_stock = np.zeros(
+            (pad, *self._stock_features.shape[1:]), dtype=self._stock_features.dtype
+        )
+
+        # Extend arrays
+        self._monthly_sales = np.vstack([self._monthly_sales, zero_sales])
+        self._stock_features = np.vstack([self._stock_features, zero_stock])
+
+        # Extend time index
+        last_date = self._time_index[-1]
+        new_dates = pd.date_range(
+            start=last_date + pd.DateOffset(months=1), periods=pad, freq="MS"
+        )
+        self._time_index = self._time_index.append(new_dates)
+
+        # Update derived attributes and rebuild cache
+        self._n_time_steps = self._monthly_sales.shape[0]
+        self.reset_window(copy=False)
+        self._build_index_mapping() # Ensure index mapping is rebuilt after padding
+
 
     def __getitem__(self, idx):
         (array_index, start_index, end_index) = self._project_index(idx)
 
-        series_item = np.expand_dims(
-            self.monthly_sales[start_index:end_index, array_index], axis=1
-        )
-        item_multiidx = self._idx2multiidx[array_index]
-        future_covariates_item = self.get_future_covariates(item_multiidx)[
-            start_index:end_index
-        ]
-        past_covariates_item = self.get_past_covariates(item_multiidx)[
-            start_index:end_index
-        ]
+        (
+            series_item,
+            past_covariates_item,
+            historic_future_covariates_item,
+            future_covariates_item_output_chunk,
+            static_covariates_item,
+            _, # reweight_fn_output not needed for inference __getitem__
+        ) = self._get_raw_sample_arrays(idx)
 
-        static_covariates_item = None
-        if self.static_covariates_mapping is not None:
-            static_covariates_item = self.static_covariates_mapping.loc[item_multiidx]
+        # Darts InferenceDataset expects a SeriesSchema for target_series (7th element)
+        # and pred_time (8th element).
+        time_index_for_ts = self.time_index[start_index : end_index] # Use unpacked start_index, end_index
+        
+        # This is a workaround because Darts doesn't provide a direct way to build SeriesSchema
+        # without a TimeSeries object from raw data, but expects a SeriesSchema from __getitem__.
+        
+        static_covariates_item_array = None
+        if static_covariates_item is not None:
             static_covariates_item_array = np.expand_dims(
                 static_covariates_item.values, 1
             ).T
 
-        if self.scaler is not None:
-            series_item = self.scaler.transform(series_item)
-
-        soft_availability = np.expand_dims(
-            past_covariates_item[: -self.output_chunk_length, -1], 1
+        dummy_ts = TimeSeries.from_times_and_values(
+            times=time_index_for_ts,
+            values=series_item,
+            static_covariates=static_covariates_item,
         )
-        output = [
-            series_item[: -self.output_chunk_length],
-            past_covariates_item[: -self.output_chunk_length],
-            future_covariates_item[: -self.output_chunk_length],
-            future_covariates_item[-self.output_chunk_length :],
-            static_covariates_item_array,
-            self.reweight_fn(
-                series_item[: -self.output_chunk_length] * soft_availability
-            ),
-            series_item[-self.output_chunk_length :],
-        ]
 
-        if self.return_ts:
-            time_series = TimeSeries.from_times_and_values(
-                self.time_index[start_index:end_index],
-                series_item,
-                static_covariates=static_covariates_item,
-            )
-            output.append(time_series)
+        target_series_schema = dummy_ts.schema  # Extract the schema
 
+        pred_time = dummy_ts.time_index[-self.output_chunk_length] # The time of the first point in the forecast horizon
+
+        # Align with TorchInferenceDatasetOutput signature:
+        # (past_target, past_covariates, future_past_covariates, historic_future_covariates, future_covariates, static_covariates, target_series_schema, pred_time)
+        output = (
+            series_item[: -self.output_chunk_length], # past_target
+            past_covariates_item[: -self.output_chunk_length], # past_covariates
+            None, # future_past_covariates (not explicitly generated by your current logic)
+            historic_future_covariates_item, # historic_future_covariates
+            future_covariates_item_output_chunk, # future_covariates
+            static_covariates_item_array, # static_covariates
+            target_series_schema, # target_series (now SeriesSchema)
+            pred_time, # pred_time
+        )
         return output
-
+    
 
 class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
     def __init__(self, separator="/"):
@@ -695,6 +698,8 @@ class GlobalLogMinMaxScaler(BaseEstimator, TransformerMixin):
             raise ValueError(
                 "This GlobalMinMaxScaler instance is not fitted yet. Call 'fit' before using this method."
             )
+        
+        X_scaled = self._validate_data(X_scaled)
 
         scale = self.feature_range[1] - self.feature_range[0]
         X_scaled = X_scaled - 1e-6

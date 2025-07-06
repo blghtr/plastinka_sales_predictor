@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-TEST_BEARER_TOKEN = "test_token"
+TEST_BEARER_TOKEN = "test_admin_token"
 
 
 @pytest.fixture

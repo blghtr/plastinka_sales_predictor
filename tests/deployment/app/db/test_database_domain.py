@@ -226,8 +226,9 @@ class TestModelRegistration:
 
     @patch("os.path.exists")
     @patch("os.remove")
+    @patch("deployment.app.db.database._is_path_safe", return_value=True)
     def test_delete_model_record_and_file_success(
-        self, mock_remove, mock_exists, domain_db, temp_model_files
+        self, mock_is_path_safe, mock_remove, mock_exists, domain_db, temp_model_files
     ):
         """Test deleting model record and file."""
         mock_exists.return_value = True
@@ -506,6 +507,7 @@ class TestIntegration:
         with (
             patch("os.path.exists", return_value=True),
             patch("os.remove") as mock_remove,
+            patch("deployment.app.db.database._is_path_safe", return_value=True),
         ):
             delete_result = delete_model_record_and_file(model_id, connection=conn)
             assert delete_result is True

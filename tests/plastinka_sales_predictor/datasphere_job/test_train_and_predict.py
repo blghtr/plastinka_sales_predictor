@@ -148,17 +148,22 @@ class TestPredictSales:
         mock_model = MagicMock()
         mock_dataset = MagicMock()
 
-        # Setup dataset mock
-        mock_dataset.to_dict.return_value = {
-            "series": [["data1"], ["data2"]],
-            "future_covariates": ["future1", "future2"],
-            "past_covariates": ["past1", "past2"],
-            "labels": ["label1", "label2"],
+        # Setup dataset mock for new API
+        mock_dataset.__len__.return_value = 2
+        mock_dataset._project_index.side_effect = [
+            (0, 10, 20),  # array_index, start_index, end_index for idx=0
+            (1, 15, 25),  # array_index, start_index, end_index for idx=1
+        ]
+        mock_dataset._idx2multiidx = {
+            0: ("label1", "value1"),
+            1: ("label2", "value2"),
         }
+        mock_dataset._index_names_mapping = {"name1": 0, "name2": 1}
+        mock_dataset.scaler = None
 
         # Setup model prediction
-        mock_predictions = [MagicMock(), MagicMock()]
-        mock_model.predict.return_value = mock_predictions
+        mock_predictions = [np.array([1, 2, 3]), np.array([4, 5, 6])]
+        mock_model.predict_from_dataset.return_value = (mock_predictions, None, None)
 
         # Setup get_predictions_df
         expected_df = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
@@ -169,12 +174,12 @@ class TestPredictSales:
 
         # Assert
         assert result.equals(expected_df)
-        mock_model.predict.assert_called_once_with(
+        mock_model.predict_from_dataset.assert_called_once_with(
             1,
+            mock_dataset,
             num_samples=500,
-            series=[["data1"], ["data2"]],  # series as returned by mock
-            future_covariates=["future1", "future2"],
-            past_covariates=["past1", "past2"],
+            values_only=True,
+            mc_dropout=True
         )
 
     def test_predict_sales_exception_handling(self):
@@ -182,13 +187,8 @@ class TestPredictSales:
         # Arrange
         mock_model = MagicMock()
         mock_dataset = MagicMock()
-        mock_dataset.to_dict.return_value = {
-            "series": [],
-            "future_covariates": [],
-            "past_covariates": [],
-            "labels": [],
-        }
-        mock_model.predict.side_effect = RuntimeError("Prediction failed")
+        mock_dataset.__len__.return_value = 0
+        mock_model.predict_from_dataset.side_effect = RuntimeError("Prediction failed")
 
         # Act & Assert
         with pytest.raises(RuntimeError, match="Prediction failed"):
@@ -200,25 +200,13 @@ class TestGetPredictionsDF:
 
     def test_get_predictions_df_success(self):
         """Test successful conversion of predictions to DataFrame."""
-        # Arrange
+        # Arrange - predictions are now numpy arrays directly
         mock_preds = []
         for i in range(5):  # Create 5 predictions to match 5 labels
-            mock_pred = MagicMock()
             # Each prediction should be a 2D column vector (5 rows, 1 column)
             # This way hstack will create a (5, 5) matrix where each column is a prediction
-            mock_pred.data_array.return_value.values = np.array(
-                [[i * 10 + j] for j in range(5)]
-            )
-            mock_preds.append(mock_pred)
+            mock_preds.append(np.array([[i * 10 + j] for j in range(5)]))
 
-        series = [["series1"], ["series2"], ["series3"], ["series4"], ["series5"]]
-        future_covariates = [
-            ["future1"],
-            ["future2"],
-            ["future3"],
-            ["future4"],
-            ["future5"],
-        ]
         # labels should match the number of predictions (5)
         labels = [
             ("label1", "value1"),
@@ -236,8 +224,6 @@ class TestGetPredictionsDF:
         # Act
         result = train_and_predict.get_predictions_df(
             mock_preds,
-            series,
-            future_covariates,
             labels,
             index_names_mapping,
             mock_scaler,
@@ -262,13 +248,9 @@ class TestGetPredictionsDF:
 
     def test_get_predictions_df_no_scaler(self):
         """Test get_predictions_df with no scaler (scaler=None)."""
-        # Arrange
-        mock_pred = MagicMock()
-        # Each prediction should be a 2D column vector (5 rows, 1 column)
-        mock_pred.data_array.return_value.values = np.array([[1], [2], [3], [4], [5]])
+        # Arrange - predictions are now numpy arrays directly
+        mock_pred = np.array([[1], [2], [3], [4], [5]])
 
-        series = [["series1"]]
-        future_covariates = [["future1"]]
         # labels should match the number of rows in the data (5)
         labels = [
             ("label1", "value1"),
@@ -282,8 +264,6 @@ class TestGetPredictionsDF:
         # Act
         result = train_and_predict.get_predictions_df(
             [mock_pred],
-            series,
-            future_covariates,
             labels,
             index_names_mapping,
             scaler=None,
@@ -477,42 +457,47 @@ class TestLoadDatasets:
         "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_file"
     )
     @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_objects"
-    )
-    @patch(
         "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaTrainingTSDataset"
     )
+    @patch(
+        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaInferenceTSDataset"
+    )
     def test_load_datasets_success(
-        self, mock_dataset_class, mock_validate_objects, mock_validate_file
+        self, mock_inference_dataset_class, mock_training_dataset_class, mock_validate_file
     ):
         """Test successful dataset loading."""
         # Arrange
         input_dir = "/test/input"
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
-        mock_dataset_class.from_dill.side_effect = [
+        mock_inference_dataset = MagicMock()
+        
+        # Configure the class methods to return different datasets
+        mock_training_dataset_class.from_dill.side_effect = [
             mock_train_dataset,
             mock_val_dataset,
         ]
+        mock_inference_dataset_class.from_dill.return_value = mock_inference_dataset
 
         # Act
-        train_ds, val_ds = train_and_predict.load_datasets(input_dir)
+        train_ds, val_ds, inference_ds = train_and_predict.load_datasets(input_dir)
 
         # Assert
         assert train_ds == mock_train_dataset
         assert val_ds == mock_val_dataset
+        assert inference_ds == mock_inference_dataset
 
-        # Verify validation calls
-        assert mock_validate_file.call_count == 2
-        mock_validate_objects.assert_called_once_with(
-            mock_train_dataset, mock_val_dataset
-        )
+        # Verify validation calls (now 3 files)
+        assert mock_validate_file.call_count == 3
 
         # Verify dataset loading calls
         expected_train_path = os.path.join(input_dir, "train.dill")
         expected_val_path = os.path.join(input_dir, "val.dill")
-        mock_dataset_class.from_dill.assert_any_call(expected_train_path)
-        mock_dataset_class.from_dill.assert_any_call(expected_val_path)
+        expected_inference_path = os.path.join(input_dir, "inference.dill")
+        
+        mock_training_dataset_class.from_dill.assert_any_call(expected_train_path)
+        mock_training_dataset_class.from_dill.assert_any_call(expected_val_path)
+        mock_inference_dataset_class.from_dill.assert_called_once_with(expected_inference_path)
 
     @patch(
         "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_file"
@@ -597,20 +582,14 @@ class TestRunPrediction:
     @patch(
         "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_parameters"
     )
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_prediction_window"
-    )
     @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.predict_sales")
     def test_run_prediction_success(
-        self, mock_predict, mock_validate_window, mock_validate_config
+        self, mock_predict, mock_validate_config
     ):
         """Test successful prediction execution."""
         # Arrange
         mock_model = MagicMock()
-        mock_train_dataset = MagicMock()
-        mock_train_dataset._n_time_steps = 100
-        mock_predict_dataset = MagicMock()
-        mock_train_dataset.setup_dataset.return_value = mock_predict_dataset
+        mock_inference_dataset = MagicMock()
 
         config = {"lags": 12}
         expected_predictions = pd.DataFrame({"pred": [1, 2, 3]})
@@ -618,20 +597,13 @@ class TestRunPrediction:
 
         # Act
         result = train_and_predict.run_prediction(
-            mock_model, mock_train_dataset, config
+            mock_model, mock_inference_dataset, config
         )
 
         # Assert
         assert result.equals(expected_predictions)
         mock_validate_config.assert_called_once_with(config)
-        mock_validate_window.assert_called_once_with(100, 13)  # lags + 1
-        mock_train_dataset.setup_dataset.assert_called_once_with(
-            window=(87, 100)
-        )  # 100 - 13, 100
-        mock_predict.assert_called_once_with(mock_model, mock_predict_dataset)
-
-        # Verify minimum_sales_months is set
-        assert mock_predict_dataset.minimum_sales_months == 1
+        mock_predict.assert_called_once_with(mock_model, mock_inference_dataset)
 
     @patch(
         "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_parameters"
@@ -641,27 +613,25 @@ class TestRunPrediction:
         """Test run_prediction when no predictions returned."""
         # Arrange
         mock_model = MagicMock()
-        mock_train_dataset = MagicMock()
-        mock_train_dataset._n_time_steps = 100
-        mock_train_dataset.setup_dataset.return_value = MagicMock()
+        mock_inference_dataset = MagicMock()
 
         config = {"lags": 12}
         mock_predict.return_value = None
 
         # Act & Assert
         with pytest.raises(SystemExit):
-            train_and_predict.run_prediction(mock_model, mock_train_dataset, config)
+            train_and_predict.run_prediction(mock_model, mock_inference_dataset, config)
 
     def test_run_prediction_missing_config(self):
         """Test run_prediction with missing config parameters."""
         # Arrange
         mock_model = MagicMock()
-        mock_train_dataset = MagicMock()
+        mock_inference_dataset = MagicMock()
         config = {}  # Missing 'lags'
 
         # Act & Assert
         with pytest.raises(SystemExit):
-            train_and_predict.run_prediction(mock_model, mock_train_dataset, config)
+            train_and_predict.run_prediction(mock_model, mock_inference_dataset, config)
 
 
 class TestPrepareMetrics:
@@ -671,8 +641,8 @@ class TestPrepareMetrics:
         """Test prepare_metrics with complete training metrics."""
         # Arrange
         training_metrics = {
-            "validation": {"val_loss": 0.5, "val_accuracy": 0.85},
-            "training": {"train_loss": 0.3, "train_accuracy": 0.9},
+            "validation": {"loss": 0.5, "accuracy": 0.85},
+            "training": {"loss": 0.3, "accuracy": 0.9},
         }
         duration = 123.45
 
@@ -689,7 +659,7 @@ class TestPrepareMetrics:
     def test_prepare_metrics_partial(self):
         """Test prepare_metrics with partial metrics."""
         # Arrange
-        training_metrics = {"validation": {"val_loss": 0.5}}
+        training_metrics = {"validation": {"loss": 0.5}}
         duration = 60.0
 
         # Act
@@ -931,10 +901,8 @@ class TestMainFunction:
 
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
-        # Configure reset_window to return a different mock for prediction
-        mock_full_train_ds = MagicMock()
-        mock_train_dataset.reset_window.return_value = mock_full_train_ds
-        mock_load_datasets.return_value = (mock_train_dataset, mock_val_dataset)
+        mock_inference_dataset = MagicMock()
+        mock_load_datasets.return_value = (mock_train_dataset, mock_val_dataset, mock_inference_dataset)
 
         mock_model = MagicMock()
         training_metrics = {"val_loss": 0.5}
@@ -963,7 +931,7 @@ class TestMainFunction:
             mock_train_dataset, mock_val_dataset, config
         )
         mock_run_prediction.assert_called_once_with(
-            mock_model, mock_full_train_ds, config
+            mock_model, mock_inference_dataset, config
         )
         mock_prepare_metrics.assert_called_once_with(training_metrics, duration)
 
@@ -994,12 +962,14 @@ class TestMainFunction:
                 with patch(
                     "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_datasets"
                 ) as mock_load_datasets:
-                    # Fix: load_datasets should return a tuple of (train_dataset, val_dataset)
+                    # Fix: load_datasets should return a tuple of (train_dataset, val_dataset, inference_dataset)
                     mock_train_dataset = MagicMock()
                     mock_val_dataset = MagicMock()
+                    mock_inference_dataset = MagicMock()
                     mock_load_datasets.return_value = (
                         mock_train_dataset,
                         mock_val_dataset,
+                        mock_inference_dataset,
                     )
                     with patch(
                         "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_training"
