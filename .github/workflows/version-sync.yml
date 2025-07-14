@@ -2,6 +2,8 @@ name: Sync Version Across Files
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'  # Triggered on version tags like v1.0.0
   workflow_dispatch:
