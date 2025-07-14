@@ -16,5 +16,10 @@ resource "yandex_datasphere_project" "this" {
 
   lifecycle {
     prevent_destroy = true
+    # Игнорировать изменения в описании и метках
+    ignore_changes = [
+      description,
+      labels
+    ]
   }
 } 

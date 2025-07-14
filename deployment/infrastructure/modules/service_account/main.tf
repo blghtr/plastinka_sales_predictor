@@ -2,12 +2,25 @@ resource "yandex_iam_service_account" "this" {
   name        = var.name
   description = var.description
   folder_id   = var.folder_id
+  
+  lifecycle {
+    prevent_destroy = true
+    # Игнорировать изменения в описании
+    ignore_changes = [
+      description
+    ]
+  }
 }
 
 resource "yandex_iam_service_account_static_access_key" "this" {
   count              = var.create_static_key ? 1 : 0
   service_account_id = yandex_iam_service_account.this.id
   description        = "Static access key for ${var.name}"
+  
+  lifecycle {
+    # Предотвращаем пересоздание ключа
+    prevent_destroy = true
+  }
 }
 
 # Assign roles at folder level for DataSphere operations

@@ -1,11 +1,9 @@
-# Example variable values for prod environment
-
-# Yandex Cloud Authentication
 yc_cloud_id        = "your-cloud-id-here"
 yc_folder_id       = "your-folder-id-here"
 yc_organization_id = "your-organization-id-here"
 
-# DataSphere configuration is generated automatically by Terraform
-# After applying, use these commands to get information:
-# terraform output datasphere_summary
-# terraform output datasphere_config_path
+# Использование существующих ресурсов (раскомментируйте и укажите ID, если применимо)
+# existing_service_account_id = "your-existing-service-account-id"
+# existing_community_id       = "your-existing-community-id"
+# existing_project_id         = "your-existing-project-id"
+# existing_static_key_id      = "your-existing-static-key-id"
