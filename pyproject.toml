@@ -15,7 +15,7 @@ dependencies = [
     "setuptools>=78.0.2",
     "wheel>=0.45.1",
     "dill>=0.3.9",
-    "darts>=0.34.0"
+    "darts==0.36.0"
 ]
 
 [project.scripts]
@@ -23,16 +23,16 @@ plastinka-check-env = "deployment.scripts.check_environment:main"
 
 [project.optional-dependencies]
 ml = [
-    "configspace<=0.7.1",
+    "configspace==0.7.1",
     "hpbandster>=0.7.4",
     "numpy>=1.26.4",
     "pandas>=2.2.3",
-    "ray[train,tune]>=2.44.1",
     "scikit-learn>=1.6.1",
     "scipy>=1.15.2",
     "tensorboard>=2.19.0",
     "torchmetrics>=1.7.0",
     "onnx>=1.18.0",
+    "ray>=2.41.0",
 ]
 notebook = [
     "ipykernel>=6.29.5",
@@ -51,7 +51,7 @@ dev = [
     "pytest-asyncio>=0.26.0",
     "pytest-benchmark>=5.1.0",
     "pytest-cov>=6.0.0",
-    "ruff>=0.8.0",
+    "ruff>=0.8.0"
 ]
 deployment = [
     "aiofiles>=24.1.0",
@@ -62,13 +62,14 @@ deployment = [
     "python-multipart>=0.0.20",
     "httpx>=0.28.1",
     "pandas>=2.2.3",
-    "numpy>=1.26.4",  
-    "openpyxl>=3.1.5",  
+    "numpy>=1.26.4",
+    "openpyxl>=3.1.5",
     "boto3>=1.38.2",
     "botocore>=1.38.2",
     "datasphere>=0.10.0",
     "psutil>=7.0.0",
     "psycopg2-binary>=2.9.10",
+    "cryptography>=42.0.0"
 ]
 cpu = [
   "torch>=2.7.0",
@@ -122,14 +123,6 @@ ignore = [
     "E501",  # line too long, handled by formatter
     "B008",  # do not perform function calls in argument defaults
     "C901",  # too complex
-]
-
-[dependency-groups]
-dev = [
-    "pyfakefs>=5.9.1",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=0.26.0",
-    "pytest-cov>=6.2.1",
 ]
 
 [tool.uv.sources]
