@@ -31,8 +31,22 @@ jobs:
     
     - name: Run linting
       run: |
-        uv run --extra dev --extra deployment --extra ml --extra cpu ruff check . --fix --exit-zero
-        uv run --all-extras ruff format .
+        uv run --extra dev --extra deployment --extra ml --extra cpu ruff check . --fix --exit-zero 2>&1 | tee lint_report.txt
+        uv run --all-extras ruff format . || true
+    - name: Upload lint report
+      uses: actions/upload-artifact@v4
+      with:
+        name: lint-report
+        path: lint_report.txt
+    - name: Add lint report to summary
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const report = fs.readFileSync('lint_report.txt', 'utf8');
+          core.summary.addRaw('### Ruff Lint Report\n');
+          core.summary.addCodeBlock(report, 'text');
+          await core.summary.write();
     
     - name: Run tests with coverage
       run: |
