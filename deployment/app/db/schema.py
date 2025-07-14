@@ -2,6 +2,7 @@ import logging
 import sqlite3
 from pathlib import Path
 import os
+import sys
 
 logger = logging.getLogger(__name__)
 

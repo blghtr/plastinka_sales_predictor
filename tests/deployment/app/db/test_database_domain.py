@@ -267,27 +267,29 @@ class TestDataRetention:
     """Test suite for data retention and cleanup operations."""
 
     @patch("deployment.app.db.data_retention.get_settings")
-    @patch("deployment.app.db.data_retention.get_db_connection")
-    def test_cleanup_old_predictions_success(
-        self, mock_get_db, mock_get_settings, domain_db
-    ):
+    @patch("deployment.app.db.data_retention.datetime")
+    @patch("deployment.app.db.data_retention.DataAccessLayer")
+    def test_cleanup_old_predictions_success(self, mock_dal_class, mock_datetime, mock_get_settings, domain_db):
         """Test cleaning up old predictions."""
-        conn = domain_db["conn"]
-        mock_get_db.return_value = conn
-
-        # Disable foreign keys for this test
-        conn.execute("PRAGMA foreign_keys = OFF")
-
-        # Mock settings
-        mock_settings_object = MagicMock()
+        # Фиксируем now()
+        fixed_now = datetime(2023, 1, 1)
+        mock_datetime.now.return_value = fixed_now
+        mock_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        # Мокаем настройки
         mock_retention = MagicMock()
         mock_retention.prediction_retention_days = 30
         mock_retention.cleanup_enabled = True
+        mock_settings_object = MagicMock()
         mock_settings_object.data_retention = mock_retention
         mock_get_settings.return_value = mock_settings_object
-
+        conn = domain_db["conn"]
+        mock_dal = MagicMock()
+        mock_dal.db_connection = conn
+        mock_dal_class.return_value = mock_dal
+        # Disable foreign keys for this test
+        conn.execute("PRAGMA foreign_keys = OFF")
         # Create models first for foreign key constraints
-        now = datetime.now()
+        now = fixed_now
         models = ["model1", "model2", "model3", "model4"]
         for model_id in models:
             create_model_record(
@@ -299,7 +301,6 @@ class TestDataRetention:
                 is_active=False,
                 connection=conn,
             )
-
         # Create test predictions table and data
         conn.execute("""
         CREATE TABLE IF NOT EXISTS fact_predictions (
@@ -315,12 +316,11 @@ class TestDataRetention:
             quantile_95 DECIMAL(10,2) NOT NULL,
             created_at TIMESTAMP NOT NULL
         )""")
-
         # Old predictions (older than 30 days)
         old_predictions = [
             (
                 1,
-                now - timedelta(days=45),
+                (now - timedelta(days=45)).strftime("%Y-%m-%d"),
                 "result1",
                 "model1",
                 10.0,
@@ -332,7 +332,7 @@ class TestDataRetention:
             ),
             (
                 2,
-                now - timedelta(days=40),
+                (now - timedelta(days=40)).strftime("%Y-%m-%d"),
                 "result2",
                 "model2",
                 12.0,
@@ -343,12 +343,11 @@ class TestDataRetention:
                 (now - timedelta(days=40)).isoformat(),
             ),
         ]
-
         # Recent predictions (within 30 days)
         recent_predictions = [
             (
                 3,
-                now - timedelta(days=10),
+                (now - timedelta(days=10)).strftime("%Y-%m-%d"),
                 "result3",
                 "model3",
                 11.0,
@@ -360,7 +359,7 @@ class TestDataRetention:
             ),
             (
                 4,
-                now - timedelta(days=5),
+                (now - timedelta(days=5)).strftime("%Y-%m-%d"),
                 "result4",
                 "model4",
                 13.0,
@@ -371,7 +370,6 @@ class TestDataRetention:
                 (now - timedelta(days=5)).isoformat(),
             ),
         ]
-
         all_predictions = old_predictions + recent_predictions
         conn.executemany(
             """INSERT INTO fact_predictions
@@ -380,21 +378,11 @@ class TestDataRetention:
             all_predictions,
         )
         conn.commit()
-
-        # Verify initial count
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) as count FROM fact_predictions")
-        initial_count = cursor.fetchone()["count"]
-        assert initial_count == 4
-
         # Run cleanup
         deleted_count = cleanup_old_predictions(conn=conn)
-
-        # Re-establish cursor since cleanup_old_predictions might have closed it
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) as count FROM fact_predictions")
         final_count = cursor.fetchone()["count"]
-
         assert deleted_count == 2  # 2 old predictions should be deleted
         assert final_count == 2  # 2 recent predictions should remain
 

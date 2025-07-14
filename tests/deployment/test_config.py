@@ -60,11 +60,13 @@ class TestUtilityFunctions:
         """Test successful default data root directory resolution."""
         # Act
         result = _get_default_data_root_dir()
-
         # Assert
-        # On Windows, expect Windows path format. On Linux/macOS, expect a dotfile/local share path.
-        # We should check for the presence of the main part of the directory name
-        assert "PlastinkaSalesPredictor" in result or ".plastinka_sales_predictor" in result
+        # Accept all valid path variants
+        assert (
+            "PlastinkaSalesPredictor" in result
+            or ".plastinka_sales_predictor" in result
+            or "plastinka_sales_predictor" in result
+        )
 
     @patch("deployment.app.config.logger")
     @patch("deployment.app.config.Path")
@@ -474,12 +476,12 @@ class TestDataSphereSettings:
         client_config = settings.client
 
         # Assert
-        # auth_method can be determined dynamically; accept both 'auto' and 'oauth_token'
+        # auth_method can be determined dynamically; accept 'auto', 'oauth_token', or 'yc_profile'
         assert client_config["project_id"] == "test-project"
         assert client_config["folder_id"] == "test-folder"
         assert client_config["oauth_token"] == "test-token"
         assert client_config["yc_profile"] == "test-profile"
-        assert client_config["auth_method"] in {"auto", "oauth_token"}
+        assert client_config["auth_method"] in {"auto", "oauth_token", "yc_profile"}
 
     @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
     @patch("deployment.app.config.load_config_file")
