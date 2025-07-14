@@ -13,6 +13,10 @@ To: This new architecture that supports PyTorch, DataSphere SDK, and ML framewor
 import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
+import sqlite3
+import sys
+from functools import lru_cache
+import json
 
 import pytest
 
@@ -23,6 +27,8 @@ from deployment.app.models.api_models import (
     TrainingConfig,
     TrainingDatasetConfig,
 )
+from deployment.app.db.schema import init_db
+from deployment.app.db.database import dict_factory
 
 # Global mocks registry for session optimization without scope mismatch
 _GLOBAL_MOCKS_REGISTRY = {}
@@ -30,6 +36,25 @@ _GLOBAL_MOCKS_REGISTRY = {}
 # =================================================================================
 # NEW ARCHITECTURE: Real Filesystem + Temporary Directories
 # =================================================================================
+
+
+class MockConnectionWrapper:
+    """
+    A wrapper for sqlite3.Connection that makes its close() method a no-op.
+    This is used in tests to prevent shared database connections from being
+    prematurely closed by internal functions in database.py, while still
+    allowing the fixture to close the actual connection at teardown.
+    """
+    def __init__(self, conn):
+        self._conn = conn
+
+    def close(self):
+        # Do nothing during tests to keep the underlying connection open
+        pass
+
+    def __getattr__(self, name):
+        # Delegate all other attribute access to the wrapped connection
+        return getattr(self._conn, name)
 
 
 @pytest.fixture
@@ -77,27 +102,6 @@ def temp_workspace():
         yield workspace
 
 
-@pytest.fixture
-def file_operations_fs():
-    """
-    Function-scoped pyfakefs ONLY for testing pure file operations.
-
-    USE CASES:
-    - Unit tests for shutil operations
-    - pathlib operations testing
-    - File manipulation without ML dependencies
-
-    DO NOT USE FOR:
-    - DataSphere SDK tests
-    - PyTorch model loading
-    - Any tests that import ML frameworks
-    """
-    from pyfakefs.fake_filesystem_unittest import Patcher
-
-    with Patcher() as patcher:
-        yield patcher.fs
-
-
 @pytest.fixture(scope="session")
 def session_monkeypatch():
     """Session-scoped monkeypatch for performance optimization."""
@@ -109,7 +113,7 @@ def session_monkeypatch():
 
 
 @pytest.fixture
-def mock_datasphere_env(temp_workspace, monkeypatch):
+def mock_datasphere_env(temp_workspace, monkeypatch, mocked_db):
     """
     Replacement for mock_service_env without session-scoped pyfakefs.
 
@@ -144,7 +148,7 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
     mock_settings.datasphere = MagicMock()
     mock_settings.datasphere.project_id = "test-project-id-new-arch"
     mock_settings.datasphere.folder_id = "test-folder-id-new-arch"
-    mock_settings.datasphere.max_polls = 3
+    mock_settings.datasphere.max_polls = 10 # Increased from 3 to allow full status sequence to complete
     mock_settings.datasphere.poll_interval = 0.1
     mock_settings.datasphere.client_submit_timeout_seconds = 60
     mock_settings.datasphere.client_status_timeout_seconds = 30
@@ -157,13 +161,27 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
         "oauth_token": "test-token",
     }
 
+    # Explicitly mock db settings
+    mock_settings.db = MagicMock()
+    mock_settings.db.database_busy_timeout = 5000  # Set to a default integer value
+
+    # Set max_models_to_keep to an integer value to avoid TypeError
+    mock_settings.max_models_to_keep = 5
+
     mocks["settings"] = mock_settings
 
     # --- Patch get_settings function ---
+    monkeypatch.setattr("deployment.app.config.get_settings", lambda: mock_settings)
+    # CRITICAL: Also patch get_settings within the database module itself
+    from deployment.app.config import get_settings as original_config_get_settings
+    from deployment.app.db.database import get_settings as original_database_get_settings
+
+    # Now, apply our mock to the imports
     monkeypatch.setattr(
         "deployment.app.services.datasphere_service.get_settings", lambda: mock_settings
     )
     monkeypatch.setattr("deployment.app.config.get_settings", lambda: mock_settings)
+    monkeypatch.setattr("deployment.app.db.database.get_settings", lambda: mock_settings)
 
     # --- DataSphere Client Mock ---
     mock_client = MagicMock()
@@ -183,78 +201,69 @@ def mock_datasphere_env(temp_workspace, monkeypatch):
     mock_client.download_job_results.side_effect = default_download_side_effect
     mocks["client"] = mock_client
 
-    # --- Database Mocks ---
-    mock_db_conn = MagicMock()
-    mock_db_conn.cursor.return_value = mock_db_conn
-    mock_db_conn.execute.return_value = mock_db_conn
-    mock_db_conn.executemany.return_value = mock_db_conn
-    mock_db_conn.fetchone.return_value = {
-        "id": 1,
-        "multiindex_id": "test-multiindex-new",
-    }
-    mocks["db_connection"] = mock_db_conn
+    # NEW: Patch DataSphereClient where it's used in datasphere_service.py
+    monkeypatch.setattr("deployment.app.services.datasphere_service.DataSphereClient", MagicMock(return_value=mock_client))
+    monkeypatch.setattr("deployment.app.services.datasphere_service.create_model_record", mocked_db["create_model"])
+    monkeypatch.setattr("deployment.app.services.datasphere_service.get_job", mocked_db["get_job"])
 
-    mock_get_db_connection = MagicMock(return_value=mock_db_conn)
+    # --- Database Mocks ---
+    # Create a single, persistent in-memory database connection for the test
+    persistent_db_conn = sqlite3.connect(":memory:")
+    persistent_db_conn.row_factory = dict_factory
+    init_db(connection=persistent_db_conn)
+    persistent_db_conn.execute("PRAGMA foreign_keys = ON;")
+    persistent_db_conn.commit()
+
+    # No longer patching persistent_db_conn.close directly due to AttributeError on undo.
+    # Instead, we wrap the connection so its close() method is a no-op for internal calls.
+    mock_get_db_connection = MagicMock(return_value=MockConnectionWrapper(persistent_db_conn))
     mocks["get_db_connection"] = mock_get_db_connection
 
-    # --- Database Function Mocks ---
-    for func_name in [
-        "get_or_create_multiindex_id",
-        "update_job_status",
-        "create_training_result",
-        "execute_many",
-        "save_predictions_to_db",
-        "get_job",
-        "create_model_record",
-    ]:
-        mock = MagicMock(name=func_name)
-        mocks[func_name] = mock
-
     # --- DataSphere Service Function Mocks ---
-    def mock_get_datasets_side_effect(output_dir, **kwargs):
-        """Create dataset files in REAL filesystem."""
-        os.makedirs(output_dir, exist_ok=True)
-        for filename in ["features.pkl", "train.dill", "val.dill", "full.dill"]:
-            filepath = os.path.join(output_dir, filename)
-            with open(filepath, "w") as f:
-                f.write(f"fake {filename} data")
+    # These functions will now receive a real connection from get_db_connection,
+    # but we still mock them if the DAL is used to call them directly.
+    # The actual database interactions will be handled by the real database functions
+    # after the initial connection is provided by our mock_get_db_connection.
 
-    mock_get_datasets = MagicMock(side_effect=mock_get_datasets_side_effect)
-    mocks["get_datasets"] = mock_get_datasets
+    # Keep these mocks as they might be called directly in some tests or by the DAL itself for specific behaviors.
+    # Ensure the mocks that are also in mocked_db *actually* use the mocked_db's implementation
+    import inspect
+    from deployment.app.db import database as db_module
+    
+    for func_name, func_obj in mocked_db.items():
+        if func_name != "conn":  # We handle 'conn' specially, it's the actual sqlite3.Connection object
+            # Check if the attribute exists in the database module before setting it
+            if hasattr(db_module, func_name) or func_name == "get_job":  # Always set get_job
+                monkeypatch.setattr(f"deployment.app.db.database.{func_name}", func_obj)
 
-    async def mock_archive_side_effect(job_id, input_dir, archive_dir=None):
-        """Create archive file in REAL filesystem."""
-        archive_dir = archive_dir or temp_workspace["temp_dir"]
-        archive_path = os.path.join(archive_dir, f"{os.path.basename(input_dir)}.zip")
-        os.makedirs(os.path.dirname(archive_path), exist_ok=True)
-        with open(archive_path, "w") as f:
-            f.write("fake zip content")
-        return archive_path
+    # Always provide a MagicMock for save_predictions_to_db for test compatibility
+    mocks["save_predictions_to_db"] = MagicMock()
+    monkeypatch.setattr("deployment.app.services.datasphere_service.save_predictions_to_db", mocks["save_predictions_to_db"])
 
-    mock_archive_input_directory = AsyncMock(side_effect=mock_archive_side_effect)
-    mocks["_archive_input_directory"] = mock_archive_input_directory
+    # Mock the save_model_file_and_db function to also accept connection
+    # This mock should be replaced by a real call if the function itself is under test.
+    # For now, it returns the model_id directly to facilitate testing of the pipeline.
+    mocks["save_model_file_and_db"] = AsyncMock(return_value="mock_model_id") # Return a dummy model_id
+    monkeypatch.setattr("deployment.app.services.datasphere_service.save_model_file_and_db", mocks["save_model_file_and_db"])
 
-    # --- Apply Patches ---
-    patch_targets = [
-        ("deployment.app.services.datasphere_service.get_datasets", mock_get_datasets),
-        (
-            "deployment.app.services.datasphere_service._archive_input_directory",
-            mock_archive_input_directory,
-        ),
-        (
-            "deployment.app.services.datasphere_service.get_db_connection",
-            mock_get_db_connection,
-        ),
-    ]
+    # Mock the update_job_status in datasphere_service to use our mocked db
+    if "update_job_status" in mocked_db:
+        monkeypatch.setattr("deployment.app.services.datasphere_service.update_job_status", mocked_db["update_job_status"])
+    else:
+        # Create a default mock if not available
+        update_job_status_mock = AsyncMock()
+        monkeypatch.setattr("deployment.app.services.datasphere_service.update_job_status", update_job_status_mock)
 
-    for target, mock in patch_targets:
-        monkeypatch.setattr(target, mock)
-
-    # --- Registry for Reset Fixture ---
-    mocks["_DATASPHERE_ENV_APPLIED"] = True
-    _GLOBAL_MOCKS_REGISTRY.update(mocks)
-
+    mocks["mocked_db_conn"] = persistent_db_conn # Expose for direct use in run_job calls
     yield mocks
+
+    # --- Teardown for persistent_db_conn ---
+    if persistent_db_conn:
+        # Ensure the actual close is called only at the very end of the fixture's lifecycle
+        # after all monkeypatches are undone.
+        # The monkeypatch for 'close' method is automatically undone by the fixture scope.
+        # The wrapper's close() is a no-op, so this is safe.
+        persistent_db_conn.close()
 
 
 # =================================================================================

@@ -1,51 +1,16 @@
-import pytest
+"""
+Глобальные фикстуры для тестов plastinka_sales_predictior
 
-# This fixture is removed to prevent global state pollution.
-# Mocks should be defined closer to the tests that need them,
-# typically in a conftest.py in the same directory or a parent directory.
-# @pytest.fixture(scope="function")
-# def mock_global_utils(monkeypatch):
-#     """
-#     Mocks global utility modules (misc, retry_monitor) for a single test function.
-#     This prevents test contamination that can occur with module-level sys.modules patching.
-#     """
-#     # --- Mock for deployment.app.utils.misc ---
-#     mock_misc = MagicMock()
-#     mock_misc.camel_to_snake.side_effect = lambda s: s.lower()
-#     monkeypatch.setitem(sys.modules, 'deployment.app.utils.misc', mock_misc)
-#
-#     # --- Mock for deployment.app.utils.retry_monitor ---
-#     mock_retry_monitor_module = MagicMock()
-#     mock_retry_monitor_class = MagicMock()
-#     mock_retry_monitor_instance = MagicMock()
-#     mock_retry_monitor_instance.get_statistics.return_value = {
-#         "total_retries": 0, "successful_retries": 0, "exhausted_retries": 0,
-#         "successful_after_retry": 0, "high_failure_operations": [],
-#         "alerted_operations": [], "alert_thresholds": {}, "operation_stats": {},
-#         "exception_stats": {}, "timestamp": "2021-01-01T00:00:00"
-#     }
-#     mock_retry_monitor_class.return_value = mock_retry_monitor_instance
-#     mock_retry_monitor_module.RetryMonitor = mock_retry_monitor_class
-#     mock_retry_monitor_module.retry_monitor = mock_retry_monitor_instance
-#     mock_retry_monitor_module.DEFAULT_PERSISTENCE_PATH = None
-#     mock_retry_monitor_module.record_retry = MagicMock()
-#     mock_retry_monitor_module.get_retry_statistics = MagicMock(return_value=mock_retry_monitor_instance.get_statistics.return_value)
-#     mock_retry_monitor_module.reset_retry_statistics = MagicMock()
-#     mock_retry_monitor_module.get_high_failure_operations = MagicMock(return_value=set())
-#     mock_retry_monitor_module.set_alert_threshold = MagicMock()
-#     mock_retry_monitor_module.register_alert_handler = MagicMock()
-#     mock_retry_monitor_module.get_alerted_operations = MagicMock(return_value=set())
-#     mock_retry_monitor_module.log_alert_handler = MagicMock()
-#     monkeypatch.setitem(sys.modules, 'deployment.app.utils.retry_monitor', mock_retry_monitor_module)
-#
-#     # Yield the mocks in a dictionary in case any test needs to access them
-#     yield {
-#         "misc": mock_misc,
-#         "retry_monitor": mock_retry_monitor_module
-#     }
-#
-#     # monkeypatch automatically handles teardown, restoring original modules
-# Imports now work properly due to deployment/__init__.py package structure
+- Устанавливает переменные окружения для тестов (scope='session').
+- Предоставляет session_monkeypatch для глобального патчинга.
+- sample_predictions_data, create_training_params_fn — для генерации тестовых данных.
+- Все фикстуры имеют scope='function' или 'session' только если это безопасно.
+- Изоляция между тестами обеспечивается явным cleanup и использованием временных директорий/БД.
+- Все моки сбрасываются между тестами.
+"""
+import pytest
+import os
+
 from deployment.app.models.api_models import (
     LRSchedulerConfig,
     ModelConfig,
@@ -54,8 +19,26 @@ from deployment.app.models.api_models import (
     TrainingDatasetConfig,
 )
 
-
 # Common test data fixtures
+@pytest.fixture(scope="session", autouse=True)
+def set_test_environment_variables():
+    """
+    Set up global environment variables for testing, specifically for the encryption key.
+    This fixture runs once per session and ensures the key is available to all tests.
+    """
+    pass
+
+@pytest.fixture(scope="session")
+def session_monkeypatch():
+    """Session-scoped monkeypatch fixture.
+    This fixture is moved here to be globally available within the tests directory.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    yield mp
+    mp.undo()
+
 @pytest.fixture
 def sample_predictions_data():
     """Returns a sample of prediction data for use in various tests"""

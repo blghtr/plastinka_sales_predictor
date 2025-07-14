@@ -9,6 +9,7 @@ import pytest
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import shutil
 
 from deployment.app.db.database import (
     DatabaseError,
@@ -36,6 +37,35 @@ def test_db_connection():
     yield conn
     
     conn.close()
+
+@pytest.fixture
+def file_based_db_with_permissions():
+    """
+    Provides a temporary database file on disk to test file permissions.
+    Ensures the database file is created with specific permissions (0o600).
+    """
+    temp_dir = tempfile.mkdtemp()
+    db_path = Path(temp_dir) / "test_permissions.db"
+    conn = None
+    try:
+        # Ensure the parent directory exists and is accessible
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Use get_db_connection to ensure permissions are set during connection creation
+        from deployment.app.db.database import get_db_connection
+        conn = get_db_connection(db_path_override=str(db_path))
+        
+        # Perform a dummy operation to ensure the file is created if not already
+        conn.execute("CREATE TABLE IF NOT EXISTS dummy (id INTEGER);")
+        conn.commit()
+
+        yield str(db_path)
+    finally:
+        if conn:
+            conn.close()
+        # Clean up the temporary directory and its contents
+        if Path(temp_dir).exists():
+            shutil.rmtree(temp_dir)
 
 class TestDatabaseSecurity:
     """Test suite for database security features."""
@@ -230,4 +260,31 @@ class TestDatabaseSecurity:
         for metric in invalid_metrics:
             with pytest.raises(ValueError) as exc_info:
                 get_top_configs(metric_name=metric, connection=test_db_connection)
-            assert "Invalid metric_name" in str(exc_info.value) 
+            assert "Invalid metric_name" in str(exc_info.value)
+
+    def test_database_file_permissions(self, file_based_db_with_permissions):
+        """
+        Test that the database file is created with restrictive permissions (0o600).
+        """
+        db_path = Path(file_based_db_with_permissions)
+        if not db_path.exists():
+            db_path.touch()
+        assert db_path.exists()
+
+        import stat
+        import sys
+
+        if sys.platform != "win32":  # Apply permission check only on non-Windows systems
+            file_stat = os.stat(db_path)
+            # Check if the permissions are 0o600 (owner read/write, no access for group/others)
+            # We only care about the last 3 octal digits (file permissions), so use 0o777 mask.
+            assert stat.S_IMODE(file_stat.st_mode) & 0o777 == 0o600
+        else:
+            # On Windows, os.chmod has limited functionality.
+            # We primarily assert that the file exists, as full POSIX permissions cannot be reliably checked.
+            # Additional checks for Windows-specific ACLs would be complex and out of scope.
+            pass
+
+        # Optional: Test for specific owner/group if running as specific user
+        # This might be tricky in CI/CD or different OS environments, so typically avoided
+        # for broad compatibility unless explicitly testing user/group permissions setup. 

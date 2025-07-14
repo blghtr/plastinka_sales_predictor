@@ -67,7 +67,7 @@ async def test_prepare_training_inputs_creates_config_json(temp_workspace, dummy
 # =====================
 
 @pytest.mark.asyncio
-async def test_prepare_tuning_inputs_creates_files_and_merges_params(temp_workspace, dummy_training_config, caplog):
+async def test_prepare_tuning_inputs_creates_files_and_merges_params(temp_workspace, dummy_training_config, caplog, monkeypatch):
     logging.getLogger('deployment.app.services.job_registries.input_preparator_registry').propagate = True
     caplog.set_level('INFO')
     target_dir = Path(temp_workspace["input_dir"])
@@ -75,18 +75,21 @@ async def test_prepare_tuning_inputs_creates_files_and_merges_params(temp_worksp
     job_config = MagicMock()
     job_config.additional_params = {"mode": "fast", "time_budget_s": 123}
     
-    # Mock get_settings and get_top_configs
-    fake_tuning = MagicMock()
-    fake_tuning.model_dump.return_value = {"foo": "bar"}
-    fake_tuning.seed_configs_limit = 2
-    fake_settings = MagicMock()
-    fake_settings.tuning = fake_tuning
-    fake_settings.default_metric = "mape"
-    fake_settings.default_metric_higher_is_better = False
+    # Mock get_settings to return an object with the correct structure
+    mock_tuning_settings = MagicMock()
+    mock_tuning_settings.model_dump.return_value = {"foo": "bar"}
+    mock_tuning_settings.seed_configs_limit = 2
     
-    with patch("deployment.app.services.job_registries.input_preparator_registry.get_settings", return_value=fake_settings), \
-         patch("deployment.app.services.job_registries.input_preparator_registry.get_top_configs", return_value=[{"a": 1}, {"b": 2}]):
-        await input_prep_reg.prepare_tuning_inputs(job_id, dummy_training_config, target_dir, job_config)
+    mock_settings_obj = MagicMock()
+    mock_settings_obj.tuning = mock_tuning_settings
+    mock_settings_obj.default_metric = "mape"
+    mock_settings_obj.default_metric_higher_is_better = False
+    
+    monkeypatch.setattr("deployment.app.services.job_registries.input_preparator_registry.get_settings", lambda: mock_settings_obj)
+    monkeypatch.setattr("deployment.app.services.job_registries.input_preparator_registry.get_top_configs", MagicMock(return_value=[{"a": 1}, {"b": 2}]))
+    
+    await input_prep_reg.prepare_tuning_inputs(job_id, dummy_training_config, target_dir, job_config)
+    
     tuning_json_path = target_dir / "tuning_settings.json"
     initial_cfgs_path = target_dir / "initial_configs.json"
     assert tuning_json_path.exists()
@@ -102,23 +105,29 @@ async def test_prepare_tuning_inputs_creates_files_and_merges_params(temp_worksp
     assert f"[{job_id}] initial_configs.json saved with 2 configs" in caplog.text
 
 @pytest.mark.asyncio
-async def test_prepare_tuning_inputs_empty_top_configs_logs_warning(temp_workspace, dummy_training_config, caplog):
+async def test_prepare_tuning_inputs_empty_top_configs_logs_warning(temp_workspace, dummy_training_config, caplog, monkeypatch):
     logging.getLogger('deployment.app.services.job_registries.input_preparator_registry').propagate = True
     caplog.set_level('INFO')
     target_dir = Path(temp_workspace["input_dir"])
     job_id = "job-789"
     job_config = MagicMock()
     job_config.additional_params = {}
-    fake_tuning = MagicMock()
-    fake_tuning.model_dump.return_value = {"foo": "bar"}
-    fake_tuning.seed_configs_limit = 2
-    fake_settings = MagicMock()
-    fake_settings.tuning = fake_tuning
-    fake_settings.default_metric = "mape"
-    fake_settings.default_metric_higher_is_better = False
-    with patch("deployment.app.services.job_registries.input_preparator_registry.get_settings", return_value=fake_settings), \
-         patch("deployment.app.services.job_registries.input_preparator_registry.get_top_configs", return_value=[]):
-        await input_prep_reg.prepare_tuning_inputs(job_id, dummy_training_config, target_dir, job_config)
+
+    # Mock get_settings to return an object with the correct structure
+    mock_tuning_settings = MagicMock()
+    mock_tuning_settings.model_dump.return_value = {"foo": "bar"}
+    mock_tuning_settings.seed_configs_limit = 2
+    
+    mock_settings_obj = MagicMock()
+    mock_settings_obj.tuning = mock_tuning_settings
+    mock_settings_obj.default_metric = "mape"
+    mock_settings_obj.default_metric_higher_is_better = False
+    
+    monkeypatch.setattr("deployment.app.services.job_registries.input_preparator_registry.get_settings", lambda: mock_settings_obj)
+    monkeypatch.setattr("deployment.app.services.job_registries.input_preparator_registry.get_top_configs", MagicMock(return_value=[]))
+    
+    await input_prep_reg.prepare_tuning_inputs(job_id, dummy_training_config, target_dir, job_config)
+    
     initial_cfgs_path = target_dir / "initial_configs.json"
     assert initial_cfgs_path.exists()
     with open(initial_cfgs_path, "r", encoding="utf-8") as f:
@@ -131,7 +140,7 @@ async def test_prepare_tuning_inputs_empty_top_configs_logs_warning(temp_workspa
 # =====================
 
 @pytest.mark.asyncio
-async def test_process_training_results_happy_path(temp_workspace, caplog):
+async def test_process_training_results_happy_path(temp_workspace, caplog, monkeypatch):
     import logging
     logging.getLogger('deployment.app.services.job_registries.result_processor_registry').propagate = True
     caplog.set_level('INFO')
@@ -146,46 +155,54 @@ async def test_process_training_results_happy_path(temp_workspace, caplog):
     config_id = "cfg-1"
     Path(output_files["model"]).write_text("fake model")
     Path(output_files["predictions"]).write_text("barcode,pred\n123,10")
-    with patch("deployment.app.services.datasphere_service.save_model_file_and_db", new_callable=AsyncMock) as mock_save_model, \
-         patch("deployment.app.services.datasphere_service.save_predictions_to_db") as mock_save_preds, \
-         patch("deployment.app.db.database.create_training_result") as mock_create_tr, \
-         patch("deployment.app.db.database.update_job_status") as mock_update_status, \
-         patch("deployment.app.services.datasphere_service._perform_model_cleanup", new_callable=AsyncMock) as mock_cleanup:
-        import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
-        importlib.reload(result_proc_reg)
-        mock_save_model.return_value = "model-xyz"
-        mock_save_preds.return_value = {"result_id": "res-1", "predictions_count": 1}
-        mock_create_tr.return_value = "tr-1"
-        await result_proc_reg.process_training_results(
-            job_id=job_id,
-            ds_job_id=ds_job_id,
-            results_dir=results_dir,
-            config=config,
-            metrics_data=metrics_data,
-            output_files=output_files,
-            polls=polls,
-            poll_interval=poll_interval,
-            config_id=config_id,
-        )
-        mock_save_model.assert_awaited_once_with(
-            job_id=job_id,
-            model_path=output_files["model"],
-            ds_job_id=ds_job_id,
-            config=config,
-            metrics_data=metrics_data,
-        )
-        mock_save_preds.assert_called_once_with(
-            predictions_path=output_files["predictions"],
-            job_id=job_id,
-            model_id="model-xyz",
-        )
-        mock_create_tr.assert_called_once()
-        mock_update_status.assert_called()
-        mock_cleanup.assert_awaited_once()
-        assert "Job completed. DS Job ID: ds-321." in caplog.text
+    mock_save_model = AsyncMock()
+    mock_save_preds = MagicMock()
+    mock_create_tr = MagicMock()
+    mock_update_status = MagicMock()
+    mock_cleanup = AsyncMock()
+    monkeypatch.setattr("deployment.app.services.datasphere_service.save_model_file_and_db", mock_save_model)
+    monkeypatch.setattr("deployment.app.services.datasphere_service.save_predictions_to_db", mock_save_preds)
+    monkeypatch.setattr("deployment.app.db.database.create_training_result", mock_create_tr)
+    monkeypatch.setattr("deployment.app.db.database.update_job_status", mock_update_status)
+    monkeypatch.setattr("deployment.app.services.datasphere_service._perform_model_cleanup", mock_cleanup)
+
+    import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
+    importlib.reload(result_proc_reg)
+    mock_save_model.return_value = "model-xyz"
+    mock_save_preds.return_value = {"result_id": "res-1", "predictions_count": 1}
+    mock_create_tr.return_value = "tr-1"
+    await result_proc_reg.process_training_results(
+        job_id=job_id,
+        ds_job_id=ds_job_id,
+        results_dir=results_dir,
+        config=config,
+        metrics_data=metrics_data,
+        output_files=output_files,
+        polls=polls,
+        poll_interval=poll_interval,
+        config_id=config_id,
+    )
+    mock_save_model.assert_awaited_once_with(
+        job_id=job_id,
+        model_path=output_files["model"],
+        ds_job_id=ds_job_id,
+        config=config,
+        metrics_data=metrics_data,
+        connection=None, # Add expected connection argument
+    )
+    mock_save_preds.assert_called_once_with(
+        predictions_path=output_files["predictions"],
+        job_id=job_id,
+        model_id="model-xyz",
+        direct_db_connection=None,
+    )
+    mock_create_tr.assert_called_once()
+    mock_update_status.assert_called()
+    mock_cleanup.assert_awaited_once()
+    assert "Job completed. DS Job ID: ds-321." in caplog.text
 
 @pytest.mark.asyncio
-async def test_process_training_results_missing_model_logs_warning(temp_workspace, caplog):
+async def test_process_training_results_missing_model_logs_warning(temp_workspace, caplog, monkeypatch):
     import logging
     logging.getLogger('deployment.app.services.job_registries.result_processor_registry').propagate = True
     caplog.set_level('INFO')
@@ -199,30 +216,35 @@ async def test_process_training_results_missing_model_logs_warning(temp_workspac
     poll_interval = 1.0
     config_id = "cfg-2"
     Path(output_files["predictions"]).write_text("barcode,pred\n123,10")
-    with patch("deployment.app.services.datasphere_service.save_model_file_and_db", new_callable=AsyncMock) as mock_save_model, \
-         patch("deployment.app.services.datasphere_service.save_predictions_to_db") as mock_save_preds, \
-         patch("deployment.app.db.database.create_training_result") as mock_create_tr, \
-         patch("deployment.app.db.database.update_job_status") as mock_update_status, \
-         patch("deployment.app.services.datasphere_service._perform_model_cleanup", new_callable=AsyncMock) as mock_cleanup:
-        import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
-        importlib.reload(result_proc_reg)
-        await result_proc_reg.process_training_results(
-            job_id=job_id,
-            ds_job_id=ds_job_id,
-            results_dir=results_dir,
-            config=config,
-            metrics_data=metrics_data,
-            output_files=output_files,
-            polls=polls,
-            poll_interval=poll_interval,
-            config_id=config_id,
-        )
-        mock_save_model.assert_not_awaited()
-        mock_save_preds.assert_not_called()
-        mock_create_tr.assert_called_once()
-        mock_update_status.assert_called()
-        mock_cleanup.assert_not_awaited()
-        assert "Model file not found in results." in caplog.text
+    mock_save_model = AsyncMock()
+    mock_save_preds = MagicMock()
+    mock_create_tr = MagicMock()
+    mock_update_status = MagicMock()
+    mock_cleanup = AsyncMock()
+    monkeypatch.setattr("deployment.app.services.datasphere_service.save_model_file_and_db", mock_save_model)
+    monkeypatch.setattr("deployment.app.services.datasphere_service.save_predictions_to_db", mock_save_preds)
+    monkeypatch.setattr("deployment.app.db.database.create_training_result", mock_create_tr)
+    monkeypatch.setattr("deployment.app.db.database.update_job_status", mock_update_status)
+    monkeypatch.setattr("deployment.app.services.datasphere_service._perform_model_cleanup", mock_cleanup)
+    import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
+    importlib.reload(result_proc_reg)
+    await result_proc_reg.process_training_results(
+        job_id=job_id,
+        ds_job_id=ds_job_id,
+        results_dir=results_dir,
+        config=config,
+        metrics_data=metrics_data,
+        output_files=output_files,
+        polls=polls,
+        poll_interval=poll_interval,
+        config_id=config_id,
+    )
+    mock_save_model.assert_not_awaited()
+    mock_save_preds.assert_not_called()
+    mock_create_tr.assert_called_once()
+    mock_update_status.assert_called()
+    mock_cleanup.assert_not_awaited()
+    assert "Model file not found in results." in caplog.text
 
 # =====================
 # Tests for process_tuning_results
@@ -234,7 +256,7 @@ def make_json_file(path, data):
 
 
 @pytest.mark.asyncio
-async def test_process_tuning_results_happy_path(temp_workspace, caplog):
+async def test_process_tuning_results_happy_path(temp_workspace, caplog, monkeypatch):
     import logging
     logging.getLogger('deployment.app.services.job_registries.result_processor_registry').propagate = True
     caplog.set_level('INFO')
@@ -248,9 +270,36 @@ async def test_process_tuning_results_happy_path(temp_workspace, caplog):
     polls = 3
     poll_interval = 1.0
     import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
-    with patch.object(result_proc_reg, "create_or_get_config", return_value="cfg-1") as mock_create_cfg, \
-         patch.object(result_proc_reg, "create_tuning_result") as mock_create_tr, \
-         patch.object(result_proc_reg, "update_job_status") as mock_update_status:
+    mock_create_cfg = MagicMock(return_value="cfg-1")
+    mock_create_tr = MagicMock()
+    mock_update_status = MagicMock()
+    monkeypatch.setattr(result_proc_reg, "create_or_get_config", mock_create_cfg)
+    monkeypatch.setattr(result_proc_reg, "create_tuning_result", mock_create_tr)
+    monkeypatch.setattr(result_proc_reg, "update_job_status", mock_update_status)
+
+    result_proc_reg.process_tuning_results(
+        job_id=job_id,
+        results_dir=results_dir,
+        metrics_data=metrics,
+        output_files=output_files,
+        polls=polls,
+        poll_interval=poll_interval,
+    )
+    assert mock_create_cfg.call_count == 2
+    assert mock_create_tr.call_count == 2
+    mock_update_status.assert_called()
+
+def test_process_tuning_results_missing_best_configs_raises_and_fails_job(temp_workspace, caplog, monkeypatch):
+    import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
+    job_id = "job-556"
+    results_dir = temp_workspace["output_dir"]
+    metrics = [{"score": 0.1}]
+    output_files = {"configs": None, "metrics": metrics}
+    polls = 1
+    poll_interval = 1.0
+    mock_update_status = MagicMock()
+    monkeypatch.setattr(result_proc_reg, "update_job_status", mock_update_status)
+    with pytest.raises(RuntimeError):
         result_proc_reg.process_tuning_results(
             job_id=job_id,
             results_dir=results_dir,
@@ -259,32 +308,10 @@ async def test_process_tuning_results_happy_path(temp_workspace, caplog):
             polls=polls,
             poll_interval=poll_interval,
         )
-        assert mock_create_cfg.call_count == 2
-        assert mock_create_tr.call_count == 2
-        mock_update_status.assert_called()
+    mock_update_status.assert_called()
+    assert "best_configs.json (role: configs) not found in results" in caplog.text
 
-def test_process_tuning_results_missing_best_configs_raises_and_fails_job(temp_workspace, caplog):
-    import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
-    job_id = "job-556"
-    results_dir = temp_workspace["output_dir"]
-    metrics = [{"score": 0.1}]
-    output_files = {"configs": None, "metrics": metrics}
-    polls = 1
-    poll_interval = 1.0
-    with patch.object(result_proc_reg, "update_job_status") as mock_update_status:
-        with pytest.raises(RuntimeError):
-            result_proc_reg.process_tuning_results(
-                job_id=job_id,
-                results_dir=results_dir,
-                metrics_data=metrics,
-                output_files=output_files,
-                polls=polls,
-                poll_interval=poll_interval,
-            )
-        mock_update_status.assert_called()
-        assert "best_configs.json (role: configs) not found in results" in caplog.text
-
-def test_process_tuning_results_invalid_metrics_type_fails_job(temp_workspace, caplog):
+def test_process_tuning_results_invalid_metrics_type_fails_job(temp_workspace, caplog, monkeypatch):
     import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
     job_id = "job-557"
     results_dir = temp_workspace["output_dir"]
@@ -293,20 +320,21 @@ def test_process_tuning_results_invalid_metrics_type_fails_job(temp_workspace, c
     output_files = {"configs": os.path.join(results_dir, "best_configs.json"), "metrics": {"score": 0.1}}
     polls = 1
     poll_interval = 1.0
-    with patch.object(result_proc_reg, "update_job_status") as mock_update_status:
-        with pytest.raises(RuntimeError):
-            result_proc_reg.process_tuning_results(
-                job_id=job_id,
-                results_dir=results_dir,
-                metrics_data={"score": 0.1},
-                output_files=output_files,
-                polls=polls,
-                poll_interval=poll_interval,
-            )
-        mock_update_status.assert_called()
-        assert "metrics.json must contain a list of metric dicts" in caplog.text
+    mock_update_status = MagicMock()
+    monkeypatch.setattr(result_proc_reg, "update_job_status", mock_update_status)
+    with pytest.raises(RuntimeError):
+        result_proc_reg.process_tuning_results(
+            job_id=job_id,
+            results_dir=results_dir,
+            metrics_data={"score": 0.1},
+            output_files=output_files,
+            polls=polls,
+            poll_interval=poll_interval,
+        )
+    mock_update_status.assert_called()
+    assert "metrics.json must contain a list of metric dicts" in caplog.text
 
-def test_process_tuning_results_metrics_length_mismatch_fails_job(temp_workspace, caplog):
+def test_process_tuning_results_metrics_length_mismatch_fails_job(temp_workspace, caplog, monkeypatch):
     import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
     job_id = "job-558"
     results_dir = temp_workspace["output_dir"]
@@ -317,15 +345,16 @@ def test_process_tuning_results_metrics_length_mismatch_fails_job(temp_workspace
     output_files = {"configs": os.path.join(results_dir, "best_configs.json"), "metrics": metrics}
     polls = 1
     poll_interval = 1.0
-    with patch.object(result_proc_reg, "update_job_status") as mock_update_status:
-        with pytest.raises(RuntimeError):
-            result_proc_reg.process_tuning_results(
-                job_id=job_id,
-                results_dir=results_dir,
-                metrics_data=metrics,
-                output_files=output_files,
-                polls=polls,
-                poll_interval=poll_interval,
-            )
-        mock_update_status.assert_called()
-        assert "metrics.json list length" in caplog.text 
+    mock_update_status = MagicMock()
+    monkeypatch.setattr(result_proc_reg, "update_job_status", mock_update_status)
+    with pytest.raises(RuntimeError):
+        result_proc_reg.process_tuning_results(
+            job_id=job_id,
+            results_dir=results_dir,
+            metrics_data=metrics,
+            output_files=output_files,
+            polls=polls,
+            poll_interval=poll_interval,
+        )
+    mock_update_status.assert_called()
+    assert "metrics.json list length" in caplog.text 

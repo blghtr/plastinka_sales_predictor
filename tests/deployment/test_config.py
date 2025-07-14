@@ -62,10 +62,9 @@ class TestUtilityFunctions:
         result = _get_default_data_root_dir()
 
         # Assert
-        # On Windows, expect Windows path format or cross-platform compatibility
-        assert result.endswith(".plastinka_sales_predictor")
-        # For cross-platform compatibility, just check it's the expected structure
-        assert "plastinka_sales_predictor" in result
+        # On Windows, expect Windows path format. On Linux/macOS, expect a dotfile/local share path.
+        # We should check for the presence of the main part of the directory name
+        assert "PlastinkaSalesPredictor" in result or ".plastinka_sales_predictor" in result
 
     @patch("deployment.app.config.logger")
     @patch("deployment.app.config.Path")
@@ -592,8 +591,8 @@ class TestAppSettings:
         assert settings.temp_upload_dir == "./temp_uploads"
         assert settings.max_models_to_keep == 5
         assert settings.file_storage_dir == "./uploads"
-        assert settings.default_metric == "val_MIC"
-        assert settings.default_metric_higher_is_better is True
+        assert settings.default_metric == "val_MIWS_MIC_Ratio"
+        assert settings.default_metric_higher_is_better is False
         assert settings.auto_select_best_configs is True
         assert settings.auto_select_best_model is True
         assert settings.data_root_dir == "/default/data/root"

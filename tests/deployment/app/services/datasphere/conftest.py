@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pandas as pd
@@ -21,6 +21,7 @@ from deployment.app.models.api_models import (
     TrainingConfig,
     TrainingDatasetConfig,
 )
+from tests.deployment.app.services.conftest import temp_workspace, mock_datasphere_env
 
 
 @pytest.fixture(scope="function")
@@ -29,72 +30,28 @@ def mocked_db(temp_db):
     Provides a mocked DB interface with helper functions for integration tests.
     - Uses a real in-memory DB connection from the `temp_db` fixture.
     - Provides helper methods to create jobs and execute queries.
+    - **Note:** This fixture relies on `temp_db` for schema initialization and `row_factory` settings, 
+      ensuring that its internal helper functions (like `get_job`) return dictionary-like objects.
     """
-    # temp_db might be a connection or a dict with 'conn' key depending on fixture
     conn = temp_db["conn"] if isinstance(temp_db, dict) else temp_db
 
     # Initialize all necessary tables if they don't exist
-    # These tables are required for the integration tests to work
-    cursor = conn.cursor()
-
-    # Check if tables exist, and create them if not
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='configs'"
-    )
-    if not cursor.fetchone():
-        cursor.execute("""
-        CREATE TABLE configs (
-            config_id TEXT PRIMARY KEY,
-            config TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL,
-            is_active BOOLEAN DEFAULT 0
-        )
-        """)
-
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='models'"
-    )
-    if not cursor.fetchone():
-        cursor.execute("""
-        CREATE TABLE models (
-            model_id TEXT PRIMARY KEY,
-            job_id TEXT NOT NULL,
-            model_path TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL,
-            metadata TEXT,
-            is_active BOOLEAN DEFAULT 0,
-            FOREIGN KEY (job_id) REFERENCES jobs(job_id)
-        )
-        """)
-
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='training_results'"
-    )
-    if not cursor.fetchone():
-        cursor.execute("""
-        CREATE TABLE training_results (
-            result_id TEXT PRIMARY KEY,
-            job_id TEXT NOT NULL,
-            model_id TEXT,
-            config_id TEXT,
-            metrics TEXT,
-            duration INTEGER,
-            FOREIGN KEY (job_id) REFERENCES jobs(job_id),
-            FOREIGN KEY (model_id) REFERENCES models(model_id),
-            FOREIGN KEY (config_id) REFERENCES configs(config_id)
-        )
-        """)
-
+    init_db(connection=conn)
     conn.commit()
+
+    # These tables are required for the integration tests to work
+    # The 'cursor' variable is only used within nested functions now, so it should be defined there.
 
     def create_job(
         job_id, job_type="training", status="pending", config_id=None, model_id=None
     ):
         """Helper to insert a job record into the database."""
+        # Create a new cursor for this function
+        cursor = conn.cursor()
+
         if config_id is None:
             # Create a dummy config if none provided
             config_id = "config_" + str(uuid.uuid4())
-            cursor = conn.cursor()
             cursor.execute(
                 "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
                 (
@@ -105,65 +62,71 @@ def mocked_db(temp_db):
             )
             conn.commit()
 
-        cursor = conn.cursor()
-        # Check if jobs table has config_id and model_id columns
+        # Re-check columns after schema initialization
         cursor.execute("PRAGMA table_info(jobs)")
-        columns = [column[1] for column in cursor.fetchall()]
+        columns = [column["name"] for column in cursor.fetchall()]
 
         now = datetime.now().isoformat()
 
-        if "config_id" in columns and "model_id" in columns:
-            # Full schema with config_id and model_id
-            cursor.execute(
-                """
-                INSERT INTO jobs (job_id, job_type, status, config_id, model_id, created_at, updated_at, progress)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (job_id, job_type, status, config_id, model_id, now, now, 0),
-            )
-        elif "config_id" in columns:
-            # Schema with config_id but no model_id
-            cursor.execute(
-                """
-                INSERT INTO jobs (job_id, job_type, status, config_id, created_at, updated_at, progress)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (job_id, job_type, status, config_id, now, now, 0),
-            )
-        else:
-            # Minimal schema (from test_database_setup.py)
-            cursor.execute(
-                """
-                INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, progress)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (job_id, job_type, status, now, now, 0),
-            )
+        # Build query dynamically based on available columns
+        query = "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at"
 
+        # Add optional columns if they exist in the schema
+        if "config_id" in columns and config_id is not None:
+            query += ", config_id"
+        if "model_id" in columns and model_id is not None:
+            query += ", model_id"
+
+        query += ") VALUES (?, ?, ?, ?, ?"
+
+        # Add placeholders for optional columns
+        params = [job_id, job_type, status, now, now]
+        if "config_id" in columns and config_id is not None:
+            query += ", ?"
+            params.append(config_id)
+        if "model_id" in columns and model_id is not None:
+            query += ", ?"
+            params.append(model_id)
+
+        query += ")"
+
+        # Execute with dynamic parameters
+        cursor.execute(query, params)
         conn.commit()
+
         return job_id
 
+    def update_job_status(job_id, status, progress=None, error_message=None, status_message=None, connection=None):
+        """Если connection не передан, используется conn из фикстуры."""
+        if connection is None:
+            connection = conn
+        """Update a job's status."""
+        cursor = connection.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute(
+            """
+            UPDATE jobs
+            SET status = ?, updated_at = ?, progress = COALESCE(?, progress), error_message = COALESCE(?, error_message)
+            WHERE job_id = ?
+            """,
+            (status, now, progress, error_message, job_id),
+        )
+        conn.commit()
+
+        # Add to job status history if provided
+        if status_message:
+            create_job_status_history(job_id, status, status_message)
+
+        return True
+
     def get_job_status_history(job_id):
-        """Get job status history for a specific job."""
+        """Get job status history for a job, ordered by updated_at."""
         cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "SELECT status FROM job_status_history WHERE job_id = ? ORDER BY id",
-                (job_id,),
-            )
-            rows = cursor.fetchall()
-            # Convert rows to a list of status values based on row structure
-            if rows and isinstance(rows[0], dict):
-                return [row["status"] for row in rows]
-            elif rows and isinstance(rows[0], sqlite3.Row):
-                return [row["status"] for row in rows]
-            elif rows:
-                # If rows are tuples, assume status is the first column
-                return [row[0] for row in rows]
-            return []
-        except Exception as e:
-            print(f"Error getting job status history: {e}")
-            return []
+        cursor.execute(
+            "SELECT status, status_message, updated_at FROM job_status_history WHERE job_id = ? ORDER BY updated_at",
+            (job_id,),
+        )
+        return cursor.fetchall()
 
     def create_job_status_history(job_id, status, status_message=None):
         """Create a job status history entry."""
@@ -181,10 +144,10 @@ def mocked_db(temp_db):
                     job_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     status_message TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL
                 )
-                """)
+                """
+                )
 
             # Get current time for updated_at
             now = datetime.now().isoformat()
@@ -199,23 +162,26 @@ def mocked_db(temp_db):
             )
             conn.commit()
             return True
-        except Exception as e:
+        except Exception:
             conn.rollback()
-            print(f"Error creating job status history: {e}")
             return False
 
-    def create_model(job_id, model_path="/fake/path/model.onnx"):
-        """Create a model record that can be referenced by training_results."""
-        model_id = "model_" + str(uuid.uuid4())
-        cursor = conn.cursor()
+    def create_model(model_id, job_id, model_path="/fake/path/model.onnx", created_at=None, metadata=None, is_active=False, connection=None):
+        """Если connection не передан, используется conn из фикстуры."""
+        if connection is None:
+            connection = conn
+        """Create a model record that can be referenced by training_results, with explicit model_id and job_id."""
+        if created_at is None:
+            created_at = datetime.now().isoformat()
+        cursor = connection.cursor()
         cursor.execute(
-            "INSERT INTO models (model_id, job_id, model_path, created_at) VALUES (?, ?, ?, ?)",
-            (model_id, job_id, model_path, datetime.now().isoformat()),
+            "INSERT INTO models (model_id, job_id, model_path, created_at, is_active) VALUES (?, ?, ?, ?, ?)",
+            (model_id, job_id, model_path, created_at, is_active),
         )
         conn.commit()
         return model_id
 
-    def create_training_result(job_id, model_id, config_id, metrics=None):
+    def create_training_result(job_id, model_id, config_id, metrics=None, duration=None, **kwargs):
         """Create a training result record."""
         if metrics is None:
             metrics = {"mape": 10.5}
@@ -231,8 +197,17 @@ def mocked_db(temp_db):
         )
         conn.commit()
         return result_id
+    
+    def get_job(job_id, connection=None):
+        """Если connection не передан, используется conn из фикстуры."""
+        if connection is None:
+            connection = conn
+        """Get a job by ID."""
+        cursor = connection.cursor()
+        cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+        return cursor.fetchone()
 
-    def query_handler(query, params=(), fetchall=False):
+    def query_handler(query, params=(), fetchall=False, connection=None):
         """Handles both regular SQL and special-cased queries from tests."""
         if query == "job_status_history":
             # This is a special case from the test, not a real query
@@ -242,9 +217,9 @@ def mocked_db(temp_db):
                 raise ValueError("job_id must be provided to fetch status history.")
             statuses = get_job_status_history(job_id_param)
             return statuses
-        return execute_query(query, params, fetchall)
+        return execute_query(query, params, fetchall, connection=connection)
 
-    def execute_query(query, params=(), fetchall=False):
+    def execute_query(query, params=(), fetchall=False, connection=None):
         """Helper to execute a query against the test database."""
         cursor = conn.cursor()
         # As temp_db returns a connection with Row factory, we can treat rows as dicts
@@ -260,6 +235,8 @@ def mocked_db(temp_db):
         "create_job_status_history": create_job_status_history,
         "create_model": create_model,
         "create_training_result": create_training_result,
+        "get_job": get_job,  # Add the get_job function
+        "update_job_status": update_job_status,  # Add update_job_status function
     }
 
 
@@ -363,9 +340,11 @@ logger = logging.getLogger(__name__)
 # instead of session scope. To ensure consistent performance and avoid confusion,
 # we now use the session-scoped version from services/conftest.py
 
+# REMOVED: mock_datasphere fixture which used pyfakefs
+
 
 @pytest.fixture
-def mock_datasphere(fs, monkeypatch):
+def mock_datasphere(monkeypatch):
     """
     Мокирует DataSphere окружение для интеграционных тестов.
     Создает фейковую файловую систему и настройки.
@@ -376,12 +355,13 @@ def mock_datasphere(fs, monkeypatch):
     job_dir = "/fake/datasphere_jobs"
     fake_config_path = "/fake/datasphere_jobs/train/config.yaml"
 
-    fs.makedirs(input_dir, exist_ok=True)
-    fs.makedirs(output_dir, exist_ok=True)
-    fs.makedirs(job_dir, exist_ok=True)
-    fs.makedirs(os.path.join(job_dir, "train"), exist_ok=True)
-    fs.makedirs(os.path.join(job_dir, "tune"), exist_ok=True)
-    fs.create_file(fake_config_path, contents="name: test_job\ntype: python")
+    os.makedirs(input_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(job_dir, exist_ok=True)
+    os.makedirs(os.path.join(job_dir, "train"), exist_ok=True)
+    os.makedirs(os.path.join(job_dir, "tune"), exist_ok=True)
+    with open(fake_config_path, "w") as f:
+        f.write("name: test_job\ntype: python")
 
     # Create a mock settings object with the computed properties overridden
     from unittest.mock import PropertyMock
@@ -440,16 +420,12 @@ def mock_datasphere(fs, monkeypatch):
 
     def download_results_side_effect(job_id, output_dir, **kwargs):
         os.makedirs(output_dir, exist_ok=True)
-        fs.create_file(
-            os.path.join(output_dir, "metrics.json"), contents='{"mape": 15.3}'
-        )
-        fs.create_file(
-            os.path.join(output_dir, "model.onnx"), contents="dummy onnx model data"
-        )
-        fs.create_file(
-            os.path.join(output_dir, "predictions.csv"),
-            contents="header1,header2\nvalue1,value2\n",
-        )
+        with open(os.path.join(output_dir, "metrics.json"), "w") as f:
+            f.write('{"mape": 15.3}')
+        with open(os.path.join(output_dir, "model.onnx"), "w") as f:
+            f.write("dummy onnx model data")
+        with open(os.path.join(output_dir, "predictions.csv"), "w") as f:
+            f.write("header1,header2\nvalue1,value2\n")
 
     mock_client.download_job_results.side_effect = download_results_side_effect
 
@@ -488,7 +464,6 @@ def mock_datasphere(fs, monkeypatch):
         "input_dir": input_dir,
         "output_dir": output_dir,
         "config_path": fake_config_path,
-        "fs": fs,
         "save_model_file_and_db": mock_save_model,
         "save_predictions_to_db": mock_save_predictions,
         "get_datasets": mock_get_datasets,
@@ -573,6 +548,15 @@ def sample_predictions_data():
     return SAMPLE_PREDICTIONS.copy()
 
 
+# Добавляем dict_factory для row_factory
+
+def dict_factory(cursor, row):
+    d = {}
+    for idx, col in enumerate(cursor.description):
+        d[col[0]] = row[idx]
+    return d
+
+
 @pytest.fixture
 def temp_db(sample_predictions_data):
     """
@@ -598,7 +582,7 @@ def temp_db(sample_predictions_data):
     conn = sqlite3.connect(db_path)
     try:
         init_db(connection=conn)
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = dict_factory
 
         job_id = "job-" + str(uuid.uuid4())
         model_id = "model-" + str(uuid.uuid4())
@@ -637,42 +621,91 @@ def temp_db(sample_predictions_data):
         }
 
         yield db_info
-
     finally:
-        # CRITICAL: Robust teardown to prevent Windows file locking
-        try:
-            # Close cursor if it exists
-            if "cursor" in locals() and hasattr(cursor, "close"):
-                cursor.close()
-
-            # Close the connection properly
-            if conn:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                conn.close()
-
-            # Force garbage collection to release all references
-            gc.collect()
-
-            # Small delay to allow Windows to release file locks
-            time.sleep(0.2)
-
-        except Exception as e:
-            print(f"Warning: Database cleanup issue: {e}")
-
-        # Manual cleanup with retry for Windows
-        def cleanup_with_retry(path, max_retries=3):
-            for attempt in range(max_retries):
-                try:
-                    if os.path.exists(path):
-                        shutil.rmtree(path, ignore_errors=True)
-                    break
-                except (PermissionError, OSError) as e:
-                    if attempt < max_retries - 1:
-                        time.sleep(0.5)
-                        gc.collect()  # Force garbage collection again
-                    else:
-                        print(
-                            f"Warning: Could not cleanup temp directory after {max_retries} attempts: {e}"
-                        )
-
+        conn.close()
+        # Force garbage collection to release file handles on Windows
+        gc.collect()
+        # Clean up temporary directory with retry logic
         cleanup_with_retry(temp_dir_path)
+
+def cleanup_with_retry(path, max_retries=3):
+    for i in range(max_retries):
+        try:
+            shutil.rmtree(path)
+            break
+        except OSError as e:
+            if i < max_retries - 1:
+                time.sleep(0.1 * (2 ** i))  # Exponential backoff
+            else:
+                logger.warning(f"Failed to remove directory {path} after {max_retries} retries: {e}")
+
+
+@pytest.fixture(autouse=True, scope='function')
+def insert_minimal_fact_data(mocked_db):
+    """
+    Заполняет fact_sales, fact_stock, fact_stock_changes минимум 13 уникальными датами для lags=12.
+    Использует conn из mocked_db.
+    """
+    conn = mocked_db["conn"] if isinstance(mocked_db, dict) and "conn" in mocked_db else mocked_db
+    today = datetime.today().date()
+    base_barcode = "1234567890"
+    base_artist = "Test Artist"
+    base_album = "Test Album"
+    base_cover = "CD"
+    base_price = "Standard"
+    base_release_type = "Studio"
+    base_recording_decade = "2010s"
+    base_release_decade = "2010s"
+    base_style = "Rock"
+    base_year = 2015
+    # Получить или создать multiindex_id
+    from deployment.app.db.database import get_or_create_multiindex_id
+    multiindex_id = get_or_create_multiindex_id(
+        base_barcode, base_artist, base_album, base_cover, base_price,
+        base_release_type, base_recording_decade, base_release_decade, base_style, base_year,
+        connection=conn
+    )
+    from dateutil.relativedelta import relativedelta
+    # Генерируем 13 месяцев назад от текущего месяца
+    base_date = today.replace(day=1) - relativedelta(months=13)
+    
+    # Generate stock data for only the very first month (base_date)
+    stock_date_str = base_date.strftime("%Y-%m-01")
+    stock_rows = [
+        (multiindex_id, stock_date_str, 100)
+    ] # Single data point for stock
+
+    # Generate sales and changes data starting from the month after base_date
+    sales_rows = []
+    changes_rows = []
+    for i in range(1, 16):
+        d = base_date + relativedelta(months=i)
+        date_str = d.strftime("%Y-%m-01")
+        sales_rows.append((multiindex_id, date_str, 10 + i))
+        changes_rows.append((multiindex_id, date_str, 1))
+
+    conn.executemany(
+        "INSERT INTO fact_sales (multiindex_id, data_date, value) VALUES (?, ?, ?)",
+        sales_rows
+        )
+    conn.executemany(
+        "INSERT INTO fact_stock (multiindex_id, data_date, value) VALUES (?, ?, ?)",
+        stock_rows
+    )
+    conn.executemany(
+        "INSERT INTO fact_stock_changes (multiindex_id, data_date, value) VALUES (?, ?, ?)",
+        changes_rows
+        )
+    conn.commit()
+
+@pytest.fixture
+def mock_init_db():
+    """Mock для init_db (schema initialization)."""
+    return MagicMock()
+
+@pytest.fixture
+def mock_get_db():
+    """Mock для get_db (возвращает MagicMock с нужным интерфейсом)."""
+    mock = MagicMock()
+    mock.cursor.return_value = MagicMock()
+    return mock

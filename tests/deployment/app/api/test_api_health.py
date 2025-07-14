@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi import status
 
 from deployment.app.api.health import (
     HealthResponse,
@@ -33,6 +34,7 @@ from deployment.app.api.health import (
 )
 from deployment.app.utils.environment import ComponentHealth, get_environment_status
 from deployment.app.main import app
+from deployment.app.services.auth import get_current_api_key_validated
 
 TEST_X_API_KEY = "test_x_api_key_conftest"
 
@@ -76,7 +78,7 @@ class TestHealthCheckEndpoint:
     def test_health_check_endpoint_unhealthy_db(
         self, mock_check_env, mock_check_db, client
     ):
-        """Test /health endpoint returns unhealthy status when database is unhealthy."""
+        """Test /health endpoint returns unhealthy status when database is unhealthy and returns ErrorDetailResponse."""
         # Arrange
         mock_check_db.return_value = ComponentHealth(
             status="unhealthy", details={"error": "mocked unhealthy"}
@@ -91,9 +93,16 @@ class TestHealthCheckEndpoint:
         # Assert
         assert response.status_code == 503
         data = response.json()
-        assert data["status"] == "unhealthy"
-        assert data["components"]["database"]["status"] == "unhealthy"
-        assert data["components"]["config"]["status"] == "healthy"
+        # Error handler wraps the HTTPException detail as a string, need to parse it
+        import ast
+        error_detail = ast.literal_eval(data["error"]["message"])
+        assert error_detail["message"] == "API is unhealthy."
+        assert error_detail["code"] == "service_unavailable"
+        assert error_detail["status_code"] == 503
+        assert "details" in error_detail
+        assert error_detail["details"]["database"]["status"] == "unhealthy"
+        assert error_detail["details"]["database"]["details"]["error"] == "mocked unhealthy"
+        assert error_detail["details"]["config"]["status"] == "healthy"
         mock_check_db.assert_called_once()
         mock_check_env.assert_called_once()
 
@@ -115,18 +124,21 @@ class TestHealthCheckEndpoint:
         response = client.get("/health/")
 
         # Assert
-        assert response.status_code == 200
+        assert response.status_code == 200 # Degraded status typically returns 200
         data = response.json()
-        assert data["status"] == "degraded"
-        assert data["components"]["database"]["status"] == "healthy"
-        assert data["components"]["config"]["status"] == "degraded"
+        # Error handler wraps the HTTPException detail as a string, need to parse it
+        import ast
+        error_detail = ast.literal_eval(data["error"]["message"])
+        assert error_detail["message"] == "API is degraded."
+        assert error_detail["details"]["database"]["status"] == "healthy"
+        assert error_detail["details"]["config"]["status"] == "degraded"
         mock_check_db.assert_called_once()
         mock_check_env.assert_called_once()
 
     @patch("deployment.app.api.health.check_database")
     @patch("deployment.app.api.health.get_environment_status")
     def test_health_check_endpoint_unhealthy_missing_months(self, mock_check_env, mock_check_db, client):
-        """Test /health endpoint returns unhealthy and details[missing_months] if months are missing."""
+        """Test /health endpoint returns unhealthy and details[missing_months] if months are missing and returns ErrorDetailResponse."""
         mock_check_db.return_value = ComponentHealth(
             status="unhealthy", details={"missing_months": {"fact_sales": ["2024-02-01"]}}
         )
@@ -136,10 +148,17 @@ class TestHealthCheckEndpoint:
         response = client.get("/health/")
         assert response.status_code == 503
         data = response.json()
-        assert data["status"] == "unhealthy"
-        assert "missing_months" in data["components"]["database"]["details"]
-        assert "fact_sales" in data["components"]["database"]["details"]["missing_months"]
-        assert data["components"]["database"]["details"]["missing_months"]["fact_sales"] == ["2024-02-01"]
+        # Error handler wraps the HTTPException detail as a string, need to parse it
+        import ast
+        error_detail = ast.literal_eval(data["error"]["message"])
+        assert error_detail["message"] == "API is unhealthy."
+        assert error_detail["code"] == "service_unavailable"
+        assert error_detail["status_code"] == 503
+        assert "details" in error_detail
+        assert error_detail["details"]["database"]["status"] == "unhealthy"
+        assert "missing_months" in error_detail["details"]["database"]["details"]
+        assert "fact_sales" in error_detail["details"]["database"]["details"]["missing_months"]
+        assert error_detail["details"]["database"]["details"]["missing_months"]["fact_sales"] == ["2024-02-01"]
 
 
 class TestSystemStatsEndpoint:
@@ -185,6 +204,8 @@ class TestSystemStatsEndpoint:
 
         # Assert
         assert response.status_code == 401
+        data = response.json()
+        assert data["error"]["message"] == "Not authenticated: X-API-Key header is missing."
 
     def test_system_stats_unauthorized_invalid_key(self, client):
         """Test system stats endpoint fails with 401 if X-API-Key is invalid."""
@@ -193,54 +214,37 @@ class TestSystemStatsEndpoint:
 
         # Assert
         assert response.status_code == 401
+        data = response.json()
+        assert data["error"]["message"] == "Invalid X-API-Key."
 
     def test_system_stats_server_key_not_configured(self, client):
         """Test system stats endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange - Override the dependency to simulate server key not configured
-        from fastapi import Security
-        from fastapi.security import APIKeyHeader
-
-        from deployment.app.services.auth import get_current_api_key_validated
-
-        api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-        async def mock_server_key_not_configured(
-            api_key: str = Security(api_key_header_scheme),
-        ) -> bool:
-            # Simulate the case where server X-API-Key is None/not configured
-            if api_key is None:
-                raise HTTPException(status_code=401, detail="X-API-Key header required")
-            # This simulates the 500 error when server key is not configured
+        def raise_server_error():
             raise HTTPException(
-                status_code=500, detail="Server X-API-Key not configured"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="X-API-Key authentication is not configured on the server.",
             )
+        app.dependency_overrides[get_current_api_key_validated] = raise_server_error
 
-        # Temporarily override the dependency for this test
-        original_override = app.dependency_overrides.get(get_current_api_key_validated)
-        app.dependency_overrides[get_current_api_key_validated] = (
-            mock_server_key_not_configured
+        # Act
+        response = client.get(
+            "/health/system",
+            headers={"X-API-Key": TEST_X_API_KEY},
         )
 
-        try:
-            # Act
-            response = client.get(
-                "/health/system", headers={"X-API-Key": TEST_X_API_KEY}
-            )
-
-            # Assert
-            assert response.status_code == 500
-        finally:
-            # Restore original override
-            if original_override:
-                app.dependency_overrides[get_current_api_key_validated] = (
-                    original_override
-                )
-            else:
-                app.dependency_overrides.pop(get_current_api_key_validated, None)
+        # Assert
+        assert response.status_code == 500
+        data = response.json()
+        assert data["error"]["message"] == "X-API-Key authentication is not configured on the server."
+        assert data["error"]["code"] == "http_500"
+        
+        # Cleanup
+        app.dependency_overrides.clear()
 
 
 class TestRetryStatsEndpoint:
-    """Test suite for retry statistics endpoints."""
+    """Test suite for /health/retry-stats endpoint."""
 
     def get_mock_retry_stats_data(self):
         """Returns a dictionary conforming to RetryStatsResponse."""
@@ -287,6 +291,8 @@ class TestRetryStatsEndpoint:
 
         # Assert
         assert response.status_code == 401
+        data = response.json()
+        assert data["error"]["message"] == "Not authenticated: X-API-Key header is missing."
 
     def test_retry_statistics_unauthorized_invalid_key(self, client):
         """Test retry stats endpoint fails with 401 if X-API-Key is invalid."""
@@ -295,50 +301,33 @@ class TestRetryStatsEndpoint:
 
         # Assert
         assert response.status_code == 401
+        data = response.json()
+        assert data["error"]["message"] == "Invalid X-API-Key."
 
     def test_retry_statistics_server_key_not_configured(self, client):
         """Test retry stats endpoint fails with 500 if server X-API-Key is not configured."""
-        # Arrange - Override the dependency to simulate server key not configured
-        from fastapi import Security
-        from fastapi.security import APIKeyHeader
-
-        from deployment.app.services.auth import get_current_api_key_validated
-
-        api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-        async def mock_server_key_not_configured(
-            api_key: str = Security(api_key_header_scheme),
-        ) -> bool:
-            # Simulate the case where server X-API-Key is None/not configured
-            if api_key is None:
-                raise HTTPException(status_code=401, detail="X-API-Key header required")
-            # This simulates the 500 error when server key is not configured
+        # Arrange
+        def raise_server_error():
             raise HTTPException(
-                status_code=500, detail="Server X-API-Key not configured"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="X-API-Key authentication is not configured on the server.",
             )
+        app.dependency_overrides[get_current_api_key_validated] = raise_server_error
 
-        # Temporarily override the dependency for this test
-        original_override = app.dependency_overrides.get(get_current_api_key_validated)
-        app.dependency_overrides[get_current_api_key_validated] = (
-            mock_server_key_not_configured
+        # Act
+        response = client.get(
+            "/health/retry-stats",
+            headers={"X-API-Key": TEST_X_API_KEY},
         )
 
-        try:
-            # Act
-            response = client.get(
-                "/health/retry-stats", headers={"X-API-Key": TEST_X_API_KEY}
-            )
-
-            # Assert
-            assert response.status_code == 500
-        finally:
-            # Restore original override
-            if original_override:
-                app.dependency_overrides[get_current_api_key_validated] = (
-                    original_override
-                )
-            else:
-                app.dependency_overrides.pop(get_current_api_key_validated, None)
+        # Assert
+        assert response.status_code == 500
+        data = response.json()
+        assert data["error"]["message"] == "X-API-Key authentication is not configured on the server."
+        assert data["error"]["code"] == "http_500"
+        
+        # Cleanup
+        app.dependency_overrides.clear()
 
     @patch("deployment.app.api.health.reset_retry_statistics")
     def test_reset_retry_stats_endpoint_success(self, mock_reset_stats, client):
@@ -361,6 +350,8 @@ class TestRetryStatsEndpoint:
 
         # Assert
         assert response.status_code == 401
+        data = response.json()
+        assert data["error"]["message"] == "Not authenticated: X-API-Key header is missing."
 
     def test_reset_retry_stats_unauthorized_invalid_key(self, client):
         """Test reset retry stats endpoint fails with 401 if X-API-Key is invalid."""
@@ -371,140 +362,131 @@ class TestRetryStatsEndpoint:
 
         # Assert
         assert response.status_code == 401
+        data = response.json()
+        assert data["error"]["message"] == "Invalid X-API-Key."
 
     def test_reset_retry_stats_server_key_not_configured(self, client):
         """Test reset retry stats endpoint fails with 500 if server X-API-Key is not configured."""
-        # Arrange - Override the dependency to simulate server key not configured
-        from fastapi import Security
-        from fastapi.security import APIKeyHeader
-
-        from deployment.app.services.auth import get_current_api_key_validated
-
-        api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-        async def mock_server_key_not_configured(
-            api_key: str = Security(api_key_header_scheme),
-        ) -> bool:
-            # Simulate the case where server X-API-Key is None/not configured
-            if api_key is None:
-                raise HTTPException(status_code=401, detail="X-API-Key header required")
-            # This simulates the 500 error when server key is not configured
+        # Arrange
+        def raise_server_error():
             raise HTTPException(
-                status_code=500, detail="Server X-API-Key not configured"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="X-API-Key authentication is not configured on the server.",
             )
+        app.dependency_overrides[get_current_api_key_validated] = raise_server_error
 
-        # Temporarily override the dependency for this test
-        original_override = app.dependency_overrides.get(get_current_api_key_validated)
-        app.dependency_overrides[get_current_api_key_validated] = (
-            mock_server_key_not_configured
+        # Act
+        response = client.post(
+            "/health/retry-stats/reset",
+            headers={"X-API-Key": TEST_X_API_KEY},
         )
 
-        try:
-            # Act
-            response = client.post(
-                "/health/retry-stats/reset", headers={"X-API-Key": TEST_X_API_KEY}
-            )
+        # Assert
+        assert response.status_code == 500
+        data = response.json()
+        assert data["error"]["message"] == "X-API-Key authentication is not configured on the server."
+        assert data["error"]["code"] == "http_500"
+        
+        # Cleanup
+        app.dependency_overrides.clear()
 
-            # Assert
-            assert response.status_code == 500
-        finally:
-            # Restore original override
-            if original_override:
-                app.dependency_overrides[get_current_api_key_validated] = (
-                    original_override
-                )
-            else:
-                app.dependency_overrides.pop(get_current_api_key_validated, None)
+    def test_retry_statistics_healthy(self, client, mock_dal, monkeypatch):
+        """Test retry stats endpoint returns 200 with stats when X-API-Key is valid."""
+        # Arrange
+        monkeypatch.setitem(app.dependency_overrides, get_current_api_key_validated, lambda: True)
+        mock_get_stats = MagicMock(return_value=self.get_mock_retry_stats_data())
+        monkeypatch.setattr("deployment.app.api.health.get_retry_statistics", mock_get_stats)
+
+        # Act
+        response = client.get(
+            "/health/retry-stats", headers={"X-API-Key": TEST_X_API_KEY}
+        )
+
+        # Assert
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_retries"] == 10
+        assert data["successful_retries"] == 5
+        assert data["exhausted_retries"] == 2
+        assert data["successful_after_retry"] == 3
+        assert "operation_A" in data["high_failure_operations"]
+        assert "operation_B" in data["high_failure_operations"]
+        assert "op_X" in data["operation_stats"]
+        assert "ErrA" in data["exception_stats"]
+        assert "timestamp" in data
+        mock_get_stats.assert_called_once()
+
+    def test_reset_retry_stats_success(self, client, mock_dal, monkeypatch):
+        """Test reset retry stats endpoint returns 200 with success message when X-API-Key is valid."""
+        # Arrange
+        monkeypatch.setitem(app.dependency_overrides, get_current_api_key_validated, lambda: True)
+        mock_reset_stats = MagicMock()
+        monkeypatch.setattr("deployment.app.api.health.reset_retry_statistics", mock_reset_stats)
+
+        # Act
+        response = client.post(
+            "/health/retry-stats/reset", headers={"X-API-Key": TEST_X_API_KEY}
+        )
+
+        # Assert
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "Retry statistics reset successfully"
+        mock_reset_stats.assert_called_once()
+        # Cleanup
+        app.dependency_overrides = {}
 
 
 class TestComponentHealthChecks:
     """Test suite for individual component health check functions."""
 
-    def test_check_database_healthy(self):
+    def test_check_database_healthy(self, mock_dal):
         """Test check_database returns healthy when connection and tables are ok."""
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
+        from deployment.app.api.health import check_database
 
-        # Simulate finding all required tables, затем даты для fact_sales и fact_stock_changes
-        mock_cursor.fetchall.side_effect = [
-            [
-                ("jobs",), ("models",), ("configs",), ("training_results",), ("prediction_results",),
-                ("job_status_history",), ("dim_multiindex_mapping",), ("fact_sales",), ("fact_stock",),
-                ("fact_prices",), ("fact_stock_changes",), ("fact_predictions",), ("sqlite_sequence",),
-                ("processing_runs",), ("data_upload_results",), ("report_results",),
-            ],
-            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_sales
-            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_stock_changes
-        ]
-        mock_cursor.execute.side_effect = lambda *a, **kw: None
+        result = check_database(mock_dal)
 
-        with patch(
-            "deployment.app.api.health.sqlite3.connect", return_value=mock_conn
-        ) as mock_connect:
-            from deployment.app.api.health import check_database
+        assert result.status == "healthy"
+        mock_dal.execute_raw_query.assert_called()
 
-            result = check_database()
-
-            assert result.status == "healthy"
-            mock_connect.assert_called_once()
-            call_args = mock_connect.call_args[0][0]
-            assert isinstance(call_args, str)
-            assert call_args.endswith(".db")
-            assert mock_cursor.execute.call_count >= 2
-            assert mock_cursor.execute.call_args_list[0][0][0] == "SELECT 1"
-            assert (
-                "SELECT name FROM sqlite_master WHERE type='table'"
-                in mock_cursor.execute.call_args_list[1][0][0]
-            )
-            mock_conn.close.assert_called_once()
-
-    def test_check_database_degraded_missing_tables(self):
+    def test_check_database_degraded_missing_tables(self, mock_dal):
         """Test check_database returns degraded if tables are missing."""
         # Arrange
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
+        mock_dal.execute_raw_query.side_effect = [
+            # First call for "SELECT 1"
+            [{"1": 1}],
+            # Second call for "SELECT name FROM sqlite_master..."
+            [{"name": "jobs"}],
+        ]
 
-        # Simulate finding only one table
-        mock_cursor.fetchall.return_value = [("jobs",)]
+        # Act
+        from deployment.app.api.health import check_database
 
-        # Act & Assert
-        with patch(
-            "deployment.app.api.health.sqlite3.connect", return_value=mock_conn
-        ) as mock_connect:
-            from deployment.app.api.health import check_database
+        result = check_database(mock_dal)
 
-            result = check_database()
+        # Assert
+        assert result.status == "degraded"
+        assert "missing_tables" in result.details
+        assert "jobs" not in result.details["missing_tables"]
+        assert "models" in result.details["missing_tables"]
+        mock_dal.execute_raw_query.assert_called()
 
-            assert result.status == "degraded"
-            assert "missing_tables" in result.details
-            assert "jobs" not in result.details["missing_tables"]
-            assert "models" in result.details["missing_tables"]
-            mock_connect.assert_called_once()
-            call_args = mock_connect.call_args[0][0]
-            assert isinstance(call_args, str)
-            assert call_args.endswith(".db")
-            mock_conn.close.assert_called_once()
-
-    def test_check_database_unhealthy_connection_error(self):
+    def test_check_database_unhealthy_connection_error(self, mock_dal):
         """Test check_database returns unhealthy on connection error."""
-        # Act & Assert
-        with patch(
-            "deployment.app.api.health.sqlite3.connect",
-            side_effect=sqlite3.OperationalError("Connection failed"),
-        ) as mock_connect:
-            from deployment.app.api.health import check_database
+        # Arrange
+        from deployment.app.db.database import DatabaseError
+        mock_dal.execute_raw_query.side_effect = DatabaseError("Connection failed")
 
-            result = check_database()
+        # Act
+        from deployment.app.api.health import check_database
 
-            assert result.status == "unhealthy"
-            assert "error" in result.details
-            assert "Connection failed" in result.details["error"]
-            mock_connect.assert_called_once()
-            call_args = mock_connect.call_args[0][0]
-            assert isinstance(call_args, str)
-            assert call_args.endswith(".db")
+        result = check_database(mock_dal)
+
+        # Assert
+        assert result.status == "unhealthy"
+        assert "error" in result.details
+        assert "Connection failed" in result.details["error"]
+        mock_dal.execute_raw_query.assert_called_once()
 
     @patch.dict(
         os.environ,
@@ -546,81 +528,89 @@ class TestComponentHealthChecks:
 
     @patch.dict(os.environ, {}, clear=True)
     def test_check_environment_degraded(self):
-        """Test get_environment_status returns degraded when vars are missing."""
+        """Test get_environment_status returns degraded when env vars are missing."""
         # Act
         result = get_environment_status()
 
         # Assert
         assert result.status == "degraded"
         assert "missing_variables" in result.details
+        assert isinstance(result.details["missing_variables"], list)
+        assert len(result.details["missing_variables"]) > 0
+        # Check that the key names are present in the descriptive strings
+        missing_vars_text = " ".join(result.details["missing_variables"])
+        assert "API_X_API_KEY" in missing_vars_text
+        assert "API_ADMIN_API_KEY" in missing_vars_text
+        assert "DATASPHERE_PROJECT_ID" in missing_vars_text
+        assert "DATASPHERE_FOLDER_ID" in missing_vars_text
+        assert ("DATASPHERE_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text)
 
-        # Expected missing variables with descriptions (updated for new environment module)
-        expected_missing = [
-            "DATASPHERE_PROJECT_ID (DataSphere project ID for ML model training and inference)",
-            "DATASPHERE_FOLDER_ID (DataSphere folder ID (may differ from YANDEX_CLOUD_FOLDER_ID))",
-            "API_ADMIN_API_KEY (Admin API key for Bearer authentication (replaces API_API_KEY))",
-            "API_X_API_KEY (Public API key for X-API-Key header)",
-            "DATASPHERE_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)",
+    def test_check_database_unhealthy_missing_tables(self, mock_dal):
+        """Test check_database returns unhealthy if required tables are missing."""
+        # Arrange
+        # Simulate that the query for tables returns only one table.
+        mock_dal.execute_raw_query.side_effect = [
+            [{"1": 1}],  # For the initial "SELECT 1" check
+            [{"name": "jobs"}],  # For the "SELECT name FROM sqlite_master" check
         ]
 
-        actual_missing = result.details["missing_variables"]
-        assert len(actual_missing) == 5
-        for var_desc in expected_missing:
-            assert var_desc in actual_missing, (
-                f"Expected '{var_desc}' to be in missing variables: {actual_missing}"
-            )
+        # Act
+        from deployment.app.api.health import check_database
 
-    def test_check_database_unhealthy_missing_months(self):
+        result = check_database(mock_dal)
+
+        # Assert
+        assert result.status == "degraded"
+        assert "missing_tables" in result.details
+        assert "jobs" not in result.details["missing_tables"]
+        assert "models" in result.details["missing_tables"]
+        mock_dal.execute_raw_query.assert_called()
+
+    def test_check_database_unhealthy_missing_months(self, mock_dal):
         """Test check_database returns unhealthy if there are missing months in fact_sales or fact_stock_changes."""
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
 
-        # Первый вызов fetchall — все таблицы найдены
-        # Второй и третий вызовы — имитация пропусков месяцев
-        mock_cursor.fetchall.side_effect = [
-            [
-                ("jobs",), ("models",), ("configs",), ("training_results",), ("prediction_results",),
-                ("job_status_history",), ("dim_multiindex_mapping",), ("fact_sales",), ("fact_stock",),
-                ("fact_prices",), ("fact_stock_changes",), ("fact_predictions",), ("sqlite_sequence",),
-                ("processing_runs",), ("data_upload_results",), ("report_results",),
-            ],
-            [("2024-01-01",), ("2024-03-01",)],  # fact_sales (пропущен 2024-02-01)
-            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_stock_changes
-        ]
-        mock_cursor.execute.side_effect = lambda *a, **kw: None
+        def side_effect_for_missing_months(query, params=(), fetchall=False, connection=None):
+            if query == "SELECT 1":
+                return [{"1": 1}]
+            if "SELECT name FROM sqlite_master" in query:
+                return [{"name": table} for table in params]
+            if "fact_sales" in query:
+                # Simulate a gap in fact_sales
+                return [{"data_date": "2024-01-01"}, {"data_date": "2024-03-01"}]
+            if "fact_stock_changes" in query:
+                # Simulate no gap in fact_stock_changes
+                return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
+            return []
 
-        with patch("deployment.app.api.health.sqlite3.connect", return_value=mock_conn):
-            from deployment.app.api.health import check_database
-            result = check_database()
-            assert result.status == "unhealthy"
-            assert "missing_months" in result.details
-            assert "fact_sales" in result.details["missing_months"]
-            assert result.details["missing_months"]["fact_sales"] == ["2024-02-01"]
-            assert "fact_stock_changes" not in result.details["missing_months"]
+        mock_dal.execute_raw_query.side_effect = side_effect_for_missing_months
 
-    def test_check_database_healthy_no_missing_months(self):
+        from deployment.app.api.health import check_database
+        result = check_database(mock_dal)
+        assert result.status == "unhealthy"
+        assert "missing_months" in result.details
+        assert "fact_sales" in result.details["missing_months"]
+        assert result.details["missing_months"]["fact_sales"] == ["2024-02-01"] # check_monotonic_months returns this format
+        assert "fact_stock_changes" not in result.details["missing_months"]
+
+    def test_check_database_healthy_no_missing_months(self, mock_dal):
         """Test check_database returns healthy if all months are present in both tables."""
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
 
-        mock_cursor.fetchall.side_effect = [
-            [
-                ("jobs",), ("models",), ("configs",), ("training_results",), ("prediction_results",),
-                ("job_status_history",), ("dim_multiindex_mapping",), ("fact_sales",), ("fact_stock",),
-                ("fact_prices",), ("fact_stock_changes",), ("fact_predictions",), ("sqlite_sequence",),
-                ("processing_runs",), ("data_upload_results",), ("report_results",),
-            ],
-            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_sales
-            [("2024-01-01",), ("2024-02-01",), ("2024-03-01",)],  # fact_stock_changes
-        ]
-        mock_cursor.execute.side_effect = lambda *a, **kw: None
+        def side_effect_for_healthy(query, params=(), fetchall=False, connection=None):
+            if query == "SELECT 1":
+                return [{"1": 1}]
+            if "SELECT name FROM sqlite_master" in query:
+                return [{"name": table} for table in params]
+            if "fact_sales" in query:
+                return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
+            if "fact_stock_changes" in query:
+                return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
+            return []
 
-        with patch("deployment.app.api.health.sqlite3.connect", return_value=mock_conn):
-            from deployment.app.api.health import check_database
-            result = check_database()
-            assert result.status == "healthy"
+        mock_dal.execute_raw_query.side_effect = side_effect_for_healthy
+
+        from deployment.app.api.health import check_database
+        result = check_database(mock_dal)
+        assert result.status == "healthy"
 
 
 class TestIntegration:

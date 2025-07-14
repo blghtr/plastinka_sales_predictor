@@ -494,8 +494,7 @@ class TestTransactionHandling:
 
     def test_execute_query_transaction_commit(self, isolated_db_session):
         """Test that execute_query properly commits transactions."""
-        db_path = isolated_db_session
-        conn = sqlite3.connect(db_path)
+        conn = isolated_db_session["conn"]
         cursor = conn.cursor()
 
         # Create test table
@@ -522,8 +521,7 @@ class TestTransactionHandling:
 
     def test_execute_query_transaction_rollback(self, isolated_db_session):
         """Test that execute_query properly handles rollback on error."""
-        db_path = isolated_db_session
-        conn = sqlite3.connect(db_path)
+        conn = isolated_db_session["conn"]
         cursor = conn.cursor()
 
         # Create test table
@@ -552,7 +550,7 @@ class TestTransactionHandling:
 
     def test_concurrent_access_isolation(self, isolated_db_session):
         """Test that concurrent database access maintains isolation."""
-        db_path = isolated_db_session
+        db_path = isolated_db_session["db_path"]
         results = []
 
         def worker(thread_id):

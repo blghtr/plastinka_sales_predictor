@@ -9,12 +9,12 @@ from deployment.app.services.datasphere_service import save_predictions_to_db
 from tests.deployment.app.services.datasphere.conftest import verify_predictions_saved
 
 
-@patch("deployment.app.services.datasphere_service.get_db_connection")
-@patch("deployment.app.db.schema.init_db")
 def test_save_predictions_to_db(
-    mock_init_db, mock_get_db, temp_db, sample_predictions_data
+    monkeypatch, mock_init_db, mock_get_db, temp_db, sample_predictions_data
 ):
     """Test saving predictions from CSV to database"""
+    monkeypatch.setattr("deployment.app.services.datasphere_service.get_db_connection", mock_get_db)
+    monkeypatch.setattr("deployment.app.db.schema.init_db", mock_init_db)
     # Настраиваем мок для использования тестовой БД
     conn = sqlite3.connect(temp_db["db_path"])
     conn.row_factory = sqlite3.Row
@@ -33,9 +33,9 @@ def test_save_predictions_to_db(
     conn.close()
 
 
-@patch("deployment.app.services.datasphere_service.get_db_connection")
-def test_save_predictions_to_db_invalid_path(mock_get_db, temp_db):
+def test_save_predictions_to_db_invalid_path(monkeypatch, mock_get_db, temp_db):
     """Test handling of invalid prediction file path"""
+    monkeypatch.setattr("deployment.app.services.datasphere_service.get_db_connection", mock_get_db)
     conn = sqlite3.connect(temp_db["db_path"])
     conn.row_factory = sqlite3.Row
     mock_get_db.return_value = conn
@@ -50,9 +50,9 @@ def test_save_predictions_to_db_invalid_path(mock_get_db, temp_db):
     conn.close()
 
 
-@patch("deployment.app.services.datasphere_service.get_db_connection")
-def test_save_predictions_to_db_invalid_format(mock_get_db, temp_db):
+def test_save_predictions_to_db_invalid_format(monkeypatch, mock_get_db, temp_db):
     """Test handling of invalid prediction file format"""
+    monkeypatch.setattr("deployment.app.services.datasphere_service.get_db_connection", mock_get_db)
     conn = sqlite3.connect(temp_db["db_path"])
     conn.row_factory = sqlite3.Row
     mock_get_db.return_value = conn

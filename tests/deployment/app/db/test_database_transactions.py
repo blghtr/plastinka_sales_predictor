@@ -81,7 +81,7 @@ from deployment.app.db.schema import SCHEMA_SQL
 
 def test_execute_query_transaction(isolated_db_session):
     """Test that execute_query properly manages transactions"""
-    db_path = isolated_db_session
+    db_path = isolated_db_session["db_path"]
     # Get a direct connection for verification
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -133,28 +133,16 @@ def test_execute_query_transaction(isolated_db_session):
 
 def test_execute_many_transaction(isolated_db_session):
     """Test that execute_many properly manages transactions"""
-    db_path = isolated_db_session
-    # Debug information
-    print(f"DEBUG: temp_db path: {db_path}")
-    print(f"DEBUG: DB file exists: {os.path.exists(db_path)}")
-
+    db_path = isolated_db_session["db_path"]
     # Get a direct connection for verification
     conn = sqlite3.connect(db_path)
-    print(f"DEBUG: SQLite isolation level: {conn.isolation_level}")
-
     # Set to None first to ensure no active transaction (auto-commit mode)
     conn.isolation_level = None
-    print(
-        f"DEBUG: SQLite isolation level after setting to None: {conn.isolation_level}"
-    )
 
     # Check database tables
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = cursor.fetchall()
-    print(
-        f"DEBUG: Database tables: {[table[0] if isinstance(table, tuple) else table['name'] for table in tables]}"
-    )
+    cursor.fetchall()
 
     # Create a test table
     cursor.execute("CREATE TABLE test_batch (id INTEGER PRIMARY KEY, value TEXT)")
@@ -171,20 +159,15 @@ def test_execute_many_transaction(isolated_db_session):
     # Verify all data was committed
     cursor.execute("SELECT COUNT(*) FROM test_batch")
     count_result = cursor.fetchone()
-    print(f"DEBUG: Count result after insert: {count_result}")
     # Handle row as dictionary or tuple
-    count = (
-        count_result[0] if isinstance(count_result, tuple) else count_result["COUNT(*)"]
-    )
+    count = (count_result[0] if isinstance(count_result, tuple) else count_result["COUNT(*)"])
     assert count == 3
 
     # Now set isolation level and start transaction for error test
     conn.isolation_level = "DEFERRED"
-    print(f"DEBUG: SQLite isolation level set to DEFERRED: {conn.isolation_level}")
 
     # Start transaction by executing a statement (SQLite auto-starts transaction)
     cursor.execute("SELECT 1")
-    print("DEBUG: Transaction implicitly started by first SQL statement")
 
     # Test rollback on error with batch insert
     # Create an invalid parameter list (missing values)
@@ -199,23 +182,15 @@ def test_execute_many_transaction(isolated_db_session):
             "INSERT INTO test_batch (value) VALUES (?)", invalid_params, connection=conn
         )
     except DatabaseError:
-        print("DEBUG: Caught expected DatabaseError from execute_many")
         # With an external connection, execute_many does not roll back. The caller (this test) must.
         if conn:
-            print(
-                "DEBUG: Rolling back transaction on external connection in test_execute_many_transaction"
-            )
             conn.rollback()
 
     # Verify no new data was inserted (rollback)
     cursor.execute("SELECT COUNT(*) FROM test_batch")
     count_result = cursor.fetchone()
-    print(f"DEBUG: Count result after failed insert: {count_result}")
     # Handle row as dictionary or tuple
-    count = (
-        count_result[0] if isinstance(count_result, tuple) else count_result["COUNT(*)"]
-    )
-    print(f"DEBUG: Count value: {count}")
+    count = (count_result[0] if isinstance(count_result, tuple) else count_result["COUNT(*)"])
     assert count == 3  # Still only the original 3 rows
 
     # Close the connection
@@ -224,7 +199,7 @@ def test_execute_many_transaction(isolated_db_session):
 
 def test_nested_transactions(isolated_db_session):
     """Test nested transactions behavior with SQLite"""
-    db_path = isolated_db_session
+    db_path = isolated_db_session["db_path"]
     # Get a direct connection
     conn = sqlite3.connect(db_path)
 
@@ -272,13 +247,8 @@ def test_nested_transactions(isolated_db_session):
 
 def test_create_job_transaction_safety(isolated_db_session):
     """Test that create_job function operates safely within transactions"""
-    db_path = isolated_db_session
-    # Debug information
-    import os
-
-    print(f"DEBUG: temp_db path: {db_path}")
-    print(f"DEBUG: DB file exists: {os.path.exists(db_path)}")
-
+    db_path = isolated_db_session["db_path"]
+    
     # Test case: Create job inside a successful transaction
     with get_db_connection(db_path) as conn_success:
         job_id_success = create_job(
@@ -317,13 +287,8 @@ def test_create_job_transaction_safety(isolated_db_session):
 
 def test_update_job_transaction_safety(isolated_db_session):
     """Test update_job_status within transactions"""
-    db_path = isolated_db_session
-    # Debug information
-    import os
-
-    print(f"DEBUG: temp_db path: {db_path}")
-    print(f"DEBUG: DB file exists: {os.path.exists(db_path)}")
-
+    db_path = isolated_db_session["db_path"]
+    
     # Initial job creation
     with get_db_connection(db_path) as conn:
         job_id = create_job("initial_job", connection=conn)
@@ -360,13 +325,8 @@ def test_update_job_transaction_safety(isolated_db_session):
 
 def test_complex_transaction_chain(isolated_db_session):
     """Test a complex chain of database operations within a transaction"""
-    db_path = isolated_db_session
-    # Debug information
-    import os
-
-    print(f"DEBUG: temp_db path: {db_path}")
-    print(f"DEBUG: DB file exists: {os.path.exists(db_path)}")
-
+    db_path = isolated_db_session["db_path"]
+    
     job_id_1, job_id_2 = None, None
     try:
         with get_db_connection(db_path) as conn:
@@ -406,7 +366,7 @@ def test_complex_transaction_chain(isolated_db_session):
 
 def test_concurrent_reads(isolated_db_session):
     """Test concurrent read operations"""
-    db_path = isolated_db_session
+    db_path = isolated_db_session["db_path"]
     # Prepare data - first create the schema
     with get_db_connection(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
@@ -470,7 +430,7 @@ def test_concurrent_reads(isolated_db_session):
 
 def test_concurrent_writes(isolated_db_session):
     """Test concurrent write operations with SQLite's default locking"""
-    db_path = isolated_db_session
+    db_path = isolated_db_session["db_path"]
     # Prepare table
     with get_db_connection(db_path) as conn:
         conn.execute("CREATE TABLE concurrent_test (id INTEGER, thread_id INTEGER)")
@@ -514,7 +474,7 @@ def test_concurrent_writes(isolated_db_session):
 
 def test_connection_isolation(isolated_db_session):
     """Test that each connection has its own isolated transaction"""
-    db_path = isolated_db_session
+    db_path = isolated_db_session["db_path"]
     # Create two connections
     conn1 = get_db_connection(db_path)
     conn2 = get_db_connection(db_path)
@@ -554,13 +514,7 @@ def test_transaction_with_direct_conn_and_db_functions(isolated_db_session):
     """
     Test mixing direct connection usage with database module functions
     """
-    db_path = isolated_db_session
-    # Debug information
-    import os
-
-    print(f"DEBUG: temp_db path: {db_path}")
-    print(f"DEBUG: DB file exists: {os.path.exists(db_path)}")
-
+    db_path = isolated_db_session["db_path"]
     # Use explicit transaction control instead of context manager
     conn = get_db_connection(db_path)
     conn.execute("BEGIN TRANSACTION")

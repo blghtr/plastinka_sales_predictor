@@ -11,6 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
+from unittest.mock import MagicMock
 
 from deployment.app.services.report_service import (
     _adapt_features_schema,
@@ -24,10 +25,10 @@ from deployment.app.services.report_service import (
 class TestLoadRawFeaturesForReport:
     """Test suite for _load_raw_features_for_report function."""
 
-    @patch("deployment.app.services.report_service.load_features")
-    def test_load_raw_features_success(self, mock_load_features):
+    def test_load_raw_features_success(self, monkeypatch, mock_load_features):
         """Test successful loading of raw features."""
         # Arrange
+        monkeypatch.setattr("deployment.app.services.report_service.load_features", mock_load_features)
         mock_features = {
             "sales": pd.DataFrame({"value": [1, 2, 3]}),
             "change": pd.DataFrame({"value": [0, 1, -1]}),
@@ -46,10 +47,10 @@ class TestLoadRawFeaturesForReport:
             store_type="sql", feature_types=["sales", "change", "stock", "prices"]
         )
 
-    @patch("deployment.app.services.report_service.load_features")
-    def test_load_raw_features_exception(self, mock_load_features):
+    def test_load_raw_features_exception(self, monkeypatch, mock_load_features):
         """Test handling of exceptions during feature loading."""
         # Arrange
+        monkeypatch.setattr("deployment.app.services.report_service.load_features", mock_load_features)
         mock_load_features.side_effect = Exception("Database error")
         prediction_month = datetime(2024, 3, 1)
 
@@ -59,10 +60,10 @@ class TestLoadRawFeaturesForReport:
         # Assert
         assert result == {}
 
-    @patch("deployment.app.services.report_service.load_features")
-    def test_load_raw_features_empty_response(self, mock_load_features):
+    def test_load_raw_features_empty_response(self, monkeypatch, mock_load_features):
         """Test handling of empty features response."""
         # Arrange
+        monkeypatch.setattr("deployment.app.services.report_service.load_features", mock_load_features)
         mock_load_features.return_value = {}
         prediction_month = datetime(2024, 3, 1)
 
@@ -216,10 +217,10 @@ class TestProcessFeaturesForReport:
             "prices": prices_df,
         }
 
-    @patch("deployment.app.services.report_service._adapt_features_schema")
-    def test_process_features_success(self, mock_adapt_schema):
+    def test_process_features_success(self, monkeypatch, mock_adapt_schema):
         """Test successful feature processing."""
         # Arrange
+        monkeypatch.setattr("deployment.app.services.report_service._adapt_features_schema", mock_adapt_schema)
         raw_features = {"sales": pd.DataFrame(), "change": pd.DataFrame()}
         mock_adapt_schema.return_value = self.create_mock_adapted_features()
         prediction_month = datetime(2024, 3, 1)
@@ -231,10 +232,10 @@ class TestProcessFeaturesForReport:
         assert isinstance(result, dict)
         mock_adapt_schema.assert_called_once_with(raw_features)
 
-    @patch("deployment.app.services.report_service._adapt_features_schema")
-    def test_process_features_missing_required(self, mock_adapt_schema):
+    def test_process_features_missing_required(self, monkeypatch, mock_adapt_schema):
         """Test handling of missing required features."""
         # Arrange
+        monkeypatch.setattr("deployment.app.services.report_service._adapt_features_schema", mock_adapt_schema)
         raw_features = {"sales": pd.DataFrame()}
         mock_adapt_schema.return_value = {
             "sales": pd.DataFrame()
@@ -247,10 +248,10 @@ class TestProcessFeaturesForReport:
         # Assert
         assert result == {}
 
-    @patch("deployment.app.services.report_service._adapt_features_schema")
-    def test_process_features_exception(self, mock_adapt_schema):
+    def test_process_features_exception(self, monkeypatch, mock_adapt_schema):
         """Test handling of exceptions during processing."""
         # Arrange
+        monkeypatch.setattr("deployment.app.services.report_service._adapt_features_schema", mock_adapt_schema)
         raw_features = {"sales": pd.DataFrame()}
         mock_adapt_schema.side_effect = Exception("Processing error")
         prediction_month = datetime(2024, 3, 1)
@@ -589,10 +590,10 @@ class TestJoinPredictionsWithEnrichedMetrics:
 class TestIntegrationScenarios:
     """Integration tests for the complete enrichment workflow."""
 
-    @patch("deployment.app.services.report_service.load_features")
-    def test_full_enrichment_workflow(self, mock_load_features):
+    def test_full_enrichment_workflow(self, monkeypatch, mock_load_features):
         """Test the complete enrichment workflow from raw features to enriched predictions."""
         # Arrange
+        monkeypatch.setattr("deployment.app.services.report_service.load_features", mock_load_features)
         prediction_month = datetime(2024, 3, 1)
 
         # Mock raw features
@@ -749,6 +750,16 @@ def sample_multiindex_products():
 def sample_date_range():
     """Fixture providing sample date range."""
     return pd.date_range("2024-01-01", "2024-03-31", freq="D")
+
+
+@pytest.fixture
+def mock_load_features():
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_adapt_schema():
+    return MagicMock()
 
 
 # Performance and edge case tests

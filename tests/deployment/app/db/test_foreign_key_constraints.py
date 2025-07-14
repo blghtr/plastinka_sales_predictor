@@ -32,35 +32,6 @@ def db_conn():
     # Removed: cursor.executescript(SCHEMA_SQL) # Redundant call as init_db already does this
     conn.commit()  # Commit changes made by init_db for this connection
 
-    # Diagnostic print
-    original_row_factory = conn.row_factory
-    conn.row_factory = None  # Temporarily set to None for PRAGMA queries
-    try:
-        debug_cursor = conn.cursor()
-        debug_cursor.execute("PRAGMA table_info(training_results);")
-        columns_info = debug_cursor.fetchall()
-        column_names = [info[1] for info in columns_info]  # Extract just the names
-        print(
-            f"DEBUG: test_foreign_key_constraints.py: db_conn fixture: training_results column names: {column_names}"
-        )
-
-        schema_sql_snippet_start = SCHEMA_SQL.find(
-            "CREATE TABLE IF NOT EXISTS training_results"
-        )
-        if schema_sql_snippet_start != -1:
-            schema_sql_snippet = SCHEMA_SQL[
-                schema_sql_snippet_start : schema_sql_snippet_start + 300
-            ]
-            print(
-                f"DEBUG: test_foreign_key_constraints.py: db_conn fixture: SCHEMA_SQL for training_results (snippet): {schema_sql_snippet}"
-            )
-        else:
-            print(
-                "DEBUG: test_foreign_key_constraints.py: db_conn fixture: Could not find training_results DDL in SCHEMA_SQL"
-            )
-    finally:
-        conn.row_factory = original_row_factory  # Restore original row_factory
-
     # Verify PRAGMA is ON
     cursor = conn.cursor()  # Re-initialize cursor for the assertion below
     cursor.execute("PRAGMA foreign_keys;")

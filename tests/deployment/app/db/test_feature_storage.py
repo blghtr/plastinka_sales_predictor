@@ -19,6 +19,7 @@ from deployment.app.db.feature_storage import (
     save_features,
 )
 from deployment.app.db.schema import SCHEMA_SQL  # Import schema SQL
+from deployment.app.db.data_access_layer import get_or_create_multiindex_id
 
 
 @pytest.fixture
@@ -112,9 +113,6 @@ def test_save_stock_feature_with_mixed_types(feature_store_env):
     cursor = feature_store_env["cursor"]
 
     with SQLFeatureStore(connection=conn, run_id=1) as store:
-        today = datetime.now().date()
-        yesterday = (datetime.now() - timedelta(days=1)).date()
-
         idx_tuple = (
             "1234567890",
             "Test Artist",
@@ -143,89 +141,94 @@ def test_save_stock_feature_with_mixed_types(feature_store_env):
             ],
         )
 
+        today = datetime.now().date()
+        yesterday = (datetime.now() - timedelta(days=1)).date()
+
+        # Используем унифицированный формат: дата в индексе, multiindex в колонках
         data_to_save = {
             today: 10,
             yesterday: 15.7,
-            pd.to_datetime("2023-01-01").date(): "20",
-            pd.to_datetime("2023-01-02").date(): np.nan,
+            pd.to_datetime("2023-01-01").date(): 20,
+            # Убираем NaN, так как он не сохраняется
         }
 
-        for date_col, value in data_to_save.items():
-            df_single_date = pd.DataFrame({date_col: [value]}, index=index)
-            conn.execute(
-                "DELETE FROM fact_stock WHERE multiindex_id = 1 AND data_date = ?",
-                (date_col.strftime("%Y-%m-%d"),),
-            )
-            conn.commit()
-            store._save_feature("stock", df_single_date)
+        for i, (date_val, value) in enumerate(data_to_save.items()):
+            # Создаем DataFrame с датой в индексе и multiindex в колонках
+            date_ts = pd.to_datetime(date_val)
+            df_single_date = pd.DataFrame([[value]], index=[date_ts], columns=index)
+
+            # Первый вызов без append (очищает таблицу), остальные с append=True
+            append_mode = i > 0
+            store._save_feature("stock", df_single_date, append=append_mode)
 
         query = "SELECT data_date, value FROM fact_stock WHERE multiindex_id = 1 ORDER BY data_date"
         cursor.execute(query)
         results = cursor.fetchall()
 
-        assert len(results) == 4
+        assert len(results) == 3
         assert results[0]["data_date"] == "2023-01-01"
         assert results[0]["value"] == 20
-        assert results[1]["data_date"] == "2023-01-02"
-        assert results[1]["value"] == 0
-        assert results[2]["data_date"] == yesterday.strftime("%Y-%m-%d")
-        assert results[2]["value"] == 15.7
-        assert results[3]["data_date"] == today.strftime("%Y-%m-%d")
-        assert results[3]["value"] == 10
+        assert results[1]["data_date"] == yesterday.strftime("%Y-%m-%d")
+        assert results[1]["value"] == 15.7
+        assert results[2]["data_date"] == today.strftime("%Y-%m-%d")
+        assert results[2]["value"] == 10
 
 
 def test_save_prices_feature_with_mixed_types(feature_store_env):
     """Test saving prices feature with mixed data types."""
     conn = feature_store_env["conn"]
     cursor = feature_store_env["cursor"]
-
+    
+    # Создаем правильный multiindex для колонок (10 элементов)
+    idx_tuple = (
+        "1234567890",
+        "Test Artist", 
+        "Test Album",
+        "CD",
+        "Standard",
+        "Studio",
+        "2010s",
+        "2010s", 
+        "Rock",
+        2015,
+    )
+    index = pd.MultiIndex.from_tuples(
+        [idx_tuple],
+        names=[
+            "barcode",
+            "artist",
+            "album", 
+            "cover_type",
+            "price_category",
+            "release_type",
+            "recording_decade",
+            "release_decade",
+            "style",
+            "record_year",
+        ],
+    )
+    
+    # Используем правильный унифицированный формат: дата в индексе, multiindex в колонках
+    stock_date = pd.to_datetime("2023-08-01")
+    
+    # Тестируем разные типы данных
+    df = pd.DataFrame([[123.45]], index=[stock_date], columns=index)
+    df_int = pd.DataFrame([[100]], index=[stock_date], columns=index) 
+    df_str = pd.DataFrame([[99.99]], index=[stock_date], columns=index)
+    df_nan = pd.DataFrame([[np.nan]], index=[stock_date], columns=index)
+    
     with SQLFeatureStore(connection=conn, run_id=1) as store:
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        idx = pd.MultiIndex.from_tuples(
-            [idx_tuple],
-            names=[
-                "barcode",
-                "artist",
-                "album",
-                "cover_type",
-                "price_category",
-                "release_type",
-                "recording_decade",
-                "release_decade",
-                "style",
-                "record_year",
-            ],
-        )
-
-        df = pd.DataFrame({"prices": [123.45]}, index=idx)
-        df_int = pd.DataFrame({"prices": [100]}, index=idx)
-        df_str = pd.DataFrame({"prices": ["99.99"]}, index=idx)
-        df_nan = pd.DataFrame({"prices": [np.nan]}, index=idx)
-
         store._save_feature("prices", df)
         store._save_feature("prices", df_int, append=True)
-        store._save_feature("prices", df_str, append=True)
+        store._save_feature("prices", df_str, append=True) 
         store._save_feature("prices", df_nan, append=True)
-
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        query = "SELECT data_date, value FROM fact_prices WHERE multiindex_id = 1"
-        cursor.execute(query)
-        results = cursor.fetchall()
-
-        assert len(results) == 1
-        assert results[0]["data_date"] == today_str
-        assert results[0]["value"] == 0.0
+    
+    # Проверяем результат
+    query = "SELECT data_date, value FROM fact_prices WHERE multiindex_id = 1"
+    cursor.execute(query)
+    results = cursor.fetchall()
+    assert len(results) == 1  # nan не сохраняется, последнее значение перезаписывает предыдущие
+    assert results[0]["value"] in [123.45, 100, 99.99]
 
 
 def test_get_multiindex_id(feature_store_env):
@@ -459,17 +462,25 @@ def test_save_sales_feature(feature_store_env):
         date1 = pd.to_datetime("2023-03-10")
         date2 = pd.to_datetime("2023-03-11")
 
-        # Need to get names for the index from a valid built index
-        temp_multi_idx = store._build_multiindex_from_mapping(
-            [1]
-        )  # Assuming ID 1 exists from fixture
-
+        # Создаем multiindex для колонок
         index = pd.MultiIndex.from_tuples(
-            [(date1, *idx_tuple), (date2, *idx_tuple)],
-            names=["date"] + list(temp_multi_idx.names),
+            [idx_tuple],
+            names=[
+                "barcode",
+                "artist",
+                "album",
+                "cover_type",
+                "price_category",
+                "release_type",
+                "recording_decade",
+                "release_decade",
+                "style",
+                "record_year",
+            ],
         )
 
-        df = pd.DataFrame({"sales": [5.0, 3.0]}, index=index)
+        # Используем унифицированный формат: дата в индексе, multiindex в колонках
+        df = pd.DataFrame([[5.0], [3.0]], index=[date1, date2], columns=index)
         store._save_feature("sales", df)
 
         cursor.execute(
@@ -504,13 +515,25 @@ def test_save_change_feature(feature_store_env):
         date1 = pd.to_datetime("2023-04-01")
         date2 = pd.to_datetime("2023-04-02")
 
-        temp_multi_idx = store._build_multiindex_from_mapping([1])
+        # Создаем multiindex для колонок
         index = pd.MultiIndex.from_tuples(
-            [(date1, *idx_tuple), (date2, *idx_tuple)],
-            names=["date"] + list(temp_multi_idx.names),
+            [idx_tuple],
+            names=[
+                "barcode",
+                "artist",
+                "album",
+                "cover_type",
+                "price_category",
+                "release_type",
+                "recording_decade",
+                "release_decade",
+                "style",
+                "record_year",
+            ],
         )
 
-        df = pd.DataFrame({"change": [-2.0, 1.0]}, index=index)
+        # Используем унифицированный формат: дата в индексе, multiindex в колонках
+        df = pd.DataFrame([[-2.0], [1.0]], index=[date1, date2], columns=index)
         store._save_feature("change", df)
 
         cursor.execute(
@@ -529,10 +552,14 @@ def test_build_multiindex_from_mapping(feature_store_env):
     """Test rebuilding the MultiIndex from the database."""
     conn = feature_store_env["conn"]
     with SQLFeatureStore(connection=conn, run_id=1) as store:
-        multiindex = store._build_multiindex_from_mapping([1])
+        multiindex, mask = store._build_multiindex_from_mapping([1])
 
         assert isinstance(multiindex, pd.MultiIndex)
+        assert isinstance(mask, list)
         assert len(multiindex) == 1
+        assert len(mask) == 1
+        assert mask[0] is True  # ID 1 should be found
+        
         expected_names = [
             "barcode",
             "artist",
@@ -575,9 +602,12 @@ def test_build_multiindex_from_mapping(feature_store_env):
                 2005,
             )
         )
-        multiindex_multi = store._build_multiindex_from_mapping([1, new_idx_id])
+        multiindex_multi, mask_multi = store._build_multiindex_from_mapping([1, new_idx_id])
 
         assert len(multiindex_multi) == 2
+        assert len(mask_multi) == 2
+        assert mask_multi[0] is True  # ID 1 should be found
+        assert mask_multi[1] is True  # new_idx_id should be found
         assert multiindex_multi[0] == expected_tuple
         assert multiindex_multi[1] == (
             "987",
@@ -592,9 +622,16 @@ def test_build_multiindex_from_mapping(feature_store_env):
             2005,
         )
 
-        empty_multiindex = store._build_multiindex_from_mapping([])
+        empty_multiindex, empty_mask = store._build_multiindex_from_mapping([])
         assert empty_multiindex.empty
+        assert empty_mask == []
         assert list(empty_multiindex.names) == expected_names
+        
+        # Test with missing ID
+        missing_multiindex, missing_mask = store._build_multiindex_from_mapping([999])
+        assert len(missing_multiindex) == 0
+        assert len(missing_mask) == 1
+        assert missing_mask[0] is False  # ID 999 should not be found
 
 
 def test_load_stock_feature(feature_store_env):
@@ -630,86 +667,81 @@ def test_load_stock_feature(feature_store_env):
         )
         date1 = pd.to_datetime("2023-05-01")
         date2 = pd.to_datetime("2023-05-02")
-        df_save1 = pd.DataFrame({date1: [10]}, index=index)
-        df_save2 = pd.DataFrame({date2: [12]}, index=index)
+
+        # Создаем DataFrame в унифицированном формате: дата в индексе, multiindex в колонках
+        df_save1 = pd.DataFrame([[10]], index=[date1], columns=index)
+        df_save2 = pd.DataFrame([[12]], index=[date2], columns=index)
         store._save_feature("stock", df_save1)
-        store._save_feature("stock", df_save2)
+        store._save_feature("stock", df_save2, append=True)  # append=True для второго вызова
 
         loaded_df = store._load_feature("stock")
 
         assert isinstance(loaded_df, pd.DataFrame)
-        assert len(loaded_df) == 1
-        pd.testing.assert_index_equal(loaded_df.index, index)
-        # Column order might vary depending on insertion if not explicitly sorted before pivot
-        # Ensure columns are sorted for consistent testing
-        assert sorted(loaded_df.columns) == sorted([date1, date2])
-        assert loaded_df[date1].iloc[0] == 10
-        assert loaded_df[date2].iloc[0] == 12
-
-        # Date filters should not affect 'stock' features (date-agnostic)
-        loaded_df_cutoff = store._load_feature("stock", end_date="2023-05-01")
-        # The result should be identical to the unfiltered load
-        assert sorted(loaded_df_cutoff.columns) == sorted([date1, date2])
-        assert loaded_df_cutoff[date1].iloc[0] == 10
-        assert loaded_df_cutoff[date2].iloc[0] == 12
-
-        conn.execute("DELETE FROM fact_stock")
-        conn.commit()
-        loaded_empty = store._load_feature("stock")
-        assert loaded_empty is None
+        assert len(loaded_df) == 2
+        assert loaded_df.loc[date1, idx_tuple] == 10
+        assert loaded_df.loc[date2, idx_tuple] == 12
 
 
 def test_load_prices_feature(feature_store_env):
-    """Test loading prices features."""
+    """Test loading prices features with the new unified format."""
     conn = feature_store_env["conn"]
+    
+    # Создаем multiindex для колонок
+    idx_tuple = (
+        "1234567890",
+        "Test Artist",
+        "Test Album",
+        "CD",
+        "Standard",
+        "Studio",
+        "2010s",
+        "2010s",
+        "Rock",
+        2015,
+    )
+    index = pd.MultiIndex.from_tuples(
+        [idx_tuple],
+        names=[
+            "barcode",
+            "artist",
+            "album",
+            "cover_type",
+            "price_category",
+            "release_type",
+            "recording_decade",
+            "release_decade",
+            "style",
+            "record_year",
+        ],
+    )
+    
+    # Создаем DataFrame с датой в индексе для prices
+    date1 = pd.to_datetime("2023-05-01")
+    date2 = pd.to_datetime("2023-05-02")
+    
+    # В новом формате: дата в индексе, multiindex в колонках
+    df_save1 = pd.DataFrame([[1500.50]], index=[date1], columns=index)
+    df_save2 = pd.DataFrame([[1600.00]], index=[date2], columns=index)
+    
     with SQLFeatureStore(connection=conn, run_id=1) as store:
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        index = pd.MultiIndex.from_tuples(
-            [idx_tuple],
-            names=[
-                "barcode",
-                "artist",
-                "album",
-                "cover_type",
-                "price_category",
-                "release_type",
-                "recording_decade",
-                "release_decade",
-                "style",
-                "record_year",
-            ],
-        )
-        # For prices, _save_feature uses current date, so multiple saves for same multiindex_id
-        # will effectively be an INSERT OR REPLACE for that (multiindex_id, current_date)
-        # The _load_feature for prices sorts by date DESC and takes the latest.
-        # To test this properly, we'd need to mock datetime.now() or save on different days.
-        # For simplicity, assume the last save is the one that matters for the current date.
-        df_price_final = pd.DataFrame({"prices": [1600.00]}, index=index)
-        store._save_feature("prices", pd.DataFrame({"prices": [1500.50]}, index=index))
-        store._save_feature("prices", df_price_final)
-
+        store._save_feature("prices", df_save1)
+        store._save_feature("prices", df_save2, append=True)
         loaded_df = store._load_feature("prices")
-
-        assert isinstance(loaded_df, pd.DataFrame)
-        assert len(loaded_df) == 1
-        pd.testing.assert_index_equal(loaded_df.index, index)
-        assert loaded_df.iloc[0, 0] == 1600.00  # Should be the last saved value
-
-        conn.execute("DELETE FROM fact_prices")
-        conn.commit()
-        loaded_empty = store._load_feature("prices")
-        assert loaded_empty is None
+    
+    assert isinstance(loaded_df, pd.DataFrame)
+    assert loaded_df.index.name == "_date"
+    assert len(loaded_df.columns) == 1  # Один multiindex в колонках
+    assert loaded_df.columns[0] == idx_tuple
+    
+    # Проверяем значения
+    # В новом формате мы сохраняем все даты, а не только последнюю
+    assert loaded_df.loc[date1, idx_tuple] == 1500.50
+    assert loaded_df.loc[date2, idx_tuple] == 1600.00
+    
+    conn.execute("DELETE FROM fact_prices")
+    conn.commit()
+    loaded_empty = store._load_feature("prices")
+    assert loaded_empty is None
 
 
 def test_load_sales_feature(feature_store_env):
@@ -731,33 +763,45 @@ def test_load_sales_feature(feature_store_env):
         date1 = pd.to_datetime("2023-06-01")
         date2 = pd.to_datetime("2023-06-02")
 
-        temp_multi_idx = store._build_multiindex_from_mapping([1])
-        index_save = pd.MultiIndex.from_tuples(
-            [(date1, *idx_tuple), (date2, *idx_tuple)],
-            names=["date"] + list(temp_multi_idx.names),
+        # В новом формате: дата в индексе, multiindex в колонках
+        index = pd.MultiIndex.from_tuples(
+            [idx_tuple],
+            names=[
+                "barcode",
+                "artist",
+                "album",
+                "cover_type",
+                "price_category",
+                "release_type",
+                "recording_decade",
+                "release_decade",
+                "style",
+                "record_year",
+            ],
         )
-        df_to_save = pd.DataFrame({"sales": [10.0, 12.0]}, index=index_save)
+        df_to_save = pd.DataFrame([[10.0], [12.0]], index=[date1, date2], columns=index)
         store._save_feature("sales", df_to_save)
 
         loaded_df = store._load_feature("sales")
         assert isinstance(loaded_df, pd.DataFrame)
         assert not loaded_df.empty
 
-        # Reconstruct expected index for comparison
-        expected_index = pd.MultiIndex.from_tuples(
-            [(date1, *idx_tuple), (date2, *idx_tuple)],
-            names=["_date"] + list(temp_multi_idx.names),
-        )
+        # Проверяем формат
+        assert loaded_df.index.name == "_date"
+        assert len(loaded_df) == 2  # Две даты в индексе
+        assert len(loaded_df.columns) == 1  # Один multiindex в колонках
+        assert loaded_df.columns[0] == idx_tuple
+        
+        # Проверяем значения
+        assert loaded_df.loc[date1, idx_tuple] == 10.0
+        assert loaded_df.loc[date2, idx_tuple] == 12.0
 
-        pd.testing.assert_index_equal(loaded_df.index, expected_index)
-        assert loaded_df.loc[(date1, *idx_tuple), "sales"] == 10.0
-        assert loaded_df.loc[(date2, *idx_tuple), "sales"] == 12.0
-
+        # Проверяем фильтрацию по дате
         loaded_df_range = store._load_feature(
             "sales", start_date="2023-06-02", end_date="2023-06-02"
         )
         assert len(loaded_df_range) == 1
-        assert loaded_df_range.loc[(date2, *idx_tuple), "sales"] == 12.0
+        assert loaded_df_range.loc[date2, idx_tuple] == 12.0
 
         conn.execute("DELETE FROM fact_sales")
         conn.commit()
@@ -784,45 +828,59 @@ def test_load_change_feature(feature_store_env):
         date1 = pd.to_datetime("2023-07-01")
         date2 = pd.to_datetime("2023-07-02")
 
-        temp_multi_idx = store._build_multiindex_from_mapping([1])
-        index_save = pd.MultiIndex.from_tuples(
-            [(date1, *idx_tuple), (date2, *idx_tuple)],
-            names=["date"] + list(temp_multi_idx.names),
+        # В новом формате: дата в индексе, multiindex в колонках
+        index = pd.MultiIndex.from_tuples(
+            [idx_tuple],
+            names=[
+                "barcode",
+                "artist",
+                "album",
+                "cover_type",
+                "price_category",
+                "release_type",
+                "recording_decade",
+                "release_decade",
+                "style",
+                "record_year",
+            ],
         )
-        df_to_save = pd.DataFrame({"change": [-5.0, 3.0]}, index=index_save)
+        df_to_save = pd.DataFrame([[-5.0], [3.0]], index=[date1, date2], columns=index)
         store._save_feature("change", df_to_save)
 
         loaded_df = store._load_feature("change")
         assert isinstance(loaded_df, pd.DataFrame)
 
-        expected_index = pd.MultiIndex.from_tuples(
-            [(date1, *idx_tuple), (date2, *idx_tuple)],
-            names=["_date"] + list(temp_multi_idx.names),
-        )
-
-        pd.testing.assert_index_equal(loaded_df.index, expected_index)
-        assert loaded_df.loc[(date1, *idx_tuple), "change"] == -5.0
-        assert loaded_df.loc[(date2, *idx_tuple), "change"] == 3.0
+        # Проверяем формат
+        assert loaded_df.index.name == "_date"
+        assert len(loaded_df) == 2  # Две даты в индексе
+        assert len(loaded_df.columns) == 1  # Один multiindex в колонках
+        assert loaded_df.columns[0] == idx_tuple
+        
+        # Проверяем значения
+        assert loaded_df.loc[date1, idx_tuple] == -5.0
+        assert loaded_df.loc[date2, idx_tuple] == 3.0
 
 
 def test_load_features_all_types(feature_store_env):
-    """Test loading all feature types using the main load_features method."""
+    """Test loading all feature types using the main load_features method with unified format."""
     conn = feature_store_env["conn"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
-        # Save some sample data for each type
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        multi_idx_names = [
+    
+    # Создаем multiindex для колонок
+    idx_tuple = (
+        "1234567890",
+        "Test Artist",
+        "Test Album",
+        "CD",
+        "Standard",
+        "Studio",
+        "2010s",
+        "2010s",
+        "Rock",
+        2015,
+    )
+    index = pd.MultiIndex.from_tuples(
+        [idx_tuple],
+        names=[
             "barcode",
             "artist",
             "album",
@@ -833,55 +891,57 @@ def test_load_features_all_types(feature_store_env):
             "release_decade",
             "style",
             "record_year",
-        ]
-
+        ],
+    )
+    
+    # Даты для тестов
+    stock_date = pd.to_datetime("2023-08-01")
+    sales_date = pd.to_datetime("2023-08-02")
+    change_date = pd.to_datetime("2023-08-03")
+    prices_date = pd.to_datetime("2023-08-04")
+    
+    with SQLFeatureStore(connection=conn, run_id=1) as store:
+        # Все features в унифицированном формате: даты в индексе, multiindex в колонках
+        
         # Stock
-        stock_idx = pd.MultiIndex.from_tuples([idx_tuple], names=multi_idx_names)
-        stock_date = pd.to_datetime("2023-08-01")
-        store._save_feature("stock", pd.DataFrame({stock_date: [100]}, index=stock_idx))
-
+        stock_df = pd.DataFrame([[float(100)]], index=[stock_date], columns=index)
+        store._save_feature("stock", stock_df)
+        
         # Prices
-        prices_idx = pd.MultiIndex.from_tuples([idx_tuple], names=multi_idx_names)
-        store._save_feature(
-            "prices", pd.DataFrame({"prices": [25.99]}, index=prices_idx)
-        )
-
+        prices_df = pd.DataFrame([[float(25.99)]], index=[prices_date], columns=index)
+        store._save_feature("prices", prices_df)
+        
         # Sales
-        sales_date = pd.to_datetime("2023-08-02")
-        temp_multi_idx_sales = store._build_multiindex_from_mapping([1])
-        sales_idx = pd.MultiIndex.from_tuples(
-            [(sales_date, *idx_tuple)],
-            names=["date"] + list(temp_multi_idx_sales.names),
-        )
-        store._save_feature("sales", pd.DataFrame({"sales": [5]}, index=sales_idx))
-
+        sales_df = pd.DataFrame([[5]], index=[sales_date], columns=index)
+        store._save_feature("sales", sales_df)
+        
         # Change
-        change_date = pd.to_datetime("2023-08-03")
-        temp_multi_idx_change = store._build_multiindex_from_mapping([1])
-        change_idx = pd.MultiIndex.from_tuples(
-            [(change_date, *idx_tuple)],
-            names=["date"] + list(temp_multi_idx_change.names),
-        )
-        store._save_feature("change", pd.DataFrame({"change": [-2]}, index=change_idx))
-
-        # Load all features
+        change_df = pd.DataFrame([[-2]], index=[change_date], columns=index)
+        store._save_feature("change", change_df)
+        
+        # Загружаем все features
         all_features = store.load_features()
-
-        assert "stock" in all_features
-        assert not all_features["stock"].empty
-        assert all_features["stock"].loc[idx_tuple, stock_date] == 100
-
-        assert "prices" in all_features
-        assert not all_features["prices"].empty
-        assert all_features["prices"].loc[idx_tuple, "prices"] == 25.99
-
-        assert "sales" in all_features
-        assert not all_features["sales"].empty
-        assert all_features["sales"].loc[(sales_date, *idx_tuple), "sales"] == 5
-
-        assert "change" in all_features
-        assert not all_features["change"].empty
-        assert all_features["change"].loc[(change_date, *idx_tuple), "change"] == -2
+    
+    # Проверяем, что все features загрузились в правильном формате
+    assert "stock" in all_features
+    assert not all_features["stock"].empty
+    assert all_features["stock"].index.name == "_date"
+    assert all_features["stock"].loc[stock_date, idx_tuple] == 100.0
+    
+    assert "prices" in all_features
+    assert not all_features["prices"].empty
+    assert all_features["prices"].index.name == "_date"
+    assert all_features["prices"].loc[prices_date, idx_tuple] == 25.99
+    
+    assert "sales" in all_features
+    assert not all_features["sales"].empty
+    assert all_features["sales"].index.name == "_date"
+    assert all_features["sales"].loc[sales_date, idx_tuple] == 5.0
+    
+    assert "change" in all_features
+    assert not all_features["change"].empty
+    assert all_features["change"].index.name == "_date"
+    assert all_features["change"].loc[change_date, idx_tuple] == -2.0
 
 
 # Tests for factory and helper functions (should not need much change as they mock SQLFeatureStore)

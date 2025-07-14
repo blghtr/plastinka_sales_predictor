@@ -18,7 +18,7 @@ All external file operations and data loading are mocked to ensure test isolatio
 
 import pickle
 from pathlib import Path
-from unittest.mock import mock_open, patch
+from unittest.mock import mock_open, MagicMock
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,37 @@ from plastinka_sales_predictor.data_preparation import categorize_prices
 
 # Define path to example data
 ISOLATED_TESTS_BASE_DIR = Path("tests/example_data/isolated_tests")
+
+
+# Pytest fixtures for mocking external dependencies
+@pytest.fixture
+def mock_pickle_load():
+    """Mock for pickle.load function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_file():
+    """Mock for file operations."""
+    return mock_open()
+
+
+@pytest.fixture
+def mock_exists():
+    """Mock for pathlib.Path.exists method."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_read_excel():
+    """Mock for pandas.read_excel function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_load_data():
+    """Mock for load_sample_data function."""
+    return MagicMock()
 
 
 def load_sample_data():
@@ -48,14 +79,14 @@ def load_sample_data():
 class TestDataLoading:
     """Test suite for load_sample_data utility function."""
 
-    @patch("pathlib.Path.exists")
-    @patch("builtins.open", new_callable=mock_open)
-    @patch("pickle.load")
     def test_load_sample_data_from_pkl_success(
-        self, mock_pickle_load, mock_file, mock_exists
+        self, monkeypatch, mock_pickle_load, mock_file, mock_exists
     ):
         """Test successful loading of sample data from pkl file."""
         # Arrange
+        monkeypatch.setattr("pathlib.Path.exists", mock_exists)
+        monkeypatch.setattr("builtins.open", mock_file)
+        monkeypatch.setattr("pickle.load", mock_pickle_load)
         mock_exists.return_value = True
         sample_df = pd.DataFrame({"Цена, руб.": [100, 200, 300]})
         mock_pickle_load.return_value = sample_df
@@ -67,11 +98,11 @@ class TestDataLoading:
         pd.testing.assert_frame_equal(result, sample_df)
         mock_pickle_load.assert_called_once()
 
-    @patch("pathlib.Path.exists")
-    @patch("pandas.read_excel")
-    def test_load_sample_data_fallback_to_excel(self, mock_read_excel, mock_exists):
+    def test_load_sample_data_fallback_to_excel(self, monkeypatch, mock_read_excel, mock_exists):
         """Test fallback to Excel when pkl file doesn't exist."""
         # Arrange
+        monkeypatch.setattr("pathlib.Path.exists", mock_exists)
+        monkeypatch.setattr("pandas.read_excel", mock_read_excel)
         mock_exists.return_value = False
         sample_df = pd.DataFrame({"Цена, руб.": [100, 200, 300]})
         mock_read_excel.return_value = sample_df
@@ -83,11 +114,11 @@ class TestDataLoading:
         pd.testing.assert_frame_equal(result, sample_df)
         mock_read_excel.assert_called_once_with("tests/example_data/sample_stocks.xlsx")
 
-    @patch("pathlib.Path.exists")
-    @patch("pandas.read_excel")
-    def test_load_sample_data_excel_file_error(self, mock_read_excel, mock_exists):
+    def test_load_sample_data_excel_file_error(self, monkeypatch, mock_read_excel, mock_exists):
         """Test error handling when Excel file cannot be loaded."""
         # Arrange
+        monkeypatch.setattr("pathlib.Path.exists", mock_exists)
+        monkeypatch.setattr("pandas.read_excel", mock_read_excel)
         mock_exists.return_value = False
         mock_read_excel.side_effect = FileNotFoundError("Excel file not found")
 
@@ -273,12 +304,10 @@ class TestIntegration:
 
 
 # Preserve original test functions for compatibility
-@patch(
-    "tests.plastinka_sales_predictor.data_preparation.test_categorize_prices.load_sample_data"
-)
-def test_categorize_prices_quantiles(mock_load_data):
+def test_categorize_prices_quantiles(monkeypatch, mock_load_data):
     """Original test for price categorization with quantiles (preserved for compatibility)."""
     # Arrange: Mock the data loading
+    monkeypatch.setattr("tests.plastinka_sales_predictor.data_preparation.test_categorize_prices.load_sample_data", mock_load_data)
     sample_df = pd.DataFrame(
         {"Цена, руб.": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]}
     )
@@ -306,12 +335,10 @@ def test_categorize_prices_quantiles(mock_load_data):
     )
 
 
-@patch(
-    "tests.plastinka_sales_predictor.data_preparation.test_categorize_prices.load_sample_data"
-)
-def test_categorize_prices_with_bins(mock_load_data):
+def test_categorize_prices_with_bins(monkeypatch, mock_load_data):
     """Original test for price categorization with predefined bins (preserved for compatibility)."""
     # Arrange: Mock the data loading
+    monkeypatch.setattr("tests.plastinka_sales_predictor.data_preparation.test_categorize_prices.load_sample_data", mock_load_data)
     sample_df = pd.DataFrame(
         {"Цена, руб.": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]}
     )

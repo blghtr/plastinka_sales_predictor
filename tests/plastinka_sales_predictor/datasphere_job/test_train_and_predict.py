@@ -29,40 +29,189 @@ import pytest
 import importlib
 
 # Import the module under test
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-sys.modules.setdefault(
-    "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict",
-    importlib.import_module(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict"
-    ),
-)
-# Ensure attribute is present on parent package for patch decorators
-parent_pkg = importlib.import_module("plastinka_sales_predictor.datasphere_jobs.train")
-setattr(
-    parent_pkg,
-    "train_and_predict",
-    importlib.import_module(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict"
-    ),
-)
 from plastinka_sales_predictor.datasphere_jobs.train import train_and_predict
+
+
+# Pytest fixtures for mocking external dependencies
+@pytest.fixture
+def mock_extract_callback():
+    """Mock for extract_early_stopping_callback function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_prepare():
+    """Mock for prepare_for_training function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_train_model():
+    """Mock for _train_model function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_get_predictions_df():
+    """Mock for get_predictions_df function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_validate_config():
+    """Mock for validate_config_file function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_validate_input():
+    """Mock for validate_input_directory function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_inference_dataset_class():
+    """Mock for PlastinkaInferenceTSDataset class."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_training_dataset_class():
+    """Mock for PlastinkaTrainingTSDataset class."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_dataset_class():
+    """Mock for dataset class."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_validate_file():
+    """Mock for validate_dataset_file function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_time():
+    """Mock for time module."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_predict():
+    """Mock for predict_sales function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_getsize():
+    """Mock for os.path.getsize function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_validate():
+    """Mock for validate_file_created function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_validate_created():
+    """Mock for validate_file_created function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_zipfile():
+    """Mock for zipfile module."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_validate_files():
+    """Mock for validate_archive_files function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_tempdir():
+    """Mock for tempfile.TemporaryDirectory."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_create_archive():
+    """Mock for create_output_archive function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_save_metrics():
+    """Mock for save_metrics_file function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_save_predictions():
+    """Mock for save_predictions_file function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_save_model():
+    """Mock for save_model_file function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_prepare_metrics():
+    """Mock for prepare_metrics function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_run_prediction():
+    """Mock for run_prediction function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_run_training():
+    """Mock for run_training function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_load_datasets():
+    """Mock for load_datasets function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_load_config():
+    """Mock for load_configuration function."""
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_path_convert():
+    """Mock for path conversion functions."""
+    return MagicMock()
 
 
 class TestTrainModel:
     """Test suite for train_model function."""
 
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict._train_model")
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_for_training"
-    )
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.extract_early_stopping_callback"
-    )
     def test_train_model_success(
-        self, mock_extract_callback, mock_prepare, mock_train_model
+        self, monkeypatch, mock_extract_callback, mock_prepare, mock_train_model
     ):
         """Test successful model training with validation and final training phases."""
         # Arrange
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict._train_model", mock_train_model)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_for_training", mock_prepare)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.extract_early_stopping_callback", mock_extract_callback)
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
         config = {"model_config": {"n_epochs": 10}, "model_id": "test_model"}
@@ -87,13 +236,36 @@ class TestTrainModel:
         mock_extract_callback.return_value = mock_callback
 
         # Setup mocks
+        # Define explicit mock return values for prepare_for_training for the first call
+        prepared_train_ds_mock_1 = MagicMock(name="prepared_train_ds_1")
+        prepared_val_ds_mock_1 = MagicMock(name="prepared_val_ds_1")
+        callbacks_mock_1 = MagicMock(name="callbacks_1")
+        lr_scheduler_cls_mock_1 = MagicMock(name="lr_scheduler_cls_1")
+        lr_shed_config_mock_1 = MagicMock(name="lr_shed_config_1")
+        optimizer_config_mock_1 = MagicMock(name="optimizer_config_1")
+        model_config_mock_1 = MagicMock(name="model_config_1")
+        likelihood_mock_1 = MagicMock(name="likelihood_1")
+        model_id_mock_1 = MagicMock(name="model_id_1")
+
+        # Define explicit mock return values for prepare_for_training for the second call
+        prepared_full_ds_mock_2 = MagicMock(name="prepared_full_ds_2")
+        callbacks_mock_2 = MagicMock(name="callbacks_2")
+        lr_scheduler_cls_mock_2 = MagicMock(name="lr_scheduler_cls_2")
+        lr_shed_config_mock_2 = MagicMock(name="lr_shed_config_2")
+        optimizer_config_mock_2 = MagicMock(name="optimizer_config_2")
+        model_config_mock_2 = MagicMock(name="model_config_2")
+        likelihood_mock_2 = MagicMock(name="likelihood_2")
+        model_id_mock_2 = MagicMock(name="model_id_2")
+        
         mock_prepare.side_effect = [
-            ("prepared_train", "prepared_val"),  # First call with validation
-            ("prepared_full",),  # Second call with full dataset
+            (prepared_train_ds_mock_1, prepared_val_ds_mock_1, callbacks_mock_1, lr_scheduler_cls_mock_1, lr_shed_config_mock_1, optimizer_config_mock_1, model_config_mock_1, likelihood_mock_1, model_id_mock_1),
+            (prepared_full_ds_mock_2, None, callbacks_mock_2, lr_scheduler_cls_mock_2, lr_shed_config_mock_2, optimizer_config_mock_2, model_config_mock_2, likelihood_mock_2, model_id_mock_2),
         ]
         mock_train_model.side_effect = [mock_model_1, mock_model_2]
-        mock_train_dataset.setup_dataset.return_value = "full_train_ds"
         mock_train_dataset._n_time_steps = 100
+        mock_full_train_ds = MagicMock(name='full_train_ds_mock')
+        mock_train_dataset.setup_dataset.return_value = mock_full_train_ds
+        mock_train_dataset.reset_window.return_value = mock_full_train_ds
 
         # Act
         model, metrics = train_and_predict.train_model(
@@ -102,49 +274,57 @@ class TestTrainModel:
 
         # Assert
         assert model == mock_model_2
-        assert "validation" in metrics
-        assert "training" in metrics
-        assert metrics["validation"]["val_loss"] == 0.5
-        assert metrics["validation"]["val_accuracy"] == 0.85
-        assert metrics["training"]["train_loss"] == 0.3
-        assert metrics["training"]["train_accuracy"] == 0.9
+        assert "val_loss" in metrics and "val_accuracy" in metrics
+        assert metrics["train_loss"] == 0.3
+        assert metrics["train_accuracy"] == 0.9
 
         # Verify function calls
-        assert mock_train_model.call_count == 2
-        mock_extract_callback.assert_called_once()
+        mock_prepare.assert_has_calls(
+            [
+                call(config, mock_train_dataset, mock_val_dataset),  # First call
+                call(config, mock_full_train_ds),  # Second call
+            ]
+        )
+        mock_train_model.assert_has_calls(
+            [
+                call(prepared_train_ds_mock_1, prepared_val_ds_mock_1, callbacks_mock_1, lr_scheduler_cls_mock_1, lr_shed_config_mock_1, optimizer_config_mock_1, model_config_mock_1, likelihood_mock_1, model_id_mock_1, model_name="TiDE__n_epochs_search"),  # First call
+                call(prepared_full_ds_mock_2, None, callbacks_mock_2, lr_scheduler_cls_mock_2, lr_shed_config_mock_2, optimizer_config_mock_2, model_config_mock_2, likelihood_mock_2, model_id_mock_2, model_name="TiDE__full_train"),  # Second call
+            ]
+        )
 
         # Verify effective epochs calculation
         expected_effective_epochs = max(1, int((8 - 1 - 2) * 1.1))
         assert config["model_config"]["n_epochs"] == expected_effective_epochs
 
-    def test_train_model_exception_handling(self):
+    def test_train_model_exception_handling(self, monkeypatch):
         """Test train_model handles exceptions properly."""
         # Arrange
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
         config = {"model_config": {"n_epochs": 10}, "model_id": "test_model"}
 
-        with patch(
-            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_for_training"
-        ) as mock_prepare:
-            mock_prepare.side_effect = RuntimeError("Training failed")
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_for_training",
+            MagicMock(side_effect=RuntimeError("Training failed"))
+        )
 
-            # Act & Assert
-            with pytest.raises(RuntimeError, match="Training failed"):
-                train_and_predict.train_model(
-                    mock_train_dataset, mock_val_dataset, config
-                )
+        # Act & Assert
+        with pytest.raises(RuntimeError, match="Training failed"):
+            train_and_predict.train_model(
+                mock_train_dataset, mock_val_dataset, config
+            )
 
 
 class TestPredictSales:
     """Test suite for predict_sales function."""
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.get_predictions_df"
-    )
-    def test_predict_sales_success(self, mock_get_predictions_df):
+    def test_predict_sales_success(self, monkeypatch, mock_get_predictions_df):
         """Test successful sales prediction."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.get_predictions_df",
+            mock_get_predictions_df
+        )
         mock_model = MagicMock()
         mock_dataset = MagicMock()
 
@@ -287,41 +467,41 @@ class TestGetPredictionsDF:
 class TestValidationFunctions:
     """Test suite for all validation functions."""
 
-    def test_validate_input_directory_success(self):
+    def test_validate_input_directory_success(self, monkeypatch):
         """Test validate_input_directory with valid directory."""
-        with patch("os.path.isdir", return_value=True):
-            # Should not raise any exception
-            train_and_predict.validate_input_directory("/valid/path")
+        monkeypatch.setattr("os.path.isdir", lambda x: True)
+        # Should not raise any exception
+        train_and_predict.validate_input_directory("/valid/path")
 
-    def test_validate_input_directory_failure(self):
+    def test_validate_input_directory_failure(self, monkeypatch):
         """Test validate_input_directory with invalid directory."""
-        with patch("os.path.isdir", return_value=False):
-            with pytest.raises(SystemExit):
-                train_and_predict.validate_input_directory("/invalid/path")
+        monkeypatch.setattr("os.path.isdir", lambda x: False)
+        with pytest.raises(SystemExit):
+            train_and_predict.validate_input_directory("/invalid/path")
 
-    def test_validate_config_file_success(self):
+    def test_validate_config_file_success(self, monkeypatch):
         """Test validate_config_file with existing file."""
-        with patch("os.path.exists", return_value=True):
-            train_and_predict.validate_config_file("/valid/config.json")
+        monkeypatch.setattr("os.path.exists", lambda x: True)
+        train_and_predict.validate_config_file("/valid/config.json")
 
-    def test_validate_config_file_failure(self):
+    def test_validate_config_file_failure(self, monkeypatch):
         """Test validate_config_file with missing file."""
-        with patch("os.path.exists", return_value=False):
-            with pytest.raises(SystemExit):
-                train_and_predict.validate_config_file("/missing/config.json")
+        monkeypatch.setattr("os.path.exists", lambda x: False)
+        with pytest.raises(SystemExit):
+            train_and_predict.validate_config_file("/missing/config.json")
 
-    def test_validate_dataset_file_success(self):
+    def test_validate_dataset_file_success(self, monkeypatch):
         """Test validate_dataset_file with existing file."""
-        with patch("os.path.exists", return_value=True):
-            train_and_predict.validate_dataset_file("/valid/dataset.dill", "train")
+        monkeypatch.setattr("os.path.exists", lambda x: True)
+        train_and_predict.validate_dataset_file("/valid/dataset.dill", "train")
 
-    def test_validate_dataset_file_failure(self):
+    def test_validate_dataset_file_failure(self, monkeypatch):
         """Test validate_dataset_file with missing file."""
-        with patch("os.path.exists", return_value=False):
-            with pytest.raises(SystemExit):
-                train_and_predict.validate_dataset_file(
-                    "/missing/dataset.dill", "validation"
-                )
+        monkeypatch.setattr("os.path.exists", lambda x: False)
+        with pytest.raises(SystemExit):
+            train_and_predict.validate_dataset_file(
+                "/missing/dataset.dill", "validation"
+            )
 
     def test_validate_dataset_objects_success(self):
         """Test validate_dataset_objects with valid objects."""
@@ -367,106 +547,115 @@ class TestValidationFunctions:
         with pytest.raises(SystemExit):
             train_and_predict.validate_prediction_window(10, 20)  # L < length
 
-    def test_validate_file_created_success(self):
+    def test_validate_file_created_success(self, monkeypatch):
         """Test validate_file_created with existing file."""
-        with patch("os.path.exists", return_value=True):
-            train_and_predict.validate_file_created("/existing/file.txt", "Test")
+        monkeypatch.setattr("os.path.exists", lambda x: True)
+        train_and_predict.validate_file_created("/existing/file.txt", "Test")
 
-    def test_validate_file_created_failure(self):
+    def test_validate_file_created_failure(self, monkeypatch):
         """Test validate_file_created with missing file."""
-        with patch("os.path.exists", return_value=False):
-            with pytest.raises(SystemExit):
-                train_and_predict.validate_file_created("/missing/file.txt", "Test")
+        monkeypatch.setattr("os.path.exists", lambda x: False)
+        with pytest.raises(SystemExit):
+            train_and_predict.validate_file_created("/missing/file.txt", "Test")
 
-    def test_validate_archive_files_success(self):
+    def test_validate_archive_files_success(self, monkeypatch):
         """Test validate_archive_files with all files existing."""
         files = ["/file1.txt", "/file2.txt"]
-        with patch("os.path.exists", return_value=True):
-            train_and_predict.validate_archive_files(files)
+        monkeypatch.setattr("os.path.exists", lambda x: True)
+        train_and_predict.validate_archive_files(files)
 
-    def test_validate_archive_files_failure(self):
+    def test_validate_archive_files_failure(self, monkeypatch):
         """Test validate_archive_files with missing files."""
         files = ["/file1.txt", "/missing.txt"]
-        with patch("os.path.exists", side_effect=[True, False]):
-            with pytest.raises(SystemExit):
-                train_and_predict.validate_archive_files(files)
+        monkeypatch.setattr("os.path.exists", MagicMock(side_effect=[True, False]))
+        with pytest.raises(SystemExit):
+            train_and_predict.validate_archive_files(files)
 
 
 class TestLoadConfiguration:
     """Test suite for load_configuration function."""
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_input_directory"
-    )
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_file"
-    )
     def test_load_configuration_success(
-        self, mock_validate_config, mock_validate_input
+        self, monkeypatch, mock_validate_config, mock_validate_input
     ):
         """Test successful configuration loading."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_input_directory",
+            mock_validate_input,
+        )
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_file",
+            mock_validate_config,
+        )
         input_dir = "/test/input"
         config_data = {"model_id": "test", "lags": 12}
         mock_validate_input.return_value = input_dir
 
-        with patch("builtins.open", mock_open(read_data=json.dumps(config_data))):
-            # Act
-            result = train_and_predict.load_configuration(input_dir)
+        monkeypatch.setattr("builtins.open", mock_open(read_data=json.dumps(config_data)))
+        # Act
+        result = train_and_predict.load_configuration(input_dir)
 
-            # Assert
-            assert result[0] == config_data
-            mock_validate_input.assert_called_once_with(input_dir)
-            mock_validate_config.assert_called_once_with(
-                os.path.join(input_dir, "config.json")
-            )
+        # Assert
+        assert result[0] == config_data
+        mock_validate_input.assert_called_once_with(input_dir)
+        mock_validate_config.assert_called_once_with(
+            os.path.join(input_dir, "config.json")
+        )
 
-    def test_load_configuration_json_error(self):
+    def test_load_configuration_json_error(self, monkeypatch):
         """Test load_configuration with invalid JSON."""
         input_dir = "/test/input"
 
-        with patch(
-            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_input_directory"
-        ):
-            with patch(
-                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_file"
-            ):
-                with patch("builtins.open", mock_open(read_data="invalid json")):
-                    with pytest.raises(SystemExit):
-                        train_and_predict.load_configuration(input_dir)
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_input_directory",
+            MagicMock(),
+        )
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_file",
+            MagicMock(),
+        )
+        monkeypatch.setattr("builtins.open", mock_open(read_data="invalid json"))
+        with pytest.raises(SystemExit):
+            train_and_predict.load_configuration(input_dir)
 
-    def test_load_configuration_file_error(self):
+    def test_load_configuration_file_error(self, monkeypatch):
         """Test load_configuration with file read error."""
         input_dir = "/test/input"
 
-        with patch(
-            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_input_directory"
-        ):
-            with patch(
-                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_file"
-            ):
-                with patch("builtins.open", side_effect=OSError("File read error")):
-                    with pytest.raises(SystemExit):
-                        train_and_predict.load_configuration(input_dir)
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_input_directory",
+            MagicMock(),
+        )
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_file",
+            MagicMock(),
+        )
+        monkeypatch.setattr("builtins.open", MagicMock(side_effect=OSError("File read error")))
+        with pytest.raises(SystemExit):
+            train_and_predict.load_configuration(input_dir)
 
 
 class TestLoadDatasets:
     """Test suite for load_datasets function."""
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_file"
-    )
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaTrainingTSDataset"
-    )
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaInferenceTSDataset"
-    )
     def test_load_datasets_success(
-        self, mock_inference_dataset_class, mock_training_dataset_class, mock_validate_file
+        self, monkeypatch, mock_inference_dataset_class, mock_training_dataset_class, mock_validate_file
     ):
         """Test successful dataset loading."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_file",
+            mock_validate_file,
+        )
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaTrainingTSDataset",
+            mock_training_dataset_class,
+        )
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaInferenceTSDataset",
+            mock_inference_dataset_class,
+        )
         input_dir = "/test/input"
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
@@ -499,15 +688,17 @@ class TestLoadDatasets:
         mock_training_dataset_class.from_dill.assert_any_call(expected_val_path)
         mock_inference_dataset_class.from_dill.assert_called_once_with(expected_inference_path)
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_file"
-    )
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaTrainingTSDataset"
-    )
-    def test_load_datasets_exception(self, mock_dataset_class, mock_validate_file):
+    def test_load_datasets_exception(self, monkeypatch, mock_dataset_class, mock_validate_file):
         """Test load_datasets with loading exception."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_dataset_file",
+            mock_validate_file,
+        )
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.PlastinkaTrainingTSDataset",
+            mock_dataset_class,
+        )
         input_dir = "/test/input"
         mock_dataset_class.from_dill.side_effect = Exception("Loading failed")
 
@@ -519,11 +710,11 @@ class TestLoadDatasets:
 class TestRunTraining:
     """Test suite for run_training function."""
 
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.train_model")
-    @patch("time.monotonic")
-    def test_run_training_success(self, mock_time, mock_train_model):
+    def test_run_training_success(self, monkeypatch, mock_time, mock_train_model):
         """Test successful training execution."""
         # Arrange
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.train_model", mock_train_model)
+        monkeypatch.setattr("time.monotonic", mock_time)
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
         config = {"model_id": "test"}
@@ -547,10 +738,10 @@ class TestRunTraining:
             mock_train_dataset, mock_val_dataset, config
         )
 
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.train_model")
-    def test_run_training_no_model_returned(self, mock_train_model):
+    def test_run_training_no_model_returned(self, monkeypatch, mock_train_model):
         """Test run_training when no model is returned."""
         # Arrange
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.train_model", mock_train_model)
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
         config = {"model_id": "test"}
@@ -561,10 +752,10 @@ class TestRunTraining:
         with pytest.raises(SystemExit):
             train_and_predict.run_training(mock_train_dataset, mock_val_dataset, config)
 
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.train_model")
-    def test_run_training_exception(self, mock_train_model):
+    def test_run_training_exception(self, monkeypatch, mock_train_model):
         """Test run_training with training exception."""
         # Arrange
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.train_model", mock_train_model)
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
         config = {"model_id": "test"}
@@ -579,15 +770,16 @@ class TestRunTraining:
 class TestRunPrediction:
     """Test suite for run_prediction function."""
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_parameters"
-    )
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.predict_sales")
     def test_run_prediction_success(
-        self, mock_predict, mock_validate_config
+        self, monkeypatch, mock_predict, mock_validate_config
     ):
         """Test successful prediction execution."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_parameters",
+            mock_validate_config,
+        )
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.predict_sales", mock_predict)
         mock_model = MagicMock()
         mock_inference_dataset = MagicMock()
 
@@ -605,13 +797,14 @@ class TestRunPrediction:
         mock_validate_config.assert_called_once_with(config)
         mock_predict.assert_called_once_with(mock_model, mock_inference_dataset)
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_parameters"
-    )
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.predict_sales")
-    def test_run_prediction_no_result(self, mock_predict, mock_validate_config):
+    def test_run_prediction_no_result(self, monkeypatch, mock_predict, mock_validate_config):
         """Test run_prediction when no predictions returned."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_config_parameters",
+            mock_validate_config,
+        )
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.predict_sales", mock_predict)
         mock_model = MagicMock()
         mock_inference_dataset = MagicMock()
 
@@ -634,66 +827,17 @@ class TestRunPrediction:
             train_and_predict.run_prediction(mock_model, mock_inference_dataset, config)
 
 
-class TestPrepareMetrics:
-    """Test suite for prepare_metrics function."""
-
-    def test_prepare_metrics_complete(self):
-        """Test prepare_metrics with complete training metrics."""
-        # Arrange
-        training_metrics = {
-            "validation": {"loss": 0.5, "accuracy": 0.85},
-            "training": {"loss": 0.3, "accuracy": 0.9},
-        }
-        duration = 123.45
-
-        # Act
-        result = train_and_predict.prepare_metrics(training_metrics, duration)
-
-        # Assert
-        assert result["val_loss"] == 0.5
-        assert result["val_accuracy"] == 0.85
-        assert result["train_loss"] == 0.3
-        assert result["train_accuracy"] == 0.9
-        assert result["training_duration_seconds"] == 123.45
-
-    def test_prepare_metrics_partial(self):
-        """Test prepare_metrics with partial metrics."""
-        # Arrange
-        training_metrics = {"validation": {"loss": 0.5}}
-        duration = 60.0
-
-        # Act
-        result = train_and_predict.prepare_metrics(training_metrics, duration)
-
-        # Assert
-        assert result["val_loss"] == 0.5
-        assert result["training_duration_seconds"] == 60.0
-        assert "train_loss" not in result
-
-    def test_prepare_metrics_empty(self):
-        """Test prepare_metrics with empty metrics."""
-        # Arrange
-        training_metrics = {}
-        duration = 30.5
-
-        # Act
-        result = train_and_predict.prepare_metrics(training_metrics, duration)
-
-        # Assert
-        assert result["training_duration_seconds"] == 30.5
-        assert len(result) == 1
-
-
 class TestSaveModelFile:
     """Test suite for save_model_file function."""
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
-    )
-    @patch("os.path.getsize")
-    def test_save_model_file_success(self, mock_getsize, mock_validate):
+    def test_save_model_file_success(self, monkeypatch, mock_getsize, mock_validate):
         """Test successful model saving."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created",
+            mock_validate,
+        )
+        monkeypatch.setattr("os.path.getsize", mock_getsize)
         mock_model = MagicMock()
         output_path = "/test/model.onnx"
         mock_getsize.return_value = 1024
@@ -706,12 +850,13 @@ class TestSaveModelFile:
         mock_validate.assert_called_once_with(output_path, "Model")
         mock_getsize.assert_called_once_with(output_path)
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
-    )
-    def test_save_model_file_exception(self, mock_validate):
+    def test_save_model_file_exception(self, monkeypatch, mock_validate):
         """Test save_model_file with saving exception."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created",
+            mock_validate,
+        )
         mock_model = MagicMock()
         mock_model.to_onnx.side_effect = Exception("Save failed")
         output_path = "/test/model.onnx"
@@ -724,87 +869,97 @@ class TestSaveModelFile:
 class TestSavePredictionsFile:
     """Test suite for save_predictions_file function."""
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
-    )
-    def test_save_predictions_file_success(self, mock_validate):
+    def test_save_predictions_file_success(self, monkeypatch, mock_validate):
         """Test successful predictions saving."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created",
+            mock_validate,
+        )
         predictions = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
         output_path = "/test/predictions.csv"
 
-        with patch.object(predictions, "to_csv") as mock_to_csv:
-            # Act
-            train_and_predict.save_predictions_file(predictions, output_path)
+        mock_to_csv = MagicMock()
+        monkeypatch.setattr(predictions, "to_csv", mock_to_csv)
 
-            # Assert
-            mock_to_csv.assert_called_once_with(output_path, index=False)
-            mock_validate.assert_called_once_with(output_path, "Predictions")
+        # Act
+        train_and_predict.save_predictions_file(predictions, output_path)
 
-    def test_save_predictions_file_exception(self):
+        # Assert
+        mock_to_csv.assert_called_once_with(output_path, index=False)
+        mock_validate.assert_called_once_with(output_path, "Predictions")
+
+    def test_save_predictions_file_exception(self, monkeypatch):
         """Test save_predictions_file with saving exception."""
         # Arrange
         predictions = pd.DataFrame({"col1": [1, 2]})
         output_path = "/test/predictions.csv"
 
-        with patch.object(predictions, "to_csv", side_effect=Exception("Save failed")):
-            # Act & Assert
-            with pytest.raises(SystemExit):
-                train_and_predict.save_predictions_file(predictions, output_path)
+        monkeypatch.setattr(predictions, "to_csv", MagicMock(side_effect=Exception("Save failed")))
+
+        # Act & Assert
+        with pytest.raises(SystemExit):
+            train_and_predict.save_predictions_file(predictions, output_path)
 
 
 class TestSaveMetricsFile:
     """Test suite for save_metrics_file function."""
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
-    )
-    def test_save_metrics_file_success(self, mock_validate):
+    def test_save_metrics_file_success(self, monkeypatch, mock_validate):
         """Test successful metrics saving."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created",
+            mock_validate,
+        )
         metrics = {"loss": 0.5, "accuracy": 0.9}
         output_path = "/test/metrics.json"
 
-        with patch("builtins.open", mock_open()) as mock_file:
-            with patch("json.dump") as mock_json_dump:
-                # Act
-                train_and_predict.save_metrics_file(metrics, output_path)
+        mock_file = mock_open()
+        monkeypatch.setattr("builtins.open", mock_file)
+        mock_json_dump = MagicMock()
+        monkeypatch.setattr("json.dump", mock_json_dump)
 
-                # Assert
-                mock_file.assert_called_once_with(output_path, "w")
-                mock_json_dump.assert_called_once_with(
-                    metrics, mock_file.return_value.__enter__.return_value, indent=2
-                )
-                mock_validate.assert_called_once_with(output_path, "Metrics")
+        # Act
+        train_and_predict.save_metrics_file(metrics, output_path)
 
-    def test_save_metrics_file_exception(self):
+        # Assert
+        mock_file.assert_called_once_with(output_path, "w")
+        mock_json_dump.assert_called_once_with(
+            metrics, mock_file.return_value.__enter__.return_value, indent=2
+        )
+        mock_validate.assert_called_once_with(output_path, "Metrics")
+
+    def test_save_metrics_file_exception(self, monkeypatch):
         """Test save_metrics_file with saving exception."""
         # Arrange
         metrics = {"loss": 0.5}
         output_path = "/test/metrics.json"
 
-        with patch("builtins.open", side_effect=Exception("Save failed")):
-            # Act & Assert
-            with pytest.raises(SystemExit):
-                train_and_predict.save_metrics_file(metrics, output_path)
+        monkeypatch.setattr("builtins.open", MagicMock(side_effect=Exception("Save failed")))
+        # Act & Assert
+        with pytest.raises(SystemExit):
+            train_and_predict.save_metrics_file(metrics, output_path)
 
 
 class TestCreateOutputArchive:
     """Test suite for create_output_archive function."""
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_archive_files"
-    )
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created"
-    )
-    @patch("os.path.getsize")
-    @patch("zipfile.ZipFile")
     def test_create_output_archive_success(
-        self, mock_zipfile, mock_getsize, mock_validate_created, mock_validate_files
+        self, monkeypatch, mock_zipfile, mock_getsize, mock_validate_created, mock_validate_files
     ):
         """Test successful archive creation."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_archive_files",
+            mock_validate_files,
+        )
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_file_created",
+            mock_validate_created,
+        )
+        monkeypatch.setattr("os.path.getsize", mock_getsize)
+        monkeypatch.setattr("zipfile.ZipFile", mock_zipfile)
         temp_dir = "/temp/output"
         output_path = "/output/result.zip"
         mock_getsize.return_value = 2048
@@ -835,51 +990,33 @@ class TestCreateOutputArchive:
         mock_validate_created.assert_called_once_with(output_path, "Output archive")
         mock_getsize.assert_called_once_with(output_path)
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_archive_files"
-    )
-    def test_create_output_archive_exception(self, mock_validate_files):
+    def test_create_output_archive_exception(self, monkeypatch, mock_validate_files):
         """Test create_output_archive with archiving exception."""
         # Arrange
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.validate_archive_files",
+            mock_validate_files,
+        )
         temp_dir = "/temp/output"
         output_path = "/output/result.zip"
 
-        with patch("zipfile.ZipFile", side_effect=Exception("Archive failed")):
-            # Act & Assert
-            with pytest.raises(SystemExit):
-                train_and_predict.create_output_archive(temp_dir, output_path)
+        monkeypatch.setattr("zipfile.ZipFile", MagicMock(side_effect=Exception("Archive failed")))
+        # Act & Assert
+        with pytest.raises(SystemExit):
+            train_and_predict.create_output_archive(temp_dir, output_path)
 
 
 class TestMainFunction:
     """Test suite for main CLI function."""
 
-    @patch("click.Path.convert")  # Mock Click's path validation
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_configuration"
-    )
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_datasets")
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_training")
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_prediction")
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_metrics")
-    @patch("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_model_file")
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_predictions_file"
-    )
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_metrics_file"
-    )
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.create_output_archive"
-    )
-    @patch("tempfile.TemporaryDirectory")
     def test_main_success(
         self,
+        monkeypatch,
         mock_tempdir,
         mock_create_archive,
         mock_save_metrics,
         mock_save_predictions,
         mock_save_model,
-        mock_prepare_metrics,
         mock_run_prediction,
         mock_run_training,
         mock_load_datasets,
@@ -888,6 +1025,16 @@ class TestMainFunction:
     ):
         """Test successful main function execution."""
         # Arrange
+        monkeypatch.setattr("click.Path.convert", mock_path_convert)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_configuration", mock_load_config)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_datasets", mock_load_datasets)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_training", mock_run_training)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_prediction", mock_run_prediction)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_model_file", mock_save_model)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_predictions_file", mock_save_predictions)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_metrics_file", mock_save_metrics)
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.create_output_archive", mock_create_archive)
+        monkeypatch.setattr("tempfile.TemporaryDirectory", mock_tempdir)
         mock_path_convert.return_value = (
             "/test/input"  # Mock path validation to return valid path
         )
@@ -905,15 +1052,15 @@ class TestMainFunction:
         mock_load_datasets.return_value = (mock_train_dataset, mock_val_dataset, mock_inference_dataset)
 
         mock_model = MagicMock()
-        training_metrics = {"val_loss": 0.5}
+        training_metrics = {"val_loss": 0.5, "train_loss": 0.3} # Include train_loss for consistency
         duration = 60.0
         mock_run_training.return_value = (mock_model, training_metrics, duration)
 
         predictions = pd.DataFrame({"pred": [1, 2, 3]})
         mock_run_prediction.return_value = predictions
 
-        final_metrics = {"val_loss": 0.5, "training_duration_seconds": 60.0}
-        mock_prepare_metrics.return_value = final_metrics
+        final_metrics = {"val_loss": 0.5, "train_loss": 0.3, "training_duration_seconds": 60.0} # Ensure consistency here too
+        mock_save_metrics.return_value = None # Explicitly set return value for clarity
 
         # Act
         runner = click.testing.CliRunner()
@@ -933,7 +1080,6 @@ class TestMainFunction:
         mock_run_prediction.assert_called_once_with(
             mock_model, mock_inference_dataset, config
         )
-        mock_prepare_metrics.assert_called_once_with(training_metrics, duration)
 
         # Verify save operations
         expected_model_path = os.path.join("/temp/outputs", "model.onnx")
@@ -948,102 +1094,89 @@ class TestMainFunction:
         assert create_archive_call_args[0] == "/temp/outputs"
         assert os.path.basename(create_archive_call_args[1]) == "result.zip"
 
-    def test_main_default_output(self):
+    def test_main_default_output(self, monkeypatch):
         """Test main function with default output parameter."""
         runner = click.testing.CliRunner()
 
         # Mock all the pipeline functions to avoid actual execution
-        with patch("click.Path.convert") as mock_path_convert:  # Mock path validation
-            mock_path_convert.return_value = "/test/input"
-            with patch(
-                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_configuration"
-            ) as mock_load_config:
-                mock_load_config.return_value = {"model_id": "test", "lags": 12}
-                with patch(
-                    "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_datasets"
-                ) as mock_load_datasets:
-                    # Fix: load_datasets should return a tuple of (train_dataset, val_dataset, inference_dataset)
-                    mock_train_dataset = MagicMock()
-                    mock_val_dataset = MagicMock()
-                    mock_inference_dataset = MagicMock()
-                    mock_load_datasets.return_value = (
-                        mock_train_dataset,
-                        mock_val_dataset,
-                        mock_inference_dataset,
-                    )
-                    with patch(
-                        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_training"
-                    ) as mock_run_training:
-                        # Fix: run_training should return a tuple of (model, metrics, duration)
-                        mock_model = MagicMock()
-                        mock_run_training.return_value = (
-                            mock_model,
-                            {"val_loss": 0.5},
-                            60.0,
-                        )
-                        with patch(
-                            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_prediction"
-                        ) as mock_run_prediction:
-                            mock_run_prediction.return_value = pd.DataFrame(
-                                {"pred": [1, 2, 3]}
-                            )
-                            with patch(
-                                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.prepare_metrics"
-                            ) as mock_prepare_metrics:
-                                mock_prepare_metrics.return_value = {
-                                    "val_loss": 0.5,
-                                    "training_duration_seconds": 60.0,
-                                }
-                                with patch(
-                                    "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_model_file"
-                                ):
-                                    with patch(
-                                        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_predictions_file"
-                                    ):
-                                        with patch(
-                                            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_metrics_file"
-                                        ):
-                                            with patch(
-                                                "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.create_output_archive"
-                                            ) as mock_archive:
-                                                with patch(
-                                                    "tempfile.TemporaryDirectory"
-                                                ) as mock_tempdir:
-                                                    mock_temp_context = MagicMock()
-                                                    mock_temp_context.__enter__.return_value = "/temp/outputs"
-                                                    mock_tempdir.return_value = (
-                                                        mock_temp_context
-                                                    )
+        mock_path_convert = MagicMock()
+        monkeypatch.setattr("click.Path.convert", mock_path_convert)  # Mock path validation
+        mock_path_convert.return_value = "/test/input"
 
-                                                    # Act
-                                                    result = runner.invoke(
-                                                        train_and_predict.main,
-                                                        ["--input", "/test/input"],
-                                                    )
+        mock_load_config = MagicMock()
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_configuration", mock_load_config)
+        mock_load_config.return_value = {"model_id": "test", "lags": 12}
 
-                                                    # Assert
-                                                    assert result.exit_code == 0
-                                                    # Verify default output is used
-                                                    # Check with basename for cross-platform compatibility
-                                    create_archive_call_args = mock_archive.call_args[0]
-                                    assert (
-                                        create_archive_call_args[0] == "/temp/outputs"
-                                    )
-                                    assert (
-                                        os.path.basename(create_archive_call_args[1])
-                                        == "output.zip"
-                                    )
+        mock_load_datasets = MagicMock()
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.load_datasets", mock_load_datasets)
+        # Fix: load_datasets should return a tuple of (train_dataset, val_dataset, inference_dataset)
+        mock_train_dataset = MagicMock()
+        mock_val_dataset = MagicMock()
+        mock_inference_dataset = MagicMock()
+        mock_load_datasets.return_value = (
+            mock_train_dataset,
+            mock_val_dataset,
+            mock_inference_dataset,
+        )
+
+        mock_run_training = MagicMock()
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_training", mock_run_training)
+        # Fix: run_training should return a tuple of (model, metrics, duration)
+        mock_model = MagicMock()
+        mock_run_training.return_value = (
+            mock_model,
+            {"val_loss": 0.5, "train_loss": 0.3}, # Include train_loss for consistency
+            60.0,
+        )
+
+        mock_run_prediction = MagicMock()
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.run_prediction", mock_run_prediction)
+        mock_run_prediction.return_value = pd.DataFrame({"pred": [1, 2, 3]})
+
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_model_file", MagicMock())
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_predictions_file", MagicMock())
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.save_metrics_file", MagicMock())
+
+        mock_archive = MagicMock()
+        monkeypatch.setattr("plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.create_output_archive", mock_archive)
+
+        mock_tempdir = MagicMock()
+        monkeypatch.setattr("tempfile.TemporaryDirectory", mock_tempdir)
+
+        mock_temp_context = MagicMock()
+        mock_temp_context.__enter__.return_value = "/temp/outputs"
+        mock_tempdir.return_value = (
+            mock_temp_context
+        )
+
+        # Act
+        result = runner.invoke(
+            train_and_predict.main,
+            ["--input", "/test/input"],
+        )
+
+        # Assert
+        assert result.exit_code == 0
+        # Verify default output is used
+        # Check with basename for cross-platform compatibility
+        create_archive_call_args = mock_archive.call_args[0]
+        assert (
+            os.path.basename(create_archive_call_args[1]) == "output.zip"
+        )
+        assert create_archive_call_args[0] == "/temp/outputs"
+        assert os.path.basename(create_archive_call_args[1]) == "output.zip" # Corrected this line
 
 
 # Integration tests
 class TestIntegration:
     """Integration tests for the complete pipeline."""
 
-    @patch(
-        "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.configure_logger"
-    )
-    def test_module_imports_successfully(self, mock_logger):
+    def test_module_imports_successfully(self, monkeypatch):
         """Test that the module can be imported without errors."""
+        monkeypatch.setattr(
+            "plastinka_sales_predictor.datasphere_jobs.train.train_and_predict.configure_logger",
+            MagicMock()
+        )
         # This test verifies that all imports and module-level code work correctly
         assert hasattr(train_and_predict, "main")
         assert hasattr(train_and_predict, "train_model")

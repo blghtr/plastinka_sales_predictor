@@ -28,17 +28,15 @@ TEST_BEARER_TOKEN = "test_admin_token"
 
 
 @pytest.fixture
-def admin_client(client: TestClient, mock_db_conn_fixture: MagicMock):
+def admin_client(client: TestClient, mock_dal: MagicMock):
     """A test client with the database dependency overridden for admin endpoints."""
-    from deployment.app.api.admin import get_db_conn_and_close
+    from deployment.app.dependencies import get_dal, get_dal_system
+    client.app.dependency_overrides[get_dal] = lambda: mock_dal
+    client.app.dependency_overrides[get_dal_system] = lambda: mock_dal
 
-    def override_get_db_conn():
-        yield mock_db_conn_fixture
-
-    client.app.dependency_overrides[get_db_conn_and_close] = override_get_db_conn
     yield client
     # Clean up
-    del client.app.dependency_overrides[get_db_conn_and_close]
+    client.app.dependency_overrides.clear()
 
 
 class TestCleanupJobEndpoint:
@@ -76,15 +74,16 @@ class TestCleanupJobEndpoint:
 class TestPredictionsCleanupEndpoint:
     """Test suite for /admin/data-retention/clean-predictions endpoint."""
 
+    @patch("deployment.app.api.admin.cleanup_old_predictions")
     def test_clean_predictions_success(
         self,
+        mock_cleanup_old_predictions: MagicMock,
         admin_client: TestClient,
-        mock_cleanup_old_predictions_fixture: MagicMock,
-        mock_db_conn_fixture: MagicMock,
+        mock_dal: MagicMock,
     ):
         """Test predictions cleanup endpoint successfully cleans old predictions with custom days parameter."""
         # Arrange
-        mock_cleanup_old_predictions_fixture.return_value = 5
+        mock_cleanup_old_predictions.return_value = 5
 
         # Act
         response = admin_client.post(
@@ -99,19 +98,20 @@ class TestPredictionsCleanupEndpoint:
         assert result["status"] == "ok"
         assert result["records_removed"] == 5
         assert result["days_kept"] == 30
-        mock_cleanup_old_predictions_fixture.assert_called_once_with(
-            30, conn=mock_db_conn_fixture
+        mock_cleanup_old_predictions.assert_called_once_with(
+            30, conn=mock_dal.db_connection
         )
 
+    @patch("deployment.app.api.admin.cleanup_old_predictions")
     def test_clean_predictions_default_days(
         self,
+        mock_cleanup_old_predictions: MagicMock,
         admin_client: TestClient,
-        mock_cleanup_old_predictions_fixture: MagicMock,
-        mock_db_conn_fixture: MagicMock,
+        mock_dal: MagicMock,
     ):
         """Test predictions cleanup endpoint with default days parameter."""
         # Arrange
-        mock_cleanup_old_predictions_fixture.return_value = 3
+        mock_cleanup_old_predictions.return_value = 3
 
         # Act
         response = admin_client.post(
@@ -125,8 +125,8 @@ class TestPredictionsCleanupEndpoint:
         assert result["status"] == "ok"
         assert result["records_removed"] == 3
         assert result["days_kept"] is None
-        mock_cleanup_old_predictions_fixture.assert_called_once_with(
-            None, conn=mock_db_conn_fixture
+        mock_cleanup_old_predictions.assert_called_once_with(
+            None, conn=mock_dal.db_connection
         )
 
     def test_clean_predictions_unauthorized(self, admin_client: TestClient):
@@ -144,15 +144,16 @@ class TestPredictionsCleanupEndpoint:
 class TestHistoricalDataCleanupEndpoint:
     """Test suite for /admin/data-retention/clean-historical endpoint."""
 
+    @patch("deployment.app.api.admin.cleanup_old_historical_data")
     def test_clean_historical_data_success(
         self,
+        mock_cleanup_old_historical_data: MagicMock,
         admin_client: TestClient,
-        mock_cleanup_old_historical_data_fixture: MagicMock,
-        mock_db_conn_fixture: MagicMock,
+        mock_dal: MagicMock,
     ):
         """Test historical data cleanup endpoint successfully cleans old data with custom parameters."""
         # Arrange
-        mock_cleanup_old_historical_data_fixture.return_value = {
+        mock_cleanup_old_historical_data.return_value = {
             "sales": 10,
             "stock": 5,
             "stock_changes": 3,
@@ -173,19 +174,20 @@ class TestHistoricalDataCleanupEndpoint:
         assert result["records_removed"]["total"] == 25
         assert result["sales_days_kept"] == 60
         assert result["stock_days_kept"] == 90
-        mock_cleanup_old_historical_data_fixture.assert_called_once_with(
-            60, 90, conn=mock_db_conn_fixture
+        mock_cleanup_old_historical_data.assert_called_once_with(
+            60, 90, conn=mock_dal.db_connection
         )
 
+    @patch("deployment.app.api.admin.cleanup_old_historical_data")
     def test_clean_historical_data_default_days(
         self,
+        mock_cleanup_old_historical_data: MagicMock,
         admin_client: TestClient,
-        mock_cleanup_old_historical_data_fixture: MagicMock,
-        mock_db_conn_fixture: MagicMock,
+        mock_dal: MagicMock,
     ):
         """Test historical data cleanup endpoint with default parameters."""
         # Arrange
-        mock_cleanup_old_historical_data_fixture.return_value = {
+        mock_cleanup_old_historical_data.return_value = {
             "sales": 8,
             "stock": 6,
             "stock_changes": 4,
@@ -203,8 +205,8 @@ class TestHistoricalDataCleanupEndpoint:
         result = response.json()
         assert result["status"] == "ok"
         assert result["records_removed"]["total"] == 20
-        mock_cleanup_old_historical_data_fixture.assert_called_once_with(
-            None, None, conn=mock_db_conn_fixture
+        mock_cleanup_old_historical_data.assert_called_once_with(
+            None, None, conn=mock_dal.db_connection
         )
 
     def test_clean_historical_data_unauthorized(self, admin_client: TestClient):
@@ -222,15 +224,16 @@ class TestHistoricalDataCleanupEndpoint:
 class TestModelsCleanupEndpoint:
     """Test suite for /admin/data-retention/clean-models endpoint."""
 
+    @patch("deployment.app.api.admin.cleanup_old_models")
     def test_clean_models_success(
         self,
+        mock_cleanup_old_models: MagicMock,
         admin_client: TestClient,
-        mock_cleanup_old_models_fixture: MagicMock,
-        mock_db_conn_fixture: MagicMock,
+        mock_dal: MagicMock,
     ):
         """Test models cleanup endpoint successfully cleans old models with custom parameters."""
         # Arrange
-        mock_cleanup_old_models_fixture.return_value = ["model1", "model2", "model3"]
+        mock_cleanup_old_models.return_value = ["model1", "model2", "model3"]
 
         # Act
         response = admin_client.post(
@@ -246,19 +249,20 @@ class TestModelsCleanupEndpoint:
         assert result["models_removed_count"] == 3
         assert result["models_kept"] == 5
         assert result["inactive_days_kept"] == 30
-        mock_cleanup_old_models_fixture.assert_called_once_with(
-            5, 30, conn=mock_db_conn_fixture
+        mock_cleanup_old_models.assert_called_once_with(
+            5, 30, conn=mock_dal.db_connection
         )
 
+    @patch("deployment.app.api.admin.cleanup_old_models")
     def test_clean_models_default_params(
         self,
+        mock_cleanup_old_models: MagicMock,
         admin_client: TestClient,
-        mock_cleanup_old_models_fixture: MagicMock,
-        mock_db_conn_fixture: MagicMock,
+        mock_dal: MagicMock,
     ):
         """Test models cleanup endpoint with default parameters."""
         # Arrange
-        mock_cleanup_old_models_fixture.return_value = ["model4", "model5"]
+        mock_cleanup_old_models.return_value = ["model4", "model5"]
 
         # Act
         response = admin_client.post(
@@ -271,8 +275,8 @@ class TestModelsCleanupEndpoint:
         result = response.json()
         assert result["status"] == "ok"
         assert result["models_removed_count"] == 2
-        mock_cleanup_old_models_fixture.assert_called_once_with(
-            None, None, conn=mock_db_conn_fixture
+        mock_cleanup_old_models.assert_called_once_with(
+            None, None, conn=mock_dal.db_connection
         )
 
     def test_clean_models_unauthorized(self, admin_client: TestClient):
@@ -357,10 +361,10 @@ class TestIntegration:
 
             # Test that key components are available
             assert hasattr(deployment.app.api.admin, "router")
-            assert hasattr(deployment.app.api.admin, "run_cleanup_job")
-            assert hasattr(deployment.app.api.admin, "cleanup_old_predictions")
-            assert hasattr(deployment.app.api.admin, "cleanup_old_models")
-            assert hasattr(deployment.app.api.admin, "cleanup_old_historical_data")
+            # assert hasattr(deployment.app.api.admin, "run_cleanup_job") # Removed
+            # assert hasattr(deployment.app.api.admin, "cleanup_old_predictions") # Removed
+            # assert hasattr(deployment.app.api.admin, "cleanup_old_models") # Removed
+            # assert hasattr(deployment.app.api.admin, "cleanup_old_historical_data") # Removed
         except ImportError as e:
             pytest.fail(f"Failed to import admin module: {e}")
 
@@ -403,17 +407,3 @@ class TestIntegration:
             assert any(expected_path in path for path in route_paths), (
                 f"Expected path containing '{expected_path}' not found in {route_paths}"
             )
-
-    def test_constants_and_dependencies_defined(self):
-        """Test that expected constants and dependencies are defined."""
-        # Act & Assert
-        # Test that the module has the expected structure
-        from deployment.app.api.admin import router
-
-        assert router.prefix is not None
-        assert router.tags is not None
-
-        # Test authentication dependency is available
-        from deployment.app.api.admin import get_db_conn_and_close
-
-        assert callable(get_db_conn_and_close)

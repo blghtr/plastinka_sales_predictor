@@ -4,6 +4,7 @@ import sqlite3
 import time
 from datetime import datetime
 from unittest.mock import patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -328,15 +329,14 @@ def test_delete_model_record_and_file(create_test_db, test_model_path, monkeypat
     assert cursor.fetchone() is not None
 
     # Delete the model
-    with (
-        patch("os.path.exists", return_value=True),
-        patch("os.remove") as mock_remove,
-        patch("deployment.app.db.database._is_path_safe", return_value=True),
-    ):
-        result = delete_model_record_and_file(model_id, connection=conn)
+    monkeypatch.setattr("os.path.exists", MagicMock(return_value=True))
+    mock_remove = MagicMock()
+    monkeypatch.setattr("os.remove", mock_remove)
+    monkeypatch.setattr("deployment.app.db.database._is_path_safe", MagicMock(return_value=True))
+    result = delete_model_record_and_file(model_id, connection=conn)
 
-        assert result is True
-        mock_remove.assert_called_once_with(test_model_path)
+    assert result is True
+    mock_remove.assert_called_once_with(test_model_path)
 
     # Verify model no longer exists in database with the same connection
     cursor = conn.cursor()
@@ -421,10 +421,10 @@ def test_model_registration_workflow(create_test_db, test_model_path, monkeypatc
     assert len(recent_models) == 2
 
     # 7. Delete one model
-    with patch("os.path.exists", return_value=True):
-        with patch("os.remove"):
-            result = delete_model_record_and_file("workflow_model_1", connection=conn)
-            assert result is True
+    monkeypatch.setattr("os.path.exists", MagicMock(return_value=True))
+    monkeypatch.setattr("os.remove", MagicMock())
+    result = delete_model_record_and_file("workflow_model_1", connection=conn)
+    assert result is True
 
     # 8. Verify only one model remains with the same connection
     cursor = conn.cursor()
