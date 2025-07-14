@@ -79,13 +79,9 @@ class PlastinkaBaseTSDataset:
         stock_features = ensure_monthly_regular_index(stock_features)
 
         self.dtype = dtype
-        multiidxs = (
-            monthly_sales.columns.to_frame()
-            .drop_duplicates(ignore_index=True)
-            .to_dict(orient="tight")["data"]
-        )
+        multiidxs = monthly_sales.columns.drop_duplicates().tolist()
         self._idx2multiidx = OrderedDict(
-            {i: tuple(multiidxs[i]) for i in range(len(multiidxs))}
+            {i: multiidxs[i] for i in range(len(multiidxs))}
         )
         self._multiidx2idx = OrderedDict(
             {tuple(multiidx): idx for idx, multiidx in enumerate(multiidxs)}
@@ -133,10 +129,13 @@ class PlastinkaBaseTSDataset:
         full_indices = []
         for level1 in stock_features.columns.get_level_values(0).unique():
             for combo in self._multiidx2idx.keys():
-                full_indices.append((level1,) + combo)
+                full_indices.append((level1, *combo))
 
         valid_indices = [idx for idx in full_indices if idx in stock_features.columns]
 
+        if not valid_indices:
+            raise ValueError("No valid indices found")
+        
         arr = stock_features.loc[self._time_index, valid_indices].values.astype(
             self.dtype
         )
@@ -1149,12 +1148,50 @@ def process_data(
         else:
             features[feature] = pd.DataFrame()
 
+    # Унификация формата: даты в индексе, мультииндексы в колонках
     if not features["stock"].empty:
-        stock_column_name = pd.to_datetime(cutoff_date, dayfirst=True)
+        # Для stock нужно создать DatetimeIndex с cutoff_date
+        cutoff_date_ts = pd.to_datetime(cutoff_date, dayfirst=True)
+        # Транспонируем: multiindex теперь в колонках
+        stock_transposed = features["stock"].T
+        # Создаем DatetimeIndex для stock
+        date_index = pd.Index([cutoff_date_ts], name='_date')
+        stock_transposed.index = date_index
+        features["stock"] = stock_transposed
+    
+    if not features["prices"].empty:
+        # Добавляем дату к prices и транспонируем
+        cutoff_date_ts = pd.to_datetime(cutoff_date, dayfirst=True)
+        # Создаем временной индекс для prices
+        date_index = pd.Index([cutoff_date_ts], name='_date')
+        # Транспонируем: multiindex теперь в колонках
+        prices_with_date = features["prices"].T
+        prices_with_date.index = date_index
+        features["prices"] = prices_with_date
 
-        features["stock"] = features["stock"].rename(
-            columns={"stock": stock_column_name}
-        )
+    # Для sales и change тоже нужно преобразовать в единый формат
+    if not features["sales"].empty:
+        # sales уже имеет дату в индексе (_date) и multiindex в индексе
+        # Нужно переместить multiindex в колонки
+        sales_df = features["sales"]
+        if isinstance(sales_df.index, pd.MultiIndex):
+            # Преобразуем MultiIndex в формат: дата в индексе, multiindex в колонках
+            sales_unstacked = sales_df.unstack(level=list(range(1, sales_df.index.nlevels)))
+            # Убираем лишний уровень колонок если есть
+            if isinstance(sales_unstacked.columns, pd.MultiIndex):
+                sales_unstacked.columns = sales_unstacked.columns.droplevel(0)
+            features["sales"] = sales_unstacked
+    
+    if not features["change"].empty:
+        # change аналогично sales
+        change_df = features["change"]
+        if isinstance(change_df.index, pd.MultiIndex):
+            # Преобразуем MultiIndex в формат: дата в индексе, multiindex в колонках
+            change_unstacked = change_df.unstack(level=list(range(1, change_df.index.nlevels)))
+            # Убираем лишний уровень колонок если есть
+            if isinstance(change_unstacked.columns, pd.MultiIndex):
+                change_unstacked.columns = change_unstacked.columns.droplevel(0)
+            features["change"] = change_unstacked
 
     return features
 
@@ -1163,30 +1200,26 @@ def get_stock_features(
     stock: pd.DataFrame,
     daily_movements: pd.DataFrame,
 ) -> pd.DataFrame:
+    # Проверка формата stock и адаптация при необходимости
+    # Если stock приходит в новом формате (даты в индексе), транспонируем
+    # для совместимости с существующей логикой функции
+    if isinstance(stock.index, pd.DatetimeIndex):
+        stock = stock.T  # Транспонируем для совместимости с логикой функции
+    
+    if isinstance(daily_movements.columns, pd.DatetimeIndex):
+        daily_movements = daily_movements.T
+    
     stock_features = defaultdict(list)
-    idx = [i for i in (daily_movements.index.names) if not i.startswith("_")]
     groups = daily_movements.groupby(
         daily_movements.index.get_level_values("_date").to_period("M")
     )
     for month, daily_data in groups:
-        # month = str(month)
-        daily_data = daily_data.reset_index()
-        shp = daily_data.pivot_table(
-            index=idx,
-            columns="_date",
-            values="change",
-            aggfunc="sum",
-            fill_value=0,
-        )
+        stock = stock.join(
+            daily_data.T, 
+            how="outer"
+        ).fillna(0).cumsum(axis=1)
 
-        stock = stock.join(shp, how="outer").fillna(0).cumsum(axis=1)
-
-        # Attempt to sort columns; fallback gracefully if mixed dtypes
-        try:
-            stock = stock.sort_index(axis=1)
-        except TypeError:
-            # Mixed-type columns (e.g., str & Timestamp) – keep current order
-            pass
+        stock = stock.sort_index(axis=1)
 
         conf = stock.clip(0, 5) / 5
         month_conf = conf.iloc[:, 1:].mean(1).rename(month)
@@ -1214,7 +1247,10 @@ def get_stock_features(
 
 def ensure_monthly_regular_index(df):
     if not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError("Index must be DatetimeIndex")
+        try:
+            df.index = df.index.to_timestamp()
+        except Exception:
+            raise ValueError("Index must be DatetimeIndex")
     full_range = pd.date_range(start=df.index.min(), end=df.index.max(), freq="MS")
     return df.reindex(full_range, fill_value=0)
 
@@ -1227,23 +1263,11 @@ def transform_months(series):
 
 
 def get_monthly_sales_pivot(monthly_sales_df):
-    monthly_sales_pivot = monthly_sales_df.copy()
-    idx = [i for i in monthly_sales_df.index.names if not i.startswith("_")]
-    new_idx = monthly_sales_df.index.get_level_values("_date").to_period("M")
-    monthly_sales_pivot = monthly_sales_pivot.reset_index()
-    monthly_sales_pivot["sales"] = monthly_sales_pivot["sales"].abs()
-    monthly_sales_pivot = monthly_sales_pivot.pivot_table(
-        index=new_idx,
-        columns=idx,
-        values="sales",
-        aggfunc={"sales": "sum"},
-        fill_value=0,
-    )
-    # sort by index
+    monthly_sales_pivot = monthly_sales_df.groupby(
+        monthly_sales_df.index.get_level_values("_date").to_period("M")
+    ).agg('sum')
+    monthly_sales_pivot = monthly_sales_pivot.abs()
     monthly_sales_pivot = monthly_sales_pivot.sort_index(axis=1)
-    monthly_sales_pivot = monthly_sales_pivot.set_index(
-        monthly_sales_pivot.index.to_timestamp()
-    )
 
     return monthly_sales_pivot
 

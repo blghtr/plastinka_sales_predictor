@@ -53,12 +53,13 @@ def load_fixed_params(json_path=None, tunable_params=None):
             fixed = json.load(f)
 
     fixed_params = defaultdict(dict)
-    for key in [
-        "model_config",
-        "lags",
+    for key in [ 
+        "optimizer_config",
         "lr_shed_config",
         "train_ds_config",
+        "swa_config",
         "weights_config",
+        "lags",
     ]:
         if key in fixed:
             fixed_part = None
@@ -199,7 +200,7 @@ def train_model(config, ds, val_ds, random_state=42, model_name="TiDE"):
                 print(f"✓ Resumed training from epoch {model.epochs_trained}")
 
     else:
-        model_config["nr_epochs_val_period"] = 5
+        model_config["nr_epochs_val_period"] = 1
         model = get_model(
             optimizer_config=optimizer_config,
             callbacks=callbacks,
@@ -227,7 +228,7 @@ def train_fn(config, fixed_config, ds, val_ds=None):
     """
 
     config = merge_with_fixed_params(config, fixed_config)
-
+    
     if val_ds is None:
         L = ds.L
         lags = config["lags"]
