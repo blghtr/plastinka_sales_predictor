@@ -137,7 +137,6 @@ This project is composed of several key components, each with its own detailed d
     ```bash
     uv sync
     ```
-    ```
 
 4.  **Set Up Infrastructure**:
     For detailed instructions on configuring and deploying the cloud infrastructure, please refer to the **[Infrastructure README](deployment/infrastructure/README.md)**.

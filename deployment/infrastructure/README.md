@@ -1,62 +1,62 @@
 # Terraform Infrastructure for Plastinka Sales Predictor
 
-Эта директория содержит декларативное описание ресурсов Yandex Cloud, необходимых для работы DataSphere-проекта с автоматическим созданием и настройкой service account.
+This directory contains a declarative description of Yandex Cloud resources required for the DataSphere project, with automatic creation and configuration of a service account.
 
-> **Примечание**: Данная инфраструктура является частью комплексной системы Plastinka Sales Predictor. См. [основной README](../../README.md) для полного обзора системы.
+> **Note**: This infrastructure is part of the comprehensive Plastinka Sales Predictor system. See the [main README](../../README.md) for a full system overview.
 
-## Структура
+## Structure
 
 ```
-modules/                    # Переиспользуемые модули
+modules/                    # Reusable modules
   datasphere_community/     # YC DataSphere Community
   datasphere_project/       # YC DataSphere Project  
-  service_account/          # YC Service Account с IAM ролями
+  service_account/          # YC Service Account with IAM roles
 
 envs/
-  prod/                     # Конфигурация для prod (единственное окружение)
-    main.tf                 # Основная конфигурация ресурсов
-    variables.tf            # Определения переменных
-    outputs.tf              # Выходные значения
-    terraform.tfvars        # Значения переменных (не в VCS)
-    terraform.tfvars.example # Пример файла переменных
+  prod/                     # Configuration for production (single environment)
+    main.tf                 # Main resource configuration
+    variables.tf            # Variable definitions
+    outputs.tf              # Output values
+    terraform.tfvars        # Variable values (not in VCS)
+    terraform.tfvars.example # Example variable file
 
-versions.tf                 # Глобальные ограничения версий Terraform и провайдеров
+versions.tf                 # Global Terraform and provider version constraints
 ```
 
-## Что создаётся
+## What is Created
 
-Эта Terraform конфигурация разворачивает необходимую инфраструктуру Yandex Cloud для работы Plastinka Sales Predictor, включая:
+This Terraform configuration deploys the necessary Yandex Cloud infrastructure for the Plastinka Sales Predictor, including:
 
-- **DataSphere Service Account**: Сервисный аккаунт с минимально необходимыми ролями для работы с DataSphere, Object Storage и другими облачными ресурсами.
-- **DataSphere Community**: Организационная единица для группировки проектов.
-- **DataSphere Project**: Проект DataSphere с настроенными лимитами ресурсов и привязкой к сервисному аккаунту.
-- **Автоматическая генерация `.env` файла и API ключей**: При первом применении Terraform автоматически создаст или обновит файл `.env` в корне проекта, а также сгенерирует и добавит необходимые API ключи для взаимодействия с FastAPI приложением.
+- **DataSphere Service Account**: A service account with the minimum necessary roles for working with DataSphere, Object Storage, and other cloud resources.
+- **DataSphere Community**: An organizational unit for grouping projects.
+- **DataSphere Project**: A DataSphere project with configured resource limits and绑定 to a service account.
+- **Automatic generation of `.env` file and API keys**: Upon the first application, Terraform will automatically create or update the `.env` file in the project root, and generate and add the necessary API keys for interaction with the FastAPI application.
 
-Для более подробного описания компонентов системы, включая ML модуль и FastAPI приложение, обратитесь к [основному README](../../README.md).
+For a more detailed description of the system components, including the ML module and FastAPI application, please refer to the [main README](../../README.md).
 
-## Быстрый старт
+## Quick Start
 
-Для быстрого развертывания инфраструктуры выполните следующие шаги:
+To quickly deploy the infrastructure, follow these steps:
 
-### 1. Подготовка переменных
+### 1. Prepare Variables
 
-Перейдите в директорию `deployment/infrastructure/envs/prod` и скопируйте файл `terraform.tfvars.example` в `terraform.tfvars`:
+Navigate to the `deployment/infrastructure/envs/prod` directory and copy the `terraform.tfvars.example` file to `terraform.tfvars`:
 
 ```bash
 cd deployment/infrastructure/envs/prod
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Отредактируйте `terraform.tfvars`, указав ваши `yc_cloud_id`, `yc_folder_id` и `yc_organization_id`.
+Edit `terraform.tfvars`, specifying your `yc_cloud_id`, `yc_folder_id`, and `yc_organization_id`.
 
-Для аутентификации Terraform используйте переменную окружения `TF_VAR_yc_token`:
+For Terraform authentication, use the `TF_VAR_yc_token` environment variable:
 
 ```bash
 export TF_VAR_yc_token="your-oauth-token"
 terraform apply
 ```
 
-### 2. Инициализация и применение
+### 2. Initialization and Application
 
 ```bash
 terraform init
@@ -64,21 +64,21 @@ terraform plan
 terraform apply
 ```
 
-Эта команда автоматически настроит профиль `yc CLI`, сгенерирует `sa-key.json` и заполнит файл `.env` в корне проекта необходимыми переменными окружения, включая API ключи для FastAPI приложения. Убедитесь, что Python 3.x установлен в окружении, где запускается `terraform apply`.
+This command will automatically configure the `yc CLI` profile, generate `sa-key.json`, and populate the `.env` file in the project root with the necessary environment variables, including API keys for the FastAPI application. Ensure that Python 3.x is installed in the environment where `terraform apply` is run.
 
 
-## 🔄 Использование существующих ресурсов
+## 🔄 Using Existing Resources
 
-**Новая возможность!** Теперь можно подключить существующую инфраструктуру DataSphere к управлению Terraform без её пересоздания.
+**New Feature!** You can now connect existing DataSphere infrastructure to Terraform management without recreating it.
 
-### Когда использовать
-- ✅ У вас уже есть настроенные DataSphere ресурсы
-- ✅ Нужно мигрировать проект под управление Terraform
-- ✅ Хотите работать в смешанном режиме (часть существующая, часть новая)
+### When to Use
+- ✅ You already have configured DataSphere resources
+- ✅ Need to migrate a project under Terraform management
+- ✅ Want to work in a hybrid mode (part existing, part new)
 
-### Быстрое подключение существующих ресурсов
+### Quick Connection of Existing Resources
 
-1. **Получите ID существующих ресурсов:**
+1. **Get IDs of existing resources:**
 ```bash
 # Service Account
 yc iam service-account list --format json | jq -r '.[] | select(.name=="datasphere-sa-prod") | .id'
@@ -90,45 +90,45 @@ yc datasphere community list --format json | jq -r '.[] | select(.name=="prod-ds
 yc datasphere project list --community-id YOUR_COMMUNITY_ID --format json | jq -r '.[] | select(.name=="prod-ds-project") | .id'
 ```
 
-2. **Добавьте в terraform.tfvars:**
+2. **Add to terraform.tfvars:**
 ```hcl
-# Основные переменные
+# Core variables
 yc_cloud_id        = "your-cloud-id"
 yc_folder_id       = "your-folder-id"
 yc_organization_id = "your-org-id"
 
-# Использование существующих ресурсов
+# Using existing resources
 existing_service_account_id = "your-existing-service-account-id"
 existing_community_id       = "your-existing-community-id"
 existing_project_id         = "your-existing-project-id"
-# existing_static_key_id - если у вас уже есть статический ключ и вы хотите его использовать
+# existing_static_key_id - if you already have a static key and want to use it
 ```
 
-3. **Примените конфигурацию:**
+3. **Apply the configuration:**
 ```bash
 terraform init
-terraform plan  # Проверьте - новые ресурсы НЕ создаются!
+terraform plan  # Verify - no new resources are created!
 terraform apply
 ```
 
-### Как это работает?
+### How it Works?
 
-Мы используем **чистый Data Source подход** вместо импорта:
-- ✅ **Простота** - нет необходимости в сложных импортах
-- ✅ **Надежность** - стандартные возможности Terraform
-- ✅ **Гибкость** - можно комбинировать новые и существующие ресурсы
-- ✅ **Безопасность** - существующие ресурсы не модифицируются
-- ✅ **Совместимость** - работает с любой версией Terraform
+We use a **pure Data Source approach** instead of import:
+- ✅ **Simplicity** - no need for complex imports
+- ✅ **Reliability** - standard Terraform capabilities
+- ✅ **Flexibility** - can combine new and existing resources
+- ✅ **Security** - existing resources are not modified
+- ✅ **Compatibility** - works with any Terraform version
 
-### Подробная документация
-📖 **[Полное руководство](envs/prod/IMPORT_GUIDE.md)** - детальные инструкции, сценарии использования, устранение проблем.
+### Detailed Documentation
+📖 **[Full Guide](envs/prod/IMPORT_GUIDE.md)** - detailed instructions, usage scenarios, troubleshooting.
 
-### Проверка статуса ресурсов
+### Resource Status Check
 ```bash
-# Посмотреть какие ресурсы существующие, а какие новые
+# See which resources are existing and which are new
 terraform output import_status
 
-# Пример вывода:
+# Example output:
 # {
 #   "community": "existing",
 #   "project": "created", 
@@ -137,31 +137,31 @@ terraform output import_status
 # }
 ```
 
-## Получение данных после применения
+## Retrieving Data After Apply
 
-После успешного применения Terraform, вы можете получить важные выходные данные, необходимые для дальнейшей настройки и работы системы. Эти данные включают ID созданных ресурсов и ключи доступа.
+After successfully applying Terraform, you can retrieve important output data necessary for further system configuration and operation. This data includes IDs of created resources and access keys.
 
-### Основные выходные значения:
+### Main Output Values:
 ```bash
-# Сводная информация о DataSphere
+# DataSphere summary information
 terraform output datasphere_summary
 
-# ID проекта DataSphere
+# DataSphere project ID
 terraform output datasphere_project_id
 
-# Service Account данные
+# Service Account data
 terraform output service_account_id
 terraform output service_account_name
 
-# Ключи доступа (sensitive)
+# Access keys (sensitive)
 terraform output -raw static_access_key_id
 terraform output -raw static_secret_key
 ```
 
-## Интеграция с основной системой
+## Integration with the Main System
 
-После создания инфраструктуры она автоматически интегрируется с FastAPI приложением. API приложение использует переменные окружения для подключения к DataSphere. Управление заданиями, мониторинг и получение результатов осуществляется через API endpoints, которые взаимодействуют с DataSphere.
+After infrastructure creation, it automatically integrates with the FastAPI application. The API application uses environment variables to connect to DataSphere. Job management, monitoring, and result retrieval are performed via API endpoints that interact with DataSphere.
 
-## Дополнительная информация
+## Additional Information
 
-Для получения подробной информации об интеграции API, мониторинге, логировании и аспектах безопасности, пожалуйста, обратитесь к [README.md в директории `deployment`](../README.md).
+For detailed information on API integration, monitoring, logging, and security aspects, please refer to the [README.md in the `deployment` directory](../README.md).
