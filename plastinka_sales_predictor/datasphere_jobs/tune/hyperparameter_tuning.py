@@ -1,3 +1,4 @@
+from copy import deepcopy
 from warnings import filterwarnings
 from ray import tune
 from ray.train import RunConfig, CheckpointConfig
@@ -14,8 +15,8 @@ from plastinka_sales_predictor import (
     train_fn,
     trial_name_creator,
     configure_logger,
-    load_tunable_params,
-    flatten_config
+    flatten_config,
+    load_fixed_params
 )
 import os
 import sys
@@ -29,9 +30,7 @@ import pandas as pd
 filterwarnings('ignore')
 
 
-logger = configure_logger(
-    child_logger_name="tune"
-)
+logger = configure_logger()
 
 QUANTILES = [0.05, 0.25, 0.5, 0.75, 0.95]
 
@@ -88,11 +87,13 @@ tunable_params = {
     "train_ds_config": train_ds_config,
     "swa_config": swa_config,
     "weights_config": weights_config,
-    "lags": tune.randint(9, 16),
+    "lags": tune.randint(3, 7),
     }
 
-fixed_params = {
-    "n_epochs": 100,
+_fixed_params = {
+    "model_config": {
+        "n_epochs": 100  # hardcoded for now
+    },
     "quantiles": QUANTILES,
 }
 
@@ -167,6 +168,12 @@ def main(input_dir, output):
         f"resources={resources}, max_concurrent={max_concurrent}"
     )
 
+    # Load fixed parameters from active_config if present
+    fixed_params_path = os.path.join(input_dir_real, "config.json")
+    fixed_params = load_fixed_params(
+        fixed_params_path, tunable_params
+    )
+    fixed_params.update(_fixed_params)
     # Load initial configs if present
     initial_configs: list[dict] = []
     init_cfg_path = os.path.join(input_dir_real, INITIAL_CONFIGS_FILE)
@@ -174,14 +181,35 @@ def main(input_dir, output):
         try:
             with open(init_cfg_path, "r", encoding="utf-8") as f:
                 raw_cfgs = json.load(f)
-            for cfg in raw_cfgs:
+            for raw_cfg in raw_cfgs:
+                cfg = deepcopy(raw_cfg)
+
+                if "nn_model_config" in cfg:
+                    cfg["model_config"] = cfg.pop("nn_model_config")
+                keys = list(cfg.keys())
+
+                for k in keys:
+                    if k not in tunable_params:
+                        _ = cfg.pop(k)
+                if mode == "light":
+                    _ = cfg.pop("model_config")
+                else:
+                    _ = cfg["model_config"].pop("n_epochs")
+
                 try:
                     initial_configs.append(flatten_config(cfg))
                 except Exception as fe:
                     logger.warning(f"Failed to flatten initial config: {fe}")
+            
             logger.info(f"Loaded {len(initial_configs)} initial configs from {init_cfg_path}")
         except Exception as e:
             logger.warning(f"Failed to read initial_configs.json: {e}")
+
+    if mode == "light":
+        _ = tunable_params.pop("model_config")
+
+    else:
+        _ = tunable_params["model_config"].pop("n_epochs")
 
     # dataset paths
     train_path = os.path.join(input_dir_real, "train.dill")
@@ -194,17 +222,19 @@ def main(input_dir, output):
     ds = PlastinkaTrainingTSDataset.from_dill(train_path)
     val_ds = PlastinkaTrainingTSDataset.from_dill(val_path)
 
-    # adapt search space for mode
-    param_space = tunable_params.copy()
-    if mode == "light":
-        _ = param_space.pop("model_config")
-
     # re-create train_with_parameters with new ds
     train_with_parameters = tune.with_parameters(
         train_fn, fixed_config=fixed_params, ds=ds, val_ds=val_ds
     )
-    train_with_parameters = tune.with_resources(train_with_parameters, resources)
-    
+    train_with_parameters = tune.with_resources(
+        train_with_parameters,
+        {
+            k: max(1., float(v) / max_concurrent) 
+            for k, v in resources.items()
+        }
+    )
+
+    scheduler = HyperBandForBOHB(max_t=100, metric="val_MIWS_MIC_Ratio", mode="min")
     # Configure BOHB searcher with optional starter configs
     searcher = TuneBOHB(
         metric="val_MIWS_MIC_Ratio",
@@ -218,14 +248,23 @@ def main(input_dir, output):
     start = time.time()
     tuner = Tuner(
         train_with_parameters,
-        param_space=param_space,
+        param_space=tunable_params,
         tune_config=tune.TuneConfig(
-            num_samples=num_samples,
+            num_samples=3,
             max_concurrent_trials=max_concurrent,
             search_alg=searcher,
+            scheduler=scheduler,
             time_budget_s=time_budget_s,
+            trial_dirname_creator=trial_name_creator
         ),
-        run_config=RunConfig(name="plastinka_tuning"),
+        run_config=RunConfig(
+                name="plastinka_tuning",
+                checkpoint_config=CheckpointConfig(
+                    num_to_keep=3,
+                    checkpoint_score_attribute="val_MIWS_MIC_Ratio",
+                    checkpoint_score_order="min"
+                ),
+                sync_config=ray.train.SyncConfig(sync_artifacts=True)),
     )
     results = tuner.fit()
     _duration = int(time.time() - start)

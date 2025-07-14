@@ -7,7 +7,7 @@ desc: Sales prediction (v0.9.11)
 # --- Compute Resources ---
 # Define the resources and VM configuration for the job.
 cloud-instance-types:
-  - gt4.1
+  - c1.4
 
 # --- Job Inputs ---
 inputs:
@@ -24,9 +24,9 @@ env:
     version: 3.10.13
     requirements-file: plastinka_sales_predictor/datasphere_jobs/tune/requirements.txt
     pip-options:
-      index-url: https://pypi.org/simple
+      index-url: https://download.pytorch.org/whl/cpu
       extra-index-urls:
-        - https://download.pytorch.org/whl/cu118
+        - https://pypi.org/simple
     local-paths:
       - plastinka_sales_predictor
 

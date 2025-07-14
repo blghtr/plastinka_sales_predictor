@@ -51,7 +51,7 @@ def train_model(
     # If model_config already exists, use it as is (for tests)
 
     # Instantiate the model
-    config["model_config"]["n_epochs"] = 1
+    config["model_config"]["n_epochs"] = 200  # hardcoded for now
     metrics_dict = {}
 
     # Train the model
@@ -71,7 +71,7 @@ def train_model(
                 if k.startswith("val"):
                     val_metrics[k] = v.item() if hasattr(v, "item") else v
 
-        metrics_dict["validation"] = val_metrics
+        metrics_dict.update(val_metrics)
         logger.info(
             f"Captured validation metrics from first training phase: {len(val_metrics)} metrics"
         )
@@ -104,7 +104,7 @@ def train_model(
                 if k.startswith("train"):
                     train_metrics[k] = v.item() if hasattr(v, "item") else v
 
-        metrics_dict["training"] = train_metrics
+        metrics_dict.update(train_metrics)
         logger.info(
             f"Captured training metrics from second training phase: {len(train_metrics)} metrics"
         )
@@ -508,36 +508,6 @@ def run_prediction(model, inference_dataset, config: dict):
         sys.exit(1)
 
 
-def prepare_metrics(training_metrics: dict, training_duration_seconds: float) -> dict:
-    """
-    Prepare final metrics dictionary from training results.
-    Combines validation, training metrics, and duration into a single
-    flat dictionary with consistent naming (e.g., 'val_MIC', 'train_accuracy').
-    """
-    metrics = {}
-
-    # Add validation metrics with 'val_' prefix
-    if "validation" in training_metrics:
-        for k, v in training_metrics["validation"].items():
-            metrics[f"val_{k}"] = v
-        logger.info(
-            f"Added {len(training_metrics['validation'])} validation metrics from first training phase"
-        )
-
-    # Add training metrics with 'train_' prefix
-    if "training" in training_metrics:
-        for k, v in training_metrics["training"].items():
-            metrics[f"train_{k}"] = v
-        logger.info(
-            f"Added {len(training_metrics['training'])} training metrics from second training phase"
-        )
-
-    # Add training duration to metrics
-    metrics["training_duration_seconds"] = round(training_duration_seconds, 2)
-
-    return metrics
-
-
 def save_model_file(model, model_output: str) -> None:
     """
     Save model to ONNX format with validation.
@@ -723,12 +693,12 @@ def main(input_dir, output):
         predictions = run_prediction(model, inference_dataset, config)
 
         # 5. Prepare final metrics
-        metrics = prepare_metrics(training_metrics, training_duration_seconds)
+        training_metrics["training_duration_seconds"] = training_duration_seconds
 
         # 6. Save all outputs
         save_model_file(model, model_output)
         save_predictions_file(predictions, prediction_output)
-        save_metrics_file(metrics, metrics_output)
+        save_metrics_file(training_metrics, metrics_output)
 
         # 7. Create output archive
         create_output_archive(temp_output_dir, output_path)
