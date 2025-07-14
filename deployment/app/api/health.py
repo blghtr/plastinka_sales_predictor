@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 import psutil
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -25,16 +25,12 @@ from deployment.app.utils.retry_monitor import (
 import calendar
 from datetime import timedelta
 
-router = APIRouter(
-    prefix="/health",
-    tags=["health"],
-    responses={200: {"description": "Success"}, 500: {"description": "Server Error"}},
-)
+from ..dependencies import get_dal_system
+from ..db.data_access_layer import DataAccessLayer
+from deployment.app.models.api_models import ErrorDetailResponse
+from deployment.app.utils.error_handling import ErrorDetail
 
 logger = logging.getLogger(__name__)
-
-
-
 
 
 class HealthResponse(BaseModel):
@@ -82,14 +78,16 @@ class RetryStatsResponse(BaseModel):
 start_time = time.time()
 
 
-def check_monotonic_months(table_name: str, conn) -> list[str]:
+def check_monotonic_months(table_name: str, dal: DataAccessLayer) -> list[str]:
     """
     Проверяет, что месяцы в data_date идут подряд без пропусков (по всей таблице).
     Возвращает список пропущенных месяцев в формате YYYY-MM-01.
     """
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT DISTINCT data_date FROM {table_name}")
-    dates = sorted(row[0] for row in cursor.fetchall())
+    dates_rows = dal.execute_raw_query(
+        f"SELECT DISTINCT data_date FROM {table_name}", fetchall=True
+    )
+    dates = sorted(row["data_date"] for row in dates_rows) if dates_rows else []
+
     if not dates:
         return []
     # Преобразуем к datetime.date
@@ -112,14 +110,10 @@ def check_monotonic_months(table_name: str, conn) -> list[str]:
     return missing
 
 
-def check_database() -> ComponentHealth:
+def check_database(dal: DataAccessLayer) -> ComponentHealth:
     """Check database connection and monotonicity of months in sales & changes."""
-    conn = None  # Initialize conn to None
     try:
-        conn = sqlite3.connect(get_settings().database_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1")
-        cursor.fetchone()
+        dal.execute_raw_query("SELECT 1")
 
         # Check if required tables exist
         required_tables = [
@@ -144,8 +138,9 @@ def check_database() -> ComponentHealth:
         # Construct the query to check for these tables efficiently
         placeholders = ", ".join(["?" for _ in required_tables])
         query_check_tables = f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
-        cursor.execute(query_check_tables, tuple(required_tables))
-        tables_found = [row[0] for row in cursor.fetchall()]
+        tables_found_rows = dal.execute_raw_query(query_check_tables, tuple(required_tables), fetchall=True)
+        tables_found = [row["name"] for row in tables_found_rows] if tables_found_rows else []
+
         missing_tables = [table for table in required_tables if table not in tables_found]
         if missing_tables:
             logger.warning(f"Database degraded: missing tables {missing_tables}")
@@ -156,7 +151,7 @@ def check_database() -> ComponentHealth:
         # --- Проверка монотонности месяцев ---
         monotonicity_issues = {}
         for table in ["fact_sales", "fact_stock_changes"]:
-            missing_months = check_monotonic_months(table, conn)
+            missing_months = check_monotonic_months(table, dal)
             if missing_months:
                 monotonicity_issues[table] = missing_months
         if monotonicity_issues:
@@ -169,13 +164,22 @@ def check_database() -> ComponentHealth:
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}", exc_info=True)
         return ComponentHealth(status="unhealthy", details={"error": str(e)})
-    finally:
-        if conn:
-            conn.close()
+
+
+router = APIRouter(
+    prefix="/health",
+    tags=["health"],
+    responses={
+        200: {"description": "Success", "model": HealthResponse},
+        503: {"description": "Service Unavailable", "model": ErrorDetailResponse},
+    },
+)
 
 
 @router.get("", response_model=HealthResponse)
-async def health_check():
+async def health_check(
+    dal: DataAccessLayer = Depends(get_dal_system)
+):
     """
     Comprehensive health check endpoint.
     Returns status of all system components.
@@ -186,7 +190,7 @@ async def health_check():
     # Check individual components
     components = {
         "api": ComponentHealth(status="healthy"),
-        "database": check_database(),
+        "database": check_database(dal),
         "config": get_environment_status(),
     }
 
@@ -196,11 +200,36 @@ async def health_check():
 
     if any(comp.status == "unhealthy" for comp in components.values()):
         overall_status = "unhealthy"
-        http_status_code = 503  # Service Unavailable
+        http_status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     elif any(comp.status == "degraded" for comp in components.values()):
         overall_status = "degraded"
-        # Degraded status still returns 200 OK
+        http_status_code = status.HTTP_200_OK
 
+    # If the overall status is unhealthy or degraded, raise HTTPException
+    if overall_status != "healthy":
+        error_message = f"API is {overall_status}."
+        if overall_status == "unhealthy":
+            error_code = "service_unavailable"
+        else: # degraded
+            error_code = "service_degraded"
+
+        details = {k: v.model_dump() for k, v in components.items()}
+
+        error = ErrorDetail(
+            message=error_message,
+            code=error_code,
+            status_code=http_status_code,
+            details=details,
+        )
+        # Log the error, though for health checks it might be excessive if frequently polled
+        # error.log_error(None) # No request context here
+
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump()
+        )
+
+    # If healthy, return the regular HealthResponse
     return JSONResponse(
         status_code=http_status_code,
         content={

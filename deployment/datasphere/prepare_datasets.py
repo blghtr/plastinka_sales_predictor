@@ -40,7 +40,7 @@ DEFAULT_PAST_COVARIATES_FNAMES = [
 logger = logging.getLogger(__name__)
 
 
-def load_data(start_date=None, end_date=None, feature_types=None):
+def load_data(start_date=None, end_date=None, feature_types=None, connection=None):
     """
     Loads features using feature_storage.load_features (factory pattern).
 
@@ -56,11 +56,21 @@ def load_data(start_date=None, end_date=None, feature_types=None):
     features = None
 
     try:
+        # Ensure we're loading all required feature types
+        required_types = ["sales", "stock", "change", "prices"]
+        if feature_types is None:
+            feature_types = required_types
+        else:
+            # Make sure required types are included
+            for req_type in required_types:
+                if req_type not in feature_types:
+                    feature_types.append(req_type)
+        
         logger.info(
-            f"Loading features from database{' (selected types)' if feature_types else ''}..."
+            f"Loading features from database with types: {feature_types}..."
         )
         logger.info(
-            f"Loading with parameters: start_date={start_date}, end_date={end_date}, feature_types={feature_types}"
+            f"Loading with parameters: start_date={start_date}, end_date={end_date}"
         )
         logger.info("About to call feature_storage.load_features...")
 
@@ -69,6 +79,7 @@ def load_data(start_date=None, end_date=None, feature_types=None):
             start_date=start_date,
             end_date=end_date,
             feature_types=feature_types,
+            connection=connection,
         )
         logger.info("Features loaded successfully via factory.")
 
@@ -109,18 +120,13 @@ def prepare_datasets(
     ):
         raise ValueError("Missing required raw feature data.")
 
-    try:
-        features = raw_features.copy()
-    except Exception as e:
-        logger.error(f"Error copying raw_features: {e}", exc_info=True)
-        raise
-
+    features = raw_features.copy()
     logger.info(
         "Raw features validation passed, proceeding with feature engineering..."
     )
 
     try:
-        # 1. Stock Features (using get_stock_features from prepare_datasets.py)
+        # 1. Stock Features (using new optimized get_stock_features)
         features["stock_features"] = get_stock_features(
             features["stock"], features["change"]
         )
@@ -222,6 +228,7 @@ def get_datasets(
     output_dir: str | None = None,
     feature_types=None,
     datasets_to_generate: Sequence[str] = ("train", "val"),
+    connection=None,
 ):
     """
     Loads data from DB, prepares features, creates and saves datasets to output_dir.
@@ -240,7 +247,7 @@ def get_datasets(
     logger.info("get_datasets function started...")
 
     try:
-        raw_features = load_data(start_date, end_date, feature_types)
+        raw_features = load_data(start_date, end_date, feature_types, connection=connection)
 
         logger.info("Raw features loaded, calling prepare_datasets...")
 
@@ -260,3 +267,4 @@ def get_datasets(
     except Exception as e:
         logger.error(f"Error in get_datasets: {e}", exc_info=True)
         raise
+

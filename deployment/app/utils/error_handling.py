@@ -4,13 +4,14 @@ import os
 import traceback
 import uuid
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Dict, Optional
 
 from fastapi import Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from deployment.app.utils.validation import ValidationError as AppValidationError
+from deployment.app.models.api_models import ErrorDetailResponse
 
 # Configure more detailed logging
 logger = logging.getLogger("plastinka.errors")
@@ -97,41 +98,26 @@ class ErrorDetail:
 
         return error_dict
 
-    def log_error(self, request: Request | None = None):
-        """Log error with consistent structure."""
-        log_data = {
-            "request_id": self.request_id,
-            "error_code": self.code,
-            "error_message": self.message,
-            "status_code": self.status_code,
-        }
-
-        # Add request data if available
+    def log_error(self, request: Optional[Request] = None):
+        """Log the error details."""
+        log_message = f"Error: {self.message} (Code: {self.code}, Status: {self.status_code})"
+        if self.details:
+            log_message += f", Details: {self.details}"
         if request:
-            log_data["method"] = request.method
-            log_data["url"] = str(request.url)
-            log_data["client"] = request.client.host if request.client else None
-            log_data["headers"] = dict(request.headers)
-
-        # Add exception details
+            log_message += f", Path: {request.url.path}"
         if self.exception:
-            log_data["exception_type"] = type(self.exception).__name__
-            log_data["exception_msg"] = str(self.exception)
-
-        # Add retry information if available
-        if self.retry_info:
-            log_data["retry_info"] = self.retry_info
-
-        # Use the custom JSON serializer for logging
-        if self.status_code >= 500:
-            logger.error(
-                json.dumps(log_data, default=json_default_serializer),
-                exc_info=self.exception,
-            )
-        elif self.status_code >= 400:
-            logger.warning(json.dumps(log_data, default=json_default_serializer))
+            logger.error(log_message, exc_info=self.exception)
         else:
-            logger.info(json.dumps(log_data, default=json_default_serializer))
+            logger.error(log_message)
+
+    def to_response_model(self) -> ErrorDetailResponse:
+        """Convert error details to ErrorDetailResponse Pydantic model."""
+        return ErrorDetailResponse(
+            message=self.message,
+            code=self.code,
+            status_code=self.status_code,
+            details=self.details,
+        )
 
 
 async def validation_exception_handler(

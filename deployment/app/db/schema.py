@@ -1,6 +1,7 @@
 import logging
 import sqlite3
 from pathlib import Path
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,19 @@ CREATE INDEX IF NOT EXISTS idx_retry_events_op ON retry_events(component, operat
 CREATE INDEX IF NOT EXISTS idx_retry_events_time ON retry_events(timestamp);
 """
 
+MULTIINDEX_NAMES = [
+    "barcode",
+    "artist", 
+    "album",
+    "cover_type",
+    "price_category",
+    "release_type",
+    "recording_decade",
+    "release_decade",
+    "style",
+    "record_year",
+]
+
 
 def init_db(db_path: str = None, connection: sqlite3.Connection = None):
     """
@@ -295,6 +309,13 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
             # Connect to database
             conn = sqlite3.connect(db_path)
             conn_created = True
+
+            # Set file permissions for the database file (e.g., 0o600 for owner read/write)
+            try:
+                os.chmod(str(actual_file_path), 0o600)
+                logger.info(f"Set database file permissions for {actual_file_path} to 0o600.")
+            except OSError as e:
+                logger.warning(f"Could not set database file permissions for {actual_file_path}: {e}")
 
         if conn:
             # Store and reset row_factory for schema operations

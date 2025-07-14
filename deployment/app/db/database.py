@@ -38,6 +38,15 @@ ALLOWED_METRICS = [
     "train_MIWS",
     "train_MIWS_MIC_Ratio",
     "training_duration_seconds",
+    # FIXED: Add actual metric names with double prefixes from database
+    "val_val_loss",
+    "val_val_MIWS",
+    "val_val_MIC", 
+    "val_val_MIWS_MIC_Ratio",
+    "train_train_loss",
+    "train_train_MIWS",
+    "train_train_MIC",
+    "train_train_MIWS_MIC_Ratio",
 ]
 
 # Use database path from settings
@@ -2010,7 +2019,6 @@ def auto_activate_best_config_if_enabled(connection: sqlite3.Connection = None) 
     settings = get_settings()
     
     if not settings.auto_select_best_configs:
-        logger.debug("Auto-activation of best configs is disabled in settings")
         return False
         
     try:
@@ -2059,7 +2067,6 @@ def auto_activate_best_model_if_enabled(connection: sqlite3.Connection = None) -
     settings = get_settings()
     
     if not settings.auto_select_best_model:
-        logger.debug("Auto-activation of best models is disabled in settings")
         return False
         
     try:
@@ -2259,7 +2266,7 @@ def get_top_configs(
 
     Selection rules:
     1. Optionally include the currently active config first.
-    2. Then order configs by metric from *training_results* table.
+    2. Then order configs by metric from both *training_results* and *tuning_results* tables.
        Rows where metric is NULL are ignored.
     3. Falls back to most recently created configs if no metrics.
     """
@@ -2279,29 +2286,82 @@ def get_top_configs(
         conn.row_factory = dict_factory
         cursor = conn.cursor()
 
-        # Build base SQL to fetch configs with metric value
+        # Build base SQL to fetch configs with metric value from both training_results and tuning_results
         json_path = f"'$.{metric_name}'"
+        
+        # FIXED: Improved CTE logic that properly handles all configs
         sql = f"""
-            SELECT c.config_id, c.config, c.created_at, c.is_active,
-                   JSON_EXTRACT(tr.metrics, {json_path}) AS metric_value
-            FROM configs c
-            LEFT JOIN training_results tr ON c.config_id = tr.config_id
-            WHERE JSON_VALID(tr.metrics)=1 OR tr.metrics IS NULL
+            WITH config_metrics AS (
+                -- Get all configs first
+                SELECT 
+                    c.config_id,
+                    c.config,
+                    c.created_at,
+                    c.is_active,
+                    -- Get best metric from training_results
+                    MAX(CASE 
+                        WHEN tr.metrics IS NOT NULL 
+                        AND JSON_VALID(tr.metrics) = 1 
+                        AND JSON_EXTRACT(tr.metrics, {json_path}) IS NOT NULL
+                        THEN JSON_EXTRACT(tr.metrics, {json_path})
+                        ELSE NULL
+                    END) as training_metric,
+                    -- Get best metric from tuning_results  
+                    MAX(CASE 
+                        WHEN tu.metrics IS NOT NULL 
+                        AND JSON_VALID(tu.metrics) = 1 
+                        AND JSON_EXTRACT(tu.metrics, {json_path}) IS NOT NULL
+                        THEN JSON_EXTRACT(tu.metrics, {json_path})
+                        ELSE NULL
+                    END) as tuning_metric
+                FROM configs c
+                LEFT JOIN training_results tr ON c.config_id = tr.config_id
+                LEFT JOIN tuning_results tu ON c.config_id = tu.config_id
+                GROUP BY c.config_id, c.config, c.created_at, c.is_active
+            ),
+            final_metrics AS (
+                -- Combine metrics and select the best one
+                SELECT 
+                    config_id,
+                    config,
+                    created_at,
+                    is_active,
+                    CASE 
+                        WHEN training_metric IS NOT NULL AND tuning_metric IS NOT NULL THEN
+                            CASE WHEN {higher_is_better} THEN 
+                                MAX(training_metric, tuning_metric)
+                            ELSE 
+                                MIN(training_metric, tuning_metric)
+                            END
+                        WHEN training_metric IS NOT NULL THEN training_metric
+                        WHEN tuning_metric IS NOT NULL THEN tuning_metric
+                        ELSE NULL
+                    END as best_metric
+                FROM config_metrics
+            )
+            SELECT config_id, config, created_at, is_active, best_metric
+            FROM final_metrics
         """
+        
         # Filter: if include_active false, remove active
         if not include_active:
-            sql += " AND c.is_active = 0"
-        sql += f" GROUP BY c.config_id ORDER BY c.is_active DESC, metric_value {order}, c.created_at DESC LIMIT ?"
+            sql += " WHERE is_active = 0"
+            
+        # Order by: active first, then by metric (nulls last), then by creation date
+        sql += f" ORDER BY is_active DESC, best_metric {order} NULLS LAST, created_at DESC LIMIT ?"
+        
         cursor.execute(sql, (limit,))
         rows = cursor.fetchall() or []
+        
         # ensure config json parsed
         top_cfgs = []
         for r in rows:
             try:
                 cfg = json.loads(r["config"])
-            except Exception:
+                top_cfgs.append(cfg)
+            except Exception as e:
+                logger.warning(f"Failed to parse config JSON for {r['config_id']}: {e}")
                 continue
-            top_cfgs.append(cfg)
         return top_cfgs
     finally:
         if conn_created and conn:
@@ -2320,7 +2380,6 @@ def insert_retry_event(event: dict[str, Any], connection: sqlite3.Connection = N
         event: Dict with keys matching retry_events columns.
         connection: Optional existing DB connection.
     """
-
     query = (
         "INSERT INTO retry_events (timestamp, component, operation, attempt, max_attempts, "
         "successful, duration_ms, exception_type, exception_message) "
@@ -2332,10 +2391,14 @@ def insert_retry_event(event: dict[str, Any], connection: sqlite3.Connection = N
     event = event.copy()
     event["successful"] = 1 if event.get("successful") else 0
 
-    execute_query(query, event, connection=connection)
-    # Commit if using external connection to ensure persistence
-    if connection:
-        connection.commit()
+    try:
+        execute_query(query, event, connection=connection)
+        # Commit if using external connection to ensure persistence
+        if connection:
+            connection.commit()
+    except Exception as e:
+        logger.error(f"[insert_retry_event] Error during insert or commit for event {event.get('operation')}: {e}", exc_info=True)
+        raise
 
 
 def fetch_recent_retry_events(limit: int = 1000, connection: sqlite3.Connection = None) -> list[dict[str, Any]]:

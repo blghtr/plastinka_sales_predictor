@@ -10,7 +10,8 @@ import os
 from datetime import datetime, timedelta
 
 from ..config import get_settings
-from .database import ALLOWED_METRICS, get_db_connection  # Import ALLOWED_METRICS
+from .database import ALLOWED_METRICS, get_db_connection
+from .data_access_layer import DataAccessLayer, UserRoles # Import DataAccessLayer
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,14 @@ def cleanup_old_predictions(days_to_keep: int | None = None, conn=None) -> int:
     # Track if we created this connection or if it was passed in
     connection_created = False
     if conn is None:
-        conn = get_db_connection()
+        # Create a temporary DAL instance for this function if no connection is provided
+        # This ensures database access goes through DAL, but also closes the connection if created here.
+        dal = DataAccessLayer(user_context=UserRoles.SYSTEM) # Assuming system role for cleanup
+        conn = dal.db_connection
         connection_created = True
+    else:
+        # If conn is already provided (e.g., from an outer DAL context), just use it.
+        pass
 
     cursor = conn.cursor()
 
@@ -110,8 +117,12 @@ def cleanup_old_historical_data(
     # Track if we created this connection or if it was passed in
     connection_created = False
     if conn is None:
-        conn = get_db_connection()
+        # Create a temporary DAL instance for this function if no connection is provided
+        dal = DataAccessLayer(user_context=UserRoles.SYSTEM) # Assuming system role for cleanup
+        conn = dal.db_connection
         connection_created = True
+    else:
+        pass
 
     cursor = conn.cursor()
     result = {"sales": 0, "stock": 0, "stock_changes": 0, "prices": 0}
@@ -224,8 +235,12 @@ def cleanup_old_models(
     # Track if we created this connection or if it was passed in
     connection_created = False
     if conn is None:
-        conn = get_db_connection()
+        # Create a temporary DAL instance for this function if no connection is provided
+        dal = DataAccessLayer(user_context=UserRoles.SYSTEM) # Assuming system role for cleanup
+        conn = dal.db_connection
         connection_created = True
+    else:
+        pass
 
     cursor = conn.cursor()
 
@@ -368,47 +383,27 @@ def cleanup_old_models(
 
 
 def run_cleanup_job() -> None:
-    """
-    Run a complete cleanup job, applying all data retention policies.
-
-    This function is designed to be called periodically (e.g., via cron job)
-    to maintain optimal database size and remove unnecessary files.
-    """
-    if not get_settings().data_retention.cleanup_enabled:
-        logger.info("Data retention cleanup is disabled in settings")
-        return
-
-    logger.info("Starting data retention cleanup job")
-
-    # Create a single connection for all operations
-    conn = get_db_connection()
-
+    """Runs all cleanup routines: predictions, models, and historical data."""
+    from deployment.app.db.data_retention import (
+        cleanup_old_predictions,
+        cleanup_old_models,
+        cleanup_old_historical_data,
+    )
     try:
-        # Clean up old predictions
-        try:
-            predictions_removed = cleanup_old_predictions(conn=conn)
-            logger.info(f"Removed {predictions_removed} old predictions")
-        except Exception as e:
-            logger.error(f"Error in prediction cleanup: {str(e)}")
-
-        # Clean up old models
-        try:
-            models_removed = cleanup_old_models(conn=conn)
-            logger.info(
-                f"Removed {len(models_removed)} old models: {', '.join(models_removed) if models_removed else 'none'}"
-            )
-        except Exception as e:
-            logger.error(f"Error in model cleanup: {str(e)}")
-
-        # Clean up historical data
-        try:
-            historical_data_results = cleanup_old_historical_data(conn=conn)
-            logger.info(f"Historical data cleanup results: {historical_data_results}")
-        except Exception as e:
-            logger.error(f"Error in historical data cleanup: {str(e)}")
-
-        logger.info("Data retention cleanup job completed")
-
-    finally:
-        # Close the connection when done
-        conn.close()
+        deleted_predictions = cleanup_old_predictions()
+        print(f"Deleted {deleted_predictions} old predictions.")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error in prediction cleanup: {e}")
+    try:
+        deleted_models = cleanup_old_models()
+        print(f"Deleted models: {deleted_models}")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error in model cleanup: {e}")
+    try:
+        deleted_historical = cleanup_old_historical_data()
+        print(f"Deleted historical data: {deleted_historical}")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error in historical data cleanup: {e}")

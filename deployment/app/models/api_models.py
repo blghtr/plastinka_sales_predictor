@@ -138,7 +138,7 @@ class SWAConfig(BaseModel):
     """Stochastic Weight Averaging configuration"""
 
     swa_lrs: float = Field(..., description="SWA learning rate", gt=0)
-    swa_epoch_start: int = Field(..., description="Epoch to start SWA", gt=0)
+    swa_epoch_start: float = Field(..., description="Epoch to start SWA", ge=0)
     annealing_epochs: int = Field(..., description="Number of annealing epochs", gt=0)
 
     model_config = ConfigDict(from_attributes=True)
@@ -331,3 +331,14 @@ class ModelCreateRequest(BaseModel):
     metadata: dict[str, Any] | None = Field(None, description="Model metadata")
     is_active: bool | None = Field(False, description="Set as active after creation")
     created_at: str | None = Field(None, description="Creation timestamp (ISO format)")
+
+
+class ErrorDetailResponse(BaseModel):
+    """Standardized error response model."""
+
+    message: str = Field(..., description="A human-readable error message.")
+    code: str | None = Field(None, description="An internal code representing the error type.")
+    status_code: int | None = Field(None, description="The HTTP status code associated with the error.")
+    details: dict[str, Any] | None = Field(None, description="Additional details about the error.")
+
+    model_config = ConfigDict(from_attributes=True)

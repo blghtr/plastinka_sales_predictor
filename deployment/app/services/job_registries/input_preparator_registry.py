@@ -29,6 +29,7 @@ async def prepare_training_inputs(
     """Prepares inputs for standard training jobs."""
     logger.info(f"[{job_id}] Preparing inputs for training job...")
     if config:
+        config = _replace_model_config_keys(config)
         config_json_path = target_dir / "config.json"
         logger.info(f"[{job_id}] Saving training config to {config_json_path}")
         with open(config_json_path, "w", encoding="utf-8") as f:
@@ -57,6 +58,14 @@ async def prepare_tuning_inputs(
     with open(tuning_json_path, "w", encoding="utf-8") as f:
         json.dump(tuning_data, f, indent=2)
     logger.info(f"[{job_id}] Tuning settings saved to {tuning_json_path}")
+
+    if config:
+        config = _replace_model_config_keys(config)
+        config_path = target_dir / "config.json"
+        logger.info(f"[{job_id}] Saving config to {config_path}")
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config.model_dump(), f, indent=2)
+        logger.info(f"[{job_id}] Config saved to {config_path}")
 
     # Create initial_configs.json with top historical configs
     init_cfgs: list[dict] = get_top_configs(
@@ -107,4 +116,11 @@ def get_input_preparator(name: str) -> PreparatorFunc:
         raise ValueError(
             f"Unknown input preparator: {name}. Available: {available}"
         )
-    return preparator 
+    return preparator
+
+
+def _replace_model_config_keys(config: dict) -> dict:
+    """Replace nn_model_config keys with model_config keys in the config."""
+    if "nn_model_config" in config:
+        config["model_config"] = config.pop("nn_model_config")
+    return config

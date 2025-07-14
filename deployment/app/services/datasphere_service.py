@@ -3,12 +3,13 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import tempfile
 import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import pandas as pd
 
@@ -125,6 +126,7 @@ async def _prepare_job_datasets(
     end_date_for_dataset: str = None,
     output_dir: str = None,
     job_config: JobTypeConfig | None = None,
+    connection=None,
 ) -> None:
     """Prepares datasets required for the job."""
     logger.info(f"[{job_id}] Stage 2: Preparing datasets...")
@@ -140,6 +142,7 @@ async def _prepare_job_datasets(
             output_dir=output_dir,
             feature_types=["sales", "stock", "change"],
             datasets_to_generate=job_config.datasets_to_generate if job_config else [],
+            connection=connection,
         )
         logger.info(f"[{job_id}] Datasets prepared in {output_dir}.")
         update_job_status(
@@ -187,6 +190,7 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
             progress=15,
             status_message="DataSphere client initialized.",
         )
+
         return client
     except asyncio.TimeoutError:
         error_msg = f"DataSphere client initialization timed out after {settings.datasphere.client_init_timeout_seconds} seconds."
@@ -848,7 +852,7 @@ async def _perform_model_cleanup(job_id: str, current_model_id: str) -> None:
         # Non-fatal, log and continue
 
 
-# NOTE: _process_job_results has been moved to result_processors.py 
+# NOTE: _process_job_results has been moved to result_processors.py
 # as process_training_results in the unified result processing architecture
 
 
@@ -902,7 +906,14 @@ def save_predictions_to_db(
 
     try:
         # Load predictions from CSV
-        df = pd.read_csv(predictions_path)
+        try:
+            df = pd.read_csv(predictions_path)
+        except (pd.errors.ParserError, UnicodeDecodeError) as e:
+            raise ValueError(f"Invalid predictions file format: {e}")
+
+        # NEW: Check if DataFrame is empty after reading
+        if df.empty:
+            raise ValueError(f"Predictions file is empty or invalid format: {predictions_path}")
 
         # Verify required columns exist
         required_columns = [
@@ -1111,6 +1122,7 @@ async def run_job(
     dataset_start_date: str = None,
     dataset_end_date: str = None,
     additional_job_params: dict | None = None,
+    connection: Optional[sqlite3.Connection] = None, # NEW: Add connection parameter
 ) -> dict[str, Any] | None:
     """
     Runs a DataSphere training job pipeline: setup, execution, monitoring, result processing, cleanup.
@@ -1150,6 +1162,7 @@ async def run_job(
                     JobStatus.PENDING.value,
                     progress=0,
                     status_message="Initializing job.",
+                    connection=connection,
                 )
                 config = None
                 if training_config:
@@ -1163,6 +1176,7 @@ async def run_job(
                     dataset_end_date,
                     output_dir=str(temp_input_dir),
                     job_config=job_config,
+                    connection=connection,
                 )
 
                 # Stage 3: Initialize Client
@@ -1199,6 +1213,7 @@ async def run_job(
                     JobStatus.RUNNING.value,
                     progress=24,
                     status_message="Project input link created.",
+                    connection=connection,
                 )
 
                 # Stage 5: Submit and Monitor DS Job
@@ -1229,6 +1244,7 @@ async def run_job(
                     polls=polls,
                     poll_interval=get_settings().datasphere.poll_interval,
                     config_id=config_id,
+                    connection=connection, # Pass the external connection
                 )
                 job_completed_successfully = True
                 logger.info(f"[{job_id}] Job pipeline completed successfully.")
@@ -1285,6 +1301,7 @@ async def run_job(
                     JobStatus.FAILED.value,
                     error_message=cancel_message,
                     status_message=cancel_message,
+                    connection=connection,
                 )
 
             except (ValueError, RuntimeError, TimeoutError, ImportError) as e:
@@ -1293,25 +1310,27 @@ async def run_job(
                     f"[{job_id}] {error_msg}",
                     exc_info=isinstance(e, RuntimeError | ImportError),
                 )
-                job_details = get_job(job_id)
+                job_details = get_job(job_id, connection=connection)
                 if job_details and job_details.get("status") != JobStatus.FAILED.value:
                     update_job_status(
                         job_id,
                         JobStatus.FAILED.value,
                         error_message=error_msg,
                         status_message=error_msg,
+                        connection=connection,
                     )
                 raise
             except Exception as e:
                 error_msg = f"Unexpected error in job pipeline: {str(e)}"
                 logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-                job_details = get_job(job_id)
+                job_details = get_job(job_id, connection=connection)
                 if job_details and job_details.get("status") != JobStatus.FAILED.value:
                     update_job_status(
                         job_id,
                         JobStatus.FAILED.value,
                         error_message=error_msg,
                         status_message=error_msg,
+                        connection=connection,
                     )
                 raise
             finally:
@@ -1339,6 +1358,7 @@ async def run_job(
             JobStatus.FAILED.value,
             error_message=error_msg,
             status_message=error_msg,
+            connection=connection,
         )
         raise
 
@@ -1349,6 +1369,7 @@ async def save_model_file_and_db(
     ds_job_id: str,
     config: TrainingConfig,
     metrics_data: dict[str, Any] | None,
+    connection: Optional[sqlite3.Connection] = None, # NEW: Add connection parameter
 ) -> str:
     """
     Saves the model file to permanent storage and creates a database record.
@@ -1359,6 +1380,7 @@ async def save_model_file_and_db(
         ds_job_id: DataSphere job ID that produced this model
         config: Training configuration used
         metrics_data: Optional metrics data from training
+        connection: Optional existing database connection to use
 
     Returns:
         The generated model ID
@@ -1422,6 +1444,7 @@ async def save_model_file_and_db(
             model_path=str(permanent_model_path),  # Save the permanent path
             created_at=datetime.now(),
             metadata=metadata,
+            connection=connection, # NEW: Pass connection
         )
         logger.info(
             f"[{job_id}] Successfully created model record in DB for model_id: {model_id} with permanent path: {permanent_model_path}"

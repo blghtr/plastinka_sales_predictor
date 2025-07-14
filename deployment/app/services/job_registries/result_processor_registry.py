@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 from typing import Any, Callable, Dict
 
 from deployment.app.config import get_settings
@@ -36,6 +37,7 @@ async def process_training_results(
     polls: int,
     poll_interval: float,
     config_id: str,
+    connection: sqlite3.Connection = None, # NEW: Add connection parameter
     **kwargs,
 ) -> None:
     """Process training job results - handles model and predictions."""
@@ -64,6 +66,7 @@ async def process_training_results(
                 ds_job_id=ds_job_id,
                 config=config,
                 metrics_data=metrics_data,
+                connection=connection, # Pass connection
             )
             logger.info(f"[{job_id}] Model saved with ID: {model_id_for_status}")
 
@@ -72,6 +75,7 @@ async def process_training_results(
                     predictions_path=predictions_path,
                     job_id=job_id,
                     model_id=model_id_for_status,
+                    direct_db_connection=connection, # Pass connection
                 )
                 logger.info(
                     f"[{job_id}] Saved {prediction_result_info.get('predictions_count', 'N/A')} predictions to database with result_id: {prediction_result_info.get('result_id', 'N/A')}"
@@ -97,6 +101,7 @@ async def process_training_results(
                 model_id=model_id_for_status,
                 duration=int(polls * poll_interval),
                 config=config.model_dump(),
+                connection=connection, # Pass connection
             )
             logger.info(
                 f"[{job_id}] Training result record created: {training_result_id}"
@@ -230,7 +235,7 @@ RESULT_PROCESSORS: Dict[str, Callable] = {
 }
 
 
-async def process_job_results_unified(job_id: str, processor_name: str, **kwargs) -> None:
+async def process_job_results_unified(job_id: str, processor_name: str, connection: sqlite3.Connection = None, **kwargs) -> None:
     """
     Unified result processing using registry pattern.
 
@@ -254,9 +259,9 @@ async def process_job_results_unified(job_id: str, processor_name: str, **kwargs
 
     # Call the processor function (async or sync)
     if asyncio.iscoroutinefunction(processor_func):
-        await processor_func(job_id=job_id, **kwargs)
+        await processor_func(job_id=job_id, connection=connection, **kwargs) # Pass connection
     else:
-        processor_func(job_id=job_id, **kwargs)
+        processor_func(job_id=job_id, connection=connection, **kwargs) # Pass connection
 
 
 def register_result_processor(name: str, processor_func: Callable) -> None:

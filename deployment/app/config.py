@@ -21,6 +21,7 @@ from pydantic_settings.sources import (  # Added
     InitSettingsSource,
     SecretsSettingsSource,
 )  # PydanticSettingsSource removed as it's likely internal
+import functools
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
@@ -38,10 +39,19 @@ def _get_default_data_root_dir() -> str:
     """
     try:
         # Primary approach: use user home directory
-        return str(Path("~/.plastinka_sales_predictor").expanduser())
+        # For Windows, prefer APPDATA, for Linux/macOS, prefer ~/.local/share
+        if os.name == 'nt':  # Windows
+            app_data = os.environ.get('APPDATA')
+            if app_data:
+                return str(Path(app_data) / "PlastinkaSalesPredictor")
+            else:
+                # Fallback if APPDATA not set
+                return str(Path("~/.plastinka_sales_predictor").expanduser())
+        else:  # Linux/macOS or other POSIX-like
+            return str(Path("~/.local/share/plastinka_sales_predictor").expanduser())
     except (RuntimeError, OSError) as e:
         logger.warning(
-            f"Could not determine home directory ({e}), using temporary directory fallback"
+            f"Could not determine appropriate data root directory ({e}), using temporary directory fallback"
         )
         try:
             # Fallback for test environments: use system temp directory
@@ -264,6 +274,10 @@ class DatabaseSettings(BaseSettings):
         description="SQLite database filename (path will be computed from data_root_dir)",
     )
 
+    database_busy_timeout: int = Field(
+        default=5000, description="SQLite busy timeout in milliseconds"
+    )
+
     # Database directory creation is handled in AppSettings computed properties
 
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_db_config
@@ -335,8 +349,6 @@ class DataSphereSettings(BaseSettings):
         default="auto",  # auto | yc_profile | oauth_token
         description="Authentication method: 'auto' (detect best), 'yc_profile' (SA), 'oauth_token' (user)"
     )
-
-
 
     # Polling configuration
     max_polls: int = Field(
@@ -453,6 +465,10 @@ class DataRetentionSettings(BaseSettings):
         default=90,  # ~3 months
         description="Retention period for inactive models in days",
     )
+    backup_retention_days: int = Field(
+        default=30,  # 30 days
+        description="Retention period for database backup files in days",
+    )
 
     # Execution settings
     cleanup_enabled: bool = Field(
@@ -521,10 +537,10 @@ class TuningSettings(BaseSettings):
 
     num_samples_light: int = Field(50, description="Samples for light mode")
     num_samples_full: int = Field(200, description="Samples for full mode")
-    max_concurrent: int = Field(2, description="Max concurrent Ray trials")
-    resources: dict[str, int] = Field({"cpu": 8, "gpu": 1}, description="Resource allocation per trial")
+    max_concurrent: int = Field(4, description="Max concurrent Ray trials")
+    resources: dict[str, int] = Field({"cpu": 8}, description="Resource allocation per trial")
     best_configs_to_save: int = Field(5, description="How many best configs to persist after tuning")
-    seed_configs_limit: int = Field(10, description="How many historical configs to pass to tuning as starters")
+    seed_configs_limit: int = Field(5, description="How many historical configs to pass to tuning as starters")
     metric_threshold: float = Field(0.8, description="Minimum metric for initial configs selection")
 
     # NEW: default tuning mode (overridable per-job via API) – 'light' or 'full'
@@ -578,11 +594,11 @@ class AppSettings(BaseSettings):
 
     # Model and parameters selection settings
     default_metric: str = Field(
-        default="val_MIC",
+        default="val_MIWS_MIC_Ratio",
         description="Default metric name to use for selecting best models/parameters",
     )
     default_metric_higher_is_better: bool = Field(
-        default=True,
+        default=False,
         description="Whether higher values of the default metric are better",
     )
     auto_select_best_configs: bool = Field(
@@ -656,6 +672,13 @@ class AppSettings(BaseSettings):
     def logs_dir(self) -> str:
         """Directory for application logs."""
         path = os.path.join(self.data_root_dir, "logs")
+        ensure_directory_exists(path)
+        return path
+
+    @property
+    def database_backup_dir(self) -> str:
+        """Directory for database backups."""
+        path = os.path.join(self.data_root_dir, "backups", "database")
         ensure_directory_exists(path)
         return path
 
@@ -798,7 +821,7 @@ class AppSettings(BaseSettings):
 # settings = AppSettings()
 
 
-@lru_cache
+@functools.lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
     """
     Get the application settings.

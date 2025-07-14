@@ -532,8 +532,6 @@ def _process_features_for_report(
         # Process each month (core algorithm from notebook)
         for month, daily_change in change_groups:
             try:
-                logger.debug(f"Processing month: {month}")
-
                 daily_change = daily_change.reset_index()
                 change_pivot = daily_change.pivot_table(
                     index=idx,
@@ -680,14 +678,8 @@ def _extract_features_for_month(
         for feature_key, display_name in feature_mapping:
             if feature_key in processed_features:
                 feature_df = processed_features[feature_key]
-                logger.debug(
-                    f"Processing feature {feature_key}, shape: {feature_df.shape}"
-                )
-                logger.debug(f"Available dates: {feature_df.index.tolist()}")
-
                 # Find the closest date to our target
                 available_dates = pd.to_datetime(feature_df.index)
-                logger.debug(f"Available dates: {available_dates}")
 
                 # Try exact match first
                 if target_date in available_dates:
@@ -713,9 +705,7 @@ def _extract_features_for_month(
                         {display_name: feature_df.loc[selected_date]}
                     )
                     columns_data.append(column_data)
-                    logger.debug(
-                        f"Added column {display_name} with {len(column_data)} rows"
-                    )
+
 
         if columns_data:
             result = pd.concat(columns_data, axis=1)

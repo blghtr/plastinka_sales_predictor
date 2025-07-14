@@ -13,6 +13,8 @@ from datetime import datetime
 from threading import RLock
 from typing import Any
 
+# Removed: from deployment.app.db.database import get_db_connection, insert_retry_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -552,6 +554,7 @@ class RetryMonitor:
     def _fetch_recent_events_db(self) -> list[dict[str, Any]]:
         """Fetch recent retry_events rows up to self._capacity."""
         try:
+            # Local import to break circular dependency
             from deployment.app.db.database import fetch_recent_retry_events, get_db_connection
 
             conn = get_db_connection(db_path_override=self._db_path)
@@ -624,18 +627,18 @@ class RetryMonitor:
                 # Restore original list to avoid side-effects
                 self._retry_events = original_events
 
-    def _insert_event_db(self, event: dict[str, Any]) -> None:
-        """Insert single retry event into SQLite database."""
-        try:
-            from deployment.app.db.database import get_db_connection, insert_retry_event
-
-            conn = get_db_connection(db_path_override=self._db_path)
+    def _insert_event_db(self, event_data: dict[str, Any]) -> None:
+        """Internal: Inserts a single event into the DB."""
+        if self._db_path:
             try:
-                insert_retry_event(event, connection=conn)
-            finally:
-                conn.close()
-        except Exception as e:
-            raise e
+                # Local import to break circular dependency
+                from deployment.app.db.database import get_db_connection, insert_retry_event
+                with get_db_connection(self._db_path) as conn:
+                    insert_retry_event(event_data, connection=conn)
+            except Exception as e:
+                logger.error(f"[RetryMonitor._insert_event_db] Failed to insert retry event into DB: {e}", exc_info=True)
+        else:
+            pass  # DB path not configured, skipping event persistence
 
 
 # -------------------- Global singleton instance -----------------------------------

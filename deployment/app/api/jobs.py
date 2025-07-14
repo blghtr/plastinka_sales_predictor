@@ -16,22 +16,14 @@ from fastapi import (
     Query,
     Request,
     UploadFile,
-    status,
+    status as fastapi_status,
 )
 from fastapi.responses import JSONResponse
 
 from deployment.app.config import get_settings
 from deployment.app.db.database import (
     DatabaseError,
-    create_job,
-    get_data_upload_result,
-    get_effective_config,
-    get_job,
-    get_prediction_result,
-    get_report_result,
-    get_training_result,
-    list_jobs,
-    update_job_status,
+    # Removed direct imports: create_job, get_data_upload_result, get_effective_config, get_job, get_prediction_result, get_report_result, get_training_result, list_jobs, update_job_status,
 )
 from deployment.app.models.api_models import (
     DataUploadResponse,
@@ -44,12 +36,13 @@ from deployment.app.models.api_models import (
     PredictionResponse,
     ReportParams,
     TrainingResponse,
+    ErrorDetailResponse,
 )
 from deployment.app.services.auth import get_current_api_key_validated
 from deployment.app.services.data_processor import process_data_files
 from deployment.app.services.datasphere_service import run_job
 from deployment.app.services.report_service import run_report_job
-from deployment.app.utils.error_handling import ErrorDetail
+from deployment.app.utils.error_handling import ErrorDetail, AppValidationError
 from deployment.app.utils.file_validation import validate_data_file_upload
 from deployment.app.utils.validation import (
     ValidationError,
@@ -58,6 +51,9 @@ from deployment.app.utils.validation import (
     validate_sales_file,
     validate_stock_file,
 )
+
+from ..dependencies import get_dal, get_dal_for_general_user # Import the DAL dependency
+from ..db.data_access_layer import DataAccessLayer # Import for type hinting
 
 logger = logging.getLogger("plastinka.api")
 
@@ -98,6 +94,7 @@ async def create_data_upload_job(
         "30.09.2022", description="Cutoff date for data processing (DD.MM.YYYY)"
     ),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
     Submit a job to process data files.
@@ -115,7 +112,7 @@ async def create_data_upload_job(
         # Validate cutoff date
         is_valid_date, parsed_date = validate_date_format(cutoff_date)
         if not is_valid_date:
-            raise ValidationError(
+            raise AppValidationError(
                 message="Invalid cutoff date format. Expected format: DD.MM.YYYY",
                 details={"cutoff_date": cutoff_date},
             )
@@ -127,7 +124,7 @@ async def create_data_upload_job(
         stock_content = await stock_file.read()
         is_valid_stock, stock_error = validate_stock_file(stock_content, stock_file.filename)
         if not is_valid_stock:
-            raise ValidationError(
+            raise AppValidationError(
                 message=f"Invalid stock file: {stock_error}",
                 details={"filename": stock_file.filename},
             )
@@ -144,7 +141,7 @@ async def create_data_upload_job(
             sales_content = await sales_file.read()
             is_valid_sales, sales_error = validate_sales_file(sales_content, sales_file.filename)
             if not is_valid_sales:
-                raise ValidationError(
+                raise AppValidationError(
                     message=f"Invalid sales file ({sales_file.filename}): {sales_error}",
                     details={"filename": sales_file.filename, "index": i},
                 )
@@ -152,7 +149,7 @@ async def create_data_upload_job(
             await sales_file.seek(0)
 
         # Create a new job *before* creating the temp directory
-        job_id = create_job(
+        job_id = dal.create_job(
             JobType.DATA_UPLOAD,
             parameters={
                 "stock_file": stock_file.filename,
@@ -196,19 +193,30 @@ async def create_data_upload_job(
         )
         return DataUploadResponse(job_id=job_id, status=JobStatus.PENDING)
 
-    except ValidationError:
-        # ValidationError is handled by the app_validation_exception_handler
-        raise
+    except AppValidationError as e:
+        error = ErrorDetail(
+            message=e.message,
+            code="validation_error",
+            status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+            details=e.details,
+        )
+        error.log_error(request)
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump(),
+        )
     except DatabaseError as e:
-        logger.error(f"Database error in data-upload: {str(e)}", exc_info=True)
         error = ErrorDetail(
             message="Failed to create data upload job due to database error",
             code="database_error",
-            status_code=500,
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
             details={"error": str(e)},
         )
         error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump(),
+        )
     except FileExistsError as e:
         # temp_job_dir and job_id are guaranteed to be set if error is from temp_job_dir.mkdir()
         detailed_error_reason = (
@@ -255,14 +263,14 @@ async def create_data_upload_job(
 
         # Fail the job with the detailed reason
         if job_id:
-            update_job_status(
+            dal.update_job_status(
                 job_id, JobStatus.FAILED.value, error_message=detailed_error_reason
             )
 
         error = ErrorDetail(
             message="Failed to initialize job resources: A path conflict occurred.",
             code="job_resource_conflict",  # More specific error code
-            status_code=500,
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
             details={
                 "job_id": job_id,
                 "path": str(temp_job_dir),
@@ -271,15 +279,18 @@ async def create_data_upload_job(
             },
         )
         error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump()
+        )
     except Exception as e:
         logger.error(
             f"Unexpected error in data-upload for job {job_id or 'unknown'}: {str(e)}",
             exc_info=True,
         )
         # Если ошибка произошла после создания задания, помечаем его как FAILED
-        if job_id and not get_job(job_id)["status"] == JobStatus.FAILED.value:
-            update_job_status(
+        if job_id and not dal.get_job(job_id)["status"] == JobStatus.FAILED.value:
+            dal.update_job_status(
                 job_id,
                 JobStatus.FAILED.value,
                 error_message=f"Unexpected error during setup: {str(e)}",
@@ -292,12 +303,15 @@ async def create_data_upload_job(
         error = ErrorDetail(
             message="Failed to create data upload job",
             code="internal_error",
-            status_code=500,
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
             details={"error": str(e)},
             exception=e,
         )
         error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump()
+        )
 
 
 @router.post("/training", response_model=TrainingResponse)
@@ -307,6 +321,7 @@ async def create_training_job(
     dataset_start_date: str | None = None,
     dataset_end_date: str | None = None,
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
     Submit a job to train a model using the active parameter set.
@@ -334,8 +349,13 @@ async def create_training_job(
             if not is_valid:
                 logger.warning(f"Invalid start date format: {dataset_start_date}")
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid start date format. Expected DD.MM.YYYY.",
+                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": "Invalid start date format. Expected DD.MM.YYYY.",
+                        "code": "invalid_date_format",
+                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
+                        "details": {"date": dataset_start_date},
+                    },
                 )
         if dataset_end_date:
             is_valid, parsed_end_date = validate_date_format(
@@ -344,8 +364,13 @@ async def create_training_job(
             if not is_valid:
                 logger.warning(f"Invalid end date format: {dataset_end_date}")
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid end date format. Expected DD.MM.YYYY.",
+                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": "Invalid end date format. Expected DD.MM.YYYY.",
+                        "code": "invalid_date_format",
+                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
+                        "details": {"date": dataset_end_date},
+                    },
                 )
 
         # 2. Логическая валидация диапазона дат (если обе даты заданы)
@@ -356,15 +381,26 @@ async def create_training_job(
             if not is_valid:
                 logger.warning(f"Invalid date range: {error_msg}")
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg
+                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": error_msg,
+                        "code": "invalid_date_range",
+                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
+                        "details": {"start_date": dataset_start_date, "end_date": dataset_end_date},
+                    },
                 )
 
         # 3. Получение конфига
-        config = get_effective_config(get_settings(), logger=logger)
+        config = dal.get_effective_config(get_settings(), logger=logger)
         if config is None:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No active config and no best config by metric available",
+                status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": "No active config and no best config by metric available",
+                    "code": "no_config_available",
+                    "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
+                    "details": None,
+                },
             )
         logger.info(f"Using configuration: {config['config_id']}")
 
@@ -375,7 +411,7 @@ async def create_training_job(
         if parsed_end_date:
             job_params["dataset_end_date"] = parsed_end_date
 
-        job_id = create_job(JobType.TRAINING, parameters=job_params)
+        job_id = dal.create_job(JobType.TRAINING, parameters=job_params)
         logger.info(f"Job record created with ID: {job_id}")
 
         # 5. Запуск фоновой задачи
@@ -406,19 +442,32 @@ async def create_training_job(
         # Catch ValueErrors, potentially from date parsing issues before the function signature,
         # or custom validation added inside.
         logger.error(f"ValueError in create_training_job: {e}", exc_info=True)
+        error = ErrorDetail(
+            message=f"Invalid input data: {e}",
+            code="invalid_input_data",
+            status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+            details={"error": str(e)},
+        )
+        error.log_error(request)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid input data: {e}"
-        ) from e
-    # Assuming DatabaseError is a specific exception type raised by your database layer functions
-    except Exception as e:  # Catching general Exception for database or other unexpected errors during sync part
-        # Log any other unexpected errors with traceback
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump(),
+        )
+    except Exception as e:
         logger.error(
             f"An unexpected error occurred in create_training_job: {e}", exc_info=True
         )
+        error = ErrorDetail(
+            message="An unexpected internal server error occurred while initiating the job.",
+            code="internal_server_error",
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            details={"error": str(e)},
+        )
+        error.log_error(request)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected internal server error occurred while initiating the job.",
-        ) from e
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump(),
+        )
 
 
 @router.post("/tuning", response_model=JobResponse)
@@ -434,6 +483,7 @@ async def create_tuning_job(
         description="Global time budget for Ray Tune in seconds (positive integer)",
     ),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
     Submit a hyper-parameter tuning job.
@@ -443,26 +493,61 @@ async def create_tuning_job(
     """
     logger.info("Received request to create tuning job")
     try:
-        # 1. Validate dates if provided
         parsed_start_date = None
         parsed_end_date = None
 
         if dataset_start_date:
             is_valid, parsed_start_date = validate_date_format(dataset_start_date, format_str="%d.%m.%Y")
             if not is_valid:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid start date format. Expected DD.MM.YYYY.")
+                raise HTTPException(
+                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": "Invalid start date format. Expected DD.MM.YYYY.",
+                        "code": "invalid_date_format",
+                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
+                        "details": {"date": dataset_start_date},
+                    },
+                )
         if dataset_end_date:
             is_valid, parsed_end_date = validate_date_format(dataset_end_date, format_str="%d.%m.%Y")
             if not is_valid:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid end date format. Expected DD.MM.YYYY.")
+                raise HTTPException(
+                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": "Invalid end date format. Expected DD.MM.YYYY.",
+                        "code": "invalid_date_format",
+                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
+                        "details": {"date": dataset_end_date},
+                    },
+                )
 
         # Logical validation of range
         if parsed_start_date and parsed_end_date:
             is_valid, error_msg, _, _ = validate_historical_date_range(parsed_start_date, parsed_end_date, format_str="%d.%m.%Y")
             if not is_valid:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg)
+                raise HTTPException(
+                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "message": error_msg,
+                        "code": "invalid_date_range",
+                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
+                        "details": {"start_date": dataset_start_date, "end_date": dataset_end_date},
+                    },
+                )
+            
+        config = dal.get_effective_config(get_settings(), logger=logger)
+        if config is None:
+            raise HTTPException(
+                status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": "No active config and no best config by metric available",
+                    "code": "no_config_available",
+                    "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
+                    "details": None,
+                },
+            )
+        logger.info(f"Using configuration: {config['config_id']}")
 
-        # 2. Формируем параметры задания
         job_params = {
             "mode": mode or get_settings().tuning.mode,
         }
@@ -474,7 +559,7 @@ async def create_tuning_job(
             job_params["time_budget_s"] = time_budget_s
 
         # 3. Создание задания в БД
-        job_id = create_job(JobType.TUNING, parameters=job_params)
+        job_id = dal.create_job(JobType.TUNING, parameters=job_params)
         logger.info(f"Tuning job created: {job_id}")
 
         # 4. Подготовка динамических параметров задачи
@@ -487,8 +572,8 @@ async def create_tuning_job(
         background_tasks.add_task(
             run_job,
             job_id=job_id,
-            training_config=None,
-            config_id=None,
+            training_config=config["config"],
+            config_id=config["config_id"],
             job_type="tune",
             dataset_start_date=parsed_start_date,
             dataset_end_date=parsed_end_date,
@@ -501,7 +586,15 @@ async def create_tuning_job(
         raise
     except Exception as e:
         logger.error(f"Unexpected error in create_tuning_job: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error") from e
+        raise HTTPException(
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "message": "Internal server error",
+                "code": "internal_server_error",
+                "status_code": fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "details": {"error": str(e)},
+            },
+        ) from e
 
 @router.post("/reports", response_model=JobResponse)
 async def create_prediction_report_job(
@@ -509,6 +602,7 @@ async def create_prediction_report_job(
     params: ReportParams,
     background_tasks: BackgroundTasks,
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
     Submit a job to generate a prediction report.
@@ -525,7 +619,7 @@ async def create_prediction_report_job(
         )
 
         # Create a job record
-        job_id = create_job(job_type=JobType.REPORT, parameters=params.model_dump())
+        job_id = dal.create_job(job_type=JobType.REPORT, parameters=params.model_dump())
 
         # Add the report generation to background tasks
         background_tasks.add_task(run_report_job, job_id=job_id, params=params)
@@ -536,8 +630,13 @@ async def create_prediction_report_job(
     except Exception as e:
         logger.error(f"Failed to create report job: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create report job",
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "message": "Failed to create report job",
+                "code": "internal_server_error",
+                "status_code": fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "details": {"error": str(e)},
+            },
         ) from e
 
 
@@ -546,6 +645,7 @@ async def get_job_status(
     request: Request,
     job_id: str,
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
     Get the status and details of a job.
@@ -553,11 +653,17 @@ async def get_job_status(
     If the job is completed, this will also include the results.
     """
     try:
-        job = get_job(job_id)
+        job = dal.get_job(job_id)
 
         if not job:
             raise HTTPException(
-                status_code=404, detail=f"Job with ID {job_id} not found"
+                status_code=fastapi_status.HTTP_404_NOT_FOUND,
+                detail={
+                    "message": f"Job with ID {job_id} not found",
+                    "code": "job_not_found",
+                    "status_code": fastapi_status.HTTP_404_NOT_FOUND,
+                    "details": None,
+                },
             )
 
         # Build basic response
@@ -576,7 +682,7 @@ async def get_job_status(
             result = {}
 
             if job["job_type"] == JobType.DATA_UPLOAD.value:
-                data_result = get_data_upload_result(job["result_id"])
+                data_result = dal.get_data_upload_result(job["result_id"])
                 if data_result:
                     result = {
                         "records_processed": data_result["records_processed"],
@@ -587,7 +693,7 @@ async def get_job_status(
                     }
 
             elif job["job_type"] == JobType.TRAINING.value:
-                training_result = get_training_result(job["result_id"])
+                training_result = dal.get_training_result(job["result_id"])
                 if training_result:
                     result = {
                         "model_id": training_result["model_id"],
@@ -597,7 +703,7 @@ async def get_job_status(
                     }
 
             elif job["job_type"] == JobType.PREDICTION.value:
-                prediction_result = get_prediction_result(job["result_id"])
+                prediction_result = dal.get_prediction_result(job["result_id"])
                 if prediction_result:
                     result = {
                         "model_id": prediction_result["model_id"],
@@ -609,10 +715,18 @@ async def get_job_status(
                     }
 
             elif job["job_type"] == JobType.REPORT.value:
-                report_result = get_report_result(job["result_id"])
+                report_result = dal.get_report_result(job["result_id"])
                 if report_result:
+                    # Ensure all fields for ReportResponse are populated if they exist in DB
                     result = {
                         "report_type": report_result["report_type"],
+                        "prediction_month": report_result.get("prediction_month"),
+                        "records_count": report_result.get("records_count"),
+                        "csv_data": report_result.get("csv_data"),
+                        "has_enriched_metrics": report_result.get("has_enriched_metrics"),
+                        "enriched_columns": json.loads(report_result.get("enriched_columns", "[]")),
+                        "generated_at": report_result.get("generated_at"),
+                        "filters_applied": json.loads(report_result.get("filters_applied", "{}")),
                         "parameters": json.loads(report_result["parameters"]),
                         "output_path": report_result["output_path"],
                     }
@@ -624,20 +738,43 @@ async def get_job_status(
     except HTTPException:
         # Let built-in handlers deal with HTTP exceptions
         raise
-    except DatabaseError as e:
-        logger.error(
-            f"Database error in get_job_status for job {job_id}: {str(e)}",
-            exc_info=True,
+    except AppValidationError as e:
+        error = ErrorDetail(
+            message=str(e),
+            code="validation_error",
+            status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+            details=e.details,
         )
+        error.log_error(request)
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump(),
+        )
+    except DatabaseError as e:
         error = ErrorDetail(
             message=f"Failed to retrieve job {job_id}",
-            code="internal_error",
-            status_code=500,
+            code="database_error",
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
             details={"error": str(e)},
             exception=e,
         )
         error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump(),
+        )
+    except ValueError as e:
+        error = ErrorDetail(
+            message=f"Invalid input data: {str(e)}",
+            code="invalid_input_data",
+            status_code=fastapi_status.HTTP_400_BAD_REQUEST,
+            details={"error": str(e)},
+        )
+        error.log_error(request)
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump(),
+        )
     except Exception as e:
         logger.error(
             f"Unexpected error in get_job_status for job {job_id}: {str(e)}",
@@ -646,12 +783,15 @@ async def get_job_status(
         error = ErrorDetail(
             message=f"Failed to retrieve job {job_id}",
             code="internal_error",
-            status_code=500,
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
             details={"error": str(e)},
             exception=e,
         )
         error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump()
+        )
 
 
 @router.get("", response_model=JobsList)
@@ -661,12 +801,13 @@ async def list_all_jobs(
     status: JobStatus | None = None,
     limit: int = Query(100, ge=1, le=1000),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
     List all jobs with optional filtering by type and status.
     """
     try:
-        jobs_data = list_jobs(
+        jobs_data = dal.list_jobs(
             job_type=job_type.value if job_type else None,
             status=status.value if status else None,
             limit=limit,
@@ -692,21 +833,27 @@ async def list_all_jobs(
         logger.error(f"Unexpected error in list_all_jobs: {str(e)}", exc_info=True)
         error = ErrorDetail(
             message="Failed to list jobs",
-            code="internal_error",
-            status_code=500,
+            code="database_error",
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
             details={"error": str(e)},
             exception=e,
         )
         error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump()
+        )
     except Exception as e:
         logger.error(f"Unexpected error in list_all_jobs: {str(e)}", exc_info=True)
         error = ErrorDetail(
             message="Failed to list jobs",
             code="internal_error",
-            status_code=500,
+            status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
             details={"error": str(e)},
             exception=e,
         )
         error.log_error(request)
-        return JSONResponse(status_code=500, content=error.to_dict())
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.to_response_model().model_dump()
+        )

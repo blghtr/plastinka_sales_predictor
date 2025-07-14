@@ -16,23 +16,12 @@ from fastapi import (
     Query,
     UploadFile,
 )
+from fastapi import status
 
 from deployment.app.config import get_settings
 from deployment.app.db.database import (
-    create_job,
-    create_model_record,
-    delete_configs_by_ids,
-    delete_models_by_ids,
-    get_active_config,
-    get_active_model,
-    get_all_models,
-    get_best_config_by_metric,
-    get_best_model_by_metric,
-    get_configs,
-    get_job,
-    get_recent_models,
-    set_config_active,
-    set_model_active,
+    auto_activate_best_config_if_enabled,
+    auto_activate_best_model_if_enabled,
 )
 from deployment.app.models.api_models import (
     ConfigCreateRequest,
@@ -40,8 +29,11 @@ from deployment.app.models.api_models import (
     DeleteIdsRequest,
     DeleteResponse,
     ModelResponse,
+    ErrorDetailResponse
 )
 from deployment.app.services.auth import get_current_api_key_validated
+from deployment.app.dependencies import DataAccessLayer, get_dal_for_general_user
+from deployment.app.utils.error_handling import ErrorDetail
 
 router = APIRouter(
     prefix="/api/v1/models-configs",
@@ -60,22 +52,32 @@ logger = logging.getLogger("plastinka.api.model_params")
 @router.get("/configs/active", response_model=ConfigResponse)
 async def get_active_config_endpoint(
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """Get the currently active config."""
-    active_config = get_active_config()
+    active_config = dal.get_active_config()
     if not active_config:
-        raise HTTPException(status_code=404, detail="No active config found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
+            message="No active config found",
+            code="no_active_config",
+            status_code=status.HTTP_404_NOT_FOUND,
+        ).model_dump())
     return active_config
 
 
 @router.post("/configs/{config_id}/set-active")
 async def activate_config(
-    config_id: str, api_key: bool = Depends(get_current_api_key_validated)
+    config_id: str, api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """Set a config as active."""
-    if set_config_active(config_id):
+    if dal.set_config_active(config_id):
         return {"success": True, "message": f"Config {config_id} set as active"}
-    raise HTTPException(status_code=404, detail=f"Config {config_id} not found")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
+        message=f"Config {config_id} not found",
+        code="config_not_found",
+        status_code=status.HTTP_404_NOT_FOUND,
+    ).model_dump())
 
 
 @router.get("/configs/best", response_model=ConfigResponse)
@@ -85,6 +87,7 @@ async def get_best_config(
         True, description="Whether higher values are better"
     ),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
     Get the best config based on a metric.
@@ -96,11 +99,14 @@ async def get_best_config(
         metric_name = settings.default_metric
         higher_is_better = settings.default_metric_higher_is_better
 
-    best_config = get_best_config_by_metric(metric_name, higher_is_better)
+    best_config = dal.get_best_config_by_metric(metric_name, higher_is_better)
     if not best_config:
-        raise HTTPException(
-            status_code=404, detail=f"No configs found with metric '{metric_name}'"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
+            message=f"No configs found with metric '{metric_name}'",
+            code="no_configs_found",
+            status_code=status.HTTP_404_NOT_FOUND,
+            details={"metric_name": metric_name}
+        ).model_dump())
     return best_config
 
 
@@ -113,11 +119,12 @@ async def get_configs_endpoint(
         100, ge=1, le=1000, description="Maximum number of configs to return"
     ),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
     Get a list of all configs.
     """
-    configs_list = get_configs(limit=limit)
+    configs_list = dal.get_configs(limit=limit)
     if not configs_list:
         return []
 
@@ -126,16 +133,22 @@ async def get_configs_endpoint(
 
 @router.post("/configs/delete", response_model=DeleteResponse)
 async def delete_configs(
-    request: DeleteIdsRequest, api_key: bool = Depends(get_current_api_key_validated)
+    request: DeleteIdsRequest, api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
     Delete multiple configs by their IDs.
     Active configs cannot be deleted.
     """
     if not request.ids:
-        return DeleteResponse(successful=0, failed=0, errors=["No IDs provided"])
+        # Modified to return HTTPException directly, as DeleteResponse might not be suitable for empty request body validation error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ErrorDetailResponse(
+            message="No IDs provided for deletion.",
+            code="no_ids_provided",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        ).model_dump())
 
-    result = delete_configs_by_ids(request.ids)
+    result = dal.delete_configs_by_ids(request.ids)
     return DeleteResponse(
         successful=result["successful"],
         failed=result["failed"],
@@ -147,22 +160,32 @@ async def delete_configs(
 @router.get("/models/active", response_model=ModelResponse)
 async def get_active_model_endpoint(
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """Get the currently active model."""
-    active_model = get_active_model()
+    active_model = dal.get_active_model()
     if not active_model:
-        raise HTTPException(status_code=404, detail="No active model found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
+            message="No active model found",
+            code="no_active_model",
+            status_code=status.HTTP_404_NOT_FOUND,
+        ).model_dump())
     return active_model
 
 
 @router.post("/models/{model_id}/set-active")
 async def activate_model(
-    model_id: str, api_key: bool = Depends(get_current_api_key_validated)
+    model_id: str, api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """Set a model as active."""
-    if set_model_active(model_id):
+    if dal.set_model_active(model_id, deactivate_others=True):
         return {"success": True, "message": f"Model {model_id} set as active"}
-    raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
+        message=f"Model {model_id} not found",
+        code="model_not_found",
+        status_code=status.HTTP_404_NOT_FOUND,
+    ).model_dump())
 
 
 @router.get("/models/best", response_model=ModelResponse)
@@ -172,6 +195,7 @@ async def get_best_model(
         True, description="Whether higher values are better"
     ),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
     Get the best model based on a metric.
@@ -183,11 +207,14 @@ async def get_best_model(
         metric_name = settings.default_metric
         higher_is_better = settings.default_metric_higher_is_better
 
-    best_model = get_best_model_by_metric(metric_name, higher_is_better)
+    best_model = dal.get_best_model_by_metric(metric_name, higher_is_better)
     if not best_model:
-        raise HTTPException(
-            status_code=404, detail=f"No models found with metric '{metric_name}'"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
+            message=f"No models found with metric '{metric_name}'",
+            code="no_models_found",
+            status_code=status.HTTP_404_NOT_FOUND,
+            details={"metric_name": metric_name}
+        ).model_dump())
     return best_model
 
 
@@ -197,9 +224,10 @@ async def get_recent_models_endpoint(
         5, ge=1, le=100, description="Maximum number of models to return"
     ),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """Get the most recent models, ordered by creation date."""
-    models = get_recent_models(limit)
+    models = dal.get_recent_models(limit)
     if not models:
         return []
 
@@ -223,7 +251,7 @@ async def get_recent_models_endpoint(
         )
 
     # Try to mark the active model
-    active_model = get_active_model()
+    active_model = dal.get_active_model()
     if active_model:
         for model in result:
             if model.model_id == active_model["model_id"]:
@@ -243,11 +271,12 @@ async def get_all_models_endpoint(
         100, ge=1, le=1000, description="Maximum number of models to return"
     ),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
     Get a list of all models.
     """
-    models_list = get_all_models(limit=limit)
+    models_list = dal.get_all_models(limit=limit)
     if not models_list:
         return []
 
@@ -256,20 +285,25 @@ async def get_all_models_endpoint(
 
 @router.post("/models/delete", response_model=DeleteResponse)
 async def delete_models(
-    request: DeleteIdsRequest, api_key: bool = Depends(get_current_api_key_validated)
+    request: DeleteIdsRequest, api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
     Delete multiple models by their IDs and their associated files.
     Active models cannot be deleted.
     """
     if not request.ids:
-        return DeleteResponse(successful=0, failed=0, errors=["No IDs provided"])
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ErrorDetailResponse(
+            message="No IDs provided for deletion.",
+            code="no_ids_provided",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        ).model_dump())
 
-    result = delete_models_by_ids(request.ids)
+    result = dal.delete_models_by_ids(request.ids)
     return DeleteResponse(
-        successful=result["successful"],
-        failed=result["failed"],
-        errors=result["errors"],
+        successful=result.get("deleted_count", 0),
+        failed=len(result.get("failed_deletions", [])),
+        errors=[{"id": mid, "reason": "Failed to delete file"} for mid in result.get("failed_deletions", [])],
     )
 
 
@@ -278,24 +312,14 @@ async def delete_models(
 async def upload_config(
     request: ConfigCreateRequest = Body(...),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """Upload (create) a new config."""
-    from deployment.app.db.database import auto_activate_best_config_if_enabled, create_or_get_config
-
     try:
-        config_id = create_or_get_config(
+        config_id = dal.create_or_get_config(
             request.json_payload, is_active=request.is_active
         )
-        
-        # Auto-activate best config if enabled in settings (unless user explicitly set this one as active)
-        if not request.is_active:
-            try:
-                activated = auto_activate_best_config_if_enabled()
-                if activated:
-                    logger.info(f"Auto-activated best config after manual config upload: {config_id}")
-            except Exception as e:
-                logger.warning(f"Failed to auto-activate best config after manual upload: {e}")
-        
+                
         return ConfigResponse(
             config_id=config_id,
             configs=request.json_payload,
@@ -304,7 +328,13 @@ async def upload_config(
     except Exception as e:
         logger.error(f"Failed to upload config: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to upload config: {e}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ErrorDetailResponse(
+                message=f"Failed to upload config: {e}",
+                code="config_upload_failed",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"error": str(e)}
+            ).model_dump()
         ) from e
 
 
@@ -320,6 +350,7 @@ async def upload_model(
     created_at: str = Form(None, description="Creation timestamp (ISO format)"),
     metadata: str = Form(None, description="Model metadata as JSON string"),
     api_key: bool = Depends(get_current_api_key_validated),
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     from datetime import datetime
 
@@ -329,7 +360,7 @@ async def upload_model(
         if job_id is None:
             # Создаем job типа manual_upload, статус completed, id сгенерируется
             try:
-                new_job_id = create_job(
+                new_job_id = dal.create_job(
                     job_type="manual_upload",
                     parameters={"uploaded_model_filename": model_file.filename},
                     status="completed",
@@ -339,21 +370,31 @@ async def upload_model(
             except Exception as job_create_exc:
                 logger.error(f"Failed to create manual_upload job: {job_create_exc}")
                 raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to create manual_upload job: {job_create_exc}",
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=ErrorDetailResponse(
+                        message=f"Failed to create manual_upload job: {job_create_exc}",
+                        code="manual_job_creation_failed",
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        details={"error": str(job_create_exc)}
+                    ).model_dump()
                 ) from job_create_exc
         else:
             # Проверяем существование job_id
             job = None
             try:
-                job = get_job(job_id)
+                job = dal.get_job(job_id)
             except Exception as e:
-                logger.warning(f"Error checking job existence for job_id={job_id}: {e}")
+                logger.warning(f"Error checking job existence for job_id={{job_id}}: {e}")
                 job = None
             if not job:
                 raise HTTPException(
-                    status_code=400,
-                    detail=f"Provided job_id '{job_id}' does not exist.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ErrorDetailResponse(
+                        message=f"Provided job_id '{job_id}' does not exist.",
+                        code="job_id_not_found",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        details={"job_id": job_id}
+                    ).model_dump()
                 )
         # --- Сохраняем файл ---
         file_ext = os.path.splitext(model_file.filename)[1]
@@ -379,11 +420,17 @@ async def upload_model(
                             f"Failed to clean up orphaned model file {save_path}: {cleanup_e}"
                         )
                 raise HTTPException(
-                    status_code=400, detail="Invalid metadata JSON"
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ErrorDetailResponse(
+                        message="Invalid metadata JSON",
+                        code="invalid_metadata_json",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        details={"error": str(e)}
+                    ).model_dump()
                 ) from e
         created_at_val = created_at or datetime.now().isoformat()
         try:
-            create_model_record(
+            dal.create_model_record(
                 model_id=model_id,
                 model_path=save_path,
                 job_id=used_job_id,
@@ -395,8 +442,7 @@ async def upload_model(
             # Auto-activate best model if enabled in settings (unless user explicitly set this one as active)
             if not is_active:
                 try:
-                    from deployment.app.db.database import auto_activate_best_model_if_enabled
-                    activated = auto_activate_best_model_if_enabled()
+                    activated = dal.auto_activate_best_model_if_enabled()
                     if activated:
                         logger.info(f"Auto-activated best model after manual model upload: {model_id}")
                 except Exception as e:
@@ -414,7 +460,13 @@ async def upload_model(
                         f"Failed to clean up orphaned model file {save_path}: {cleanup_e}"
                     )
             raise HTTPException(
-                status_code=500, detail=f"Failed to upload model: {db_exc}"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=ErrorDetailResponse(
+                    message=f"Failed to upload model: {db_exc}",
+                    code="model_upload_failed",
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    details={"error": str(db_exc)}
+                ).model_dump()
             ) from db_exc
         return ModelResponse(
             model_id=model_id,
@@ -436,5 +488,11 @@ async def upload_model(
                 f"Failed to clean up orphaned model file {save_path}: {cleanup_e}"
             )
         raise HTTPException(
-            status_code=500, detail=f"Failed to upload model: {e}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ErrorDetailResponse(
+                message=f"Failed to upload model: {e}",
+                code="model_upload_failed",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"error": str(e)}
+            ).model_dump()
         ) from e
