@@ -57,15 +57,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware with restricted origins
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=get_settings().api.allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
-)
-
 # Configure error handlers
 app = configure_error_handlers(app)
 

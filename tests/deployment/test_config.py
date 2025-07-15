@@ -292,7 +292,6 @@ class TestAPISettings:
         assert settings.host == "0.0.0.0"
         assert settings.port == 8000
         assert settings.debug is False
-        assert settings.allowed_origins == ["http://localhost:3000"]
         assert settings.api_key == ""
         assert settings.x_api_key == ""
         assert settings.log_level == "INFO"
@@ -322,26 +321,9 @@ class TestAPISettings:
         assert settings.host == "127.0.0.1"
         assert settings.port == 9000
         assert settings.debug is True
-        assert settings.allowed_origins == ["http://test1.com", "http://test2.com"]
         assert settings.api_key == "test-api-key"
         assert settings.x_api_key == "test-x-api-key"
         assert settings.log_level == "DEBUG"
-
-    def test_api_settings_validate_allowed_origins_string(self):
-        """Test allowed_origins validation from string."""
-        # Act
-        settings = APISettings(allowed_origins="http://test1.com, http://test2.com , ")
-
-        # Assert
-        assert settings.allowed_origins == ["http://test1.com", "http://test2.com"]
-
-    def test_api_settings_validate_allowed_origins_list(self):
-        """Test allowed_origins validation from list."""
-        # Act
-        settings = APISettings(allowed_origins=["http://test1.com", "http://test2.com"])
-
-        # Assert
-        assert settings.allowed_origins == ["http://test1.com", "http://test2.com"]
 
     @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
     @patch("deployment.app.config.load_config_file")
@@ -591,7 +573,6 @@ class TestAppSettings:
         assert settings.env == "development"
         assert settings.max_upload_size == 50 * 1024 * 1024
         assert settings.temp_upload_dir == "./temp_uploads"
-        assert settings.max_models_to_keep == 5
         assert settings.file_storage_dir == "./uploads"
         assert settings.default_metric == "val_MIWS_MIC_Ratio"
         assert settings.default_metric_higher_is_better is False
@@ -609,7 +590,6 @@ class TestAppSettings:
                 "ENV": "production",
                 "MAX_UPLOAD_SIZE": "10485760",  # 10 MB
                 "TEMP_UPLOAD_DIR": "/var/temp_uploads",
-                "MAX_MODELS_TO_KEEP": "10",
                 "FILE_STORAGE_DIR": "/var/uploads",
                 "DEFAULT_METRIC": "custom_metric",
                 "DEFAULT_METRIC_HIGHER_IS_BETTER": "false",
@@ -625,7 +605,6 @@ class TestAppSettings:
             assert settings.env == "production"
             assert settings.max_upload_size == 10485760
             assert settings.temp_upload_dir == "/var/temp_uploads"
-            assert settings.max_models_to_keep == 10
             assert settings.file_storage_dir == "/var/uploads"
             assert settings.default_metric == "custom_metric"
             assert not settings.default_metric_higher_is_better

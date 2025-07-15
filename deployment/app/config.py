@@ -168,11 +168,6 @@ class APISettings(BaseSettings):
     host: str = Field(default="0.0.0.0", description="Host to run the API server on")
     port: int = Field(default=8000, description="Port to run the API server on")
     debug: bool = Field(default=False, description="Run in debug mode")
-    allowed_origins: list[str] = Field(
-        default=["http://localhost:3000"],
-        description="List of allowed origins for CORS",
-    )
-    # Renamed in v0.2: admin_api_key (was api_key). Supports legacy env var `API_API_KEY`.
     admin_api_key: str = Field(
         default="",
         description="Admin API key for Bearer authentication (set via API_ADMIN_API_KEY).",
@@ -370,7 +365,7 @@ class DataSphereSettings(BaseSettings):
         description="Timeout for DataSphere client initialization in seconds",
     )
     client_submit_timeout_seconds: int = Field(
-        default=3600,
+        default=300,
         description="Timeout for DataSphere client job submission in seconds",
     )
     client_status_timeout_seconds: int = Field(
@@ -378,7 +373,7 @@ class DataSphereSettings(BaseSettings):
         description="Timeout for DataSphere client job status checks in seconds",
     )
     client_download_timeout_seconds: int = Field(
-        default=600,
+        default=300,
         description="Timeout for DataSphere client results download in seconds",
     )
     client_cancel_timeout_seconds: int = Field(
@@ -582,10 +577,6 @@ class AppSettings(BaseSettings):
     )
     temp_upload_dir: str = Field(
         default="./temp_uploads", description="Directory for temporary file uploads"
-    )
-    max_models_to_keep: int = Field(
-        default=5,
-        description="Maximum number of trained model artifacts to keep locally",
     )
     file_storage_dir: str = Field(
         default="./uploads",
