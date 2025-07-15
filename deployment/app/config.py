@@ -177,14 +177,6 @@ class APISettings(BaseSettings):
     )
     log_level: str = Field(default="INFO", description="Log level")
 
-    @field_validator("allowed_origins", mode="before")
-    @classmethod
-    def validate_allowed_origins(cls, v):
-        """Validate and parse allowed origins."""
-        if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
-        return v
-
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_api_config
 
     @classmethod

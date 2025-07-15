@@ -413,9 +413,9 @@ class TestDataSphereSettings:
         assert settings.poll_interval == 300.0
         assert settings.download_diagnostics_on_success is False
         assert settings.client_init_timeout_seconds == 60
-        assert settings.client_submit_timeout_seconds == 3600
+        assert settings.client_submit_timeout_seconds == 300
         assert settings.client_status_timeout_seconds == 30
-        assert settings.client_download_timeout_seconds == 600
+        assert settings.client_download_timeout_seconds == 300
         assert settings.client_cancel_timeout_seconds == 60
 
     @patch.dict(
