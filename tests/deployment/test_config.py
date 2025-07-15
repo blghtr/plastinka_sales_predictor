@@ -292,7 +292,7 @@ class TestAPISettings:
         assert settings.host == "0.0.0.0"
         assert settings.port == 8000
         assert settings.debug is False
-        assert settings.api_key == ""
+        assert settings.admin_api_key == ""
         assert settings.x_api_key == ""
         assert settings.log_level == "INFO"
 
@@ -321,7 +321,7 @@ class TestAPISettings:
         assert settings.host == "127.0.0.1"
         assert settings.port == 9000
         assert settings.debug is True
-        assert settings.api_key == "test-api-key"
+        assert settings.admin_api_key == "test-api-key"
         assert settings.x_api_key == "test-x-api-key"
         assert settings.log_level == "DEBUG"
 
@@ -572,8 +572,8 @@ class TestAppSettings:
         # Assert
         assert settings.env == "development"
         assert settings.max_upload_size == 50 * 1024 * 1024
-        assert settings.temp_upload_dir == "./temp_uploads"
-        assert settings.file_storage_dir == "./uploads"
+        assert settings.temp_upload_dir.replace("\\", "/") == "/default/data/root/temp_uploads"
+        assert settings.file_storage_dir.replace("\\", "/") == "/default/data/root/uploads"
         assert settings.default_metric == "val_MIWS_MIC_Ratio"
         assert settings.default_metric_higher_is_better is False
         assert settings.auto_select_best_configs is True
@@ -589,8 +589,7 @@ class TestAppSettings:
             {
                 "ENV": "production",
                 "MAX_UPLOAD_SIZE": "10485760",  # 10 MB
-                "TEMP_UPLOAD_DIR": "/var/temp_uploads",
-                "FILE_STORAGE_DIR": "/var/uploads",
+                "DATA_ROOT_DIR": "/var/data", # New: set data_root_dir
                 "DEFAULT_METRIC": "custom_metric",
                 "DEFAULT_METRIC_HIGHER_IS_BETTER": "false",
                 "AUTO_SELECT_BEST_CONFIGS": "false",
@@ -604,8 +603,9 @@ class TestAppSettings:
             # Assert
             assert settings.env == "production"
             assert settings.max_upload_size == 10485760
-            assert settings.temp_upload_dir == "/var/temp_uploads"
-            assert settings.file_storage_dir == "/var/uploads"
+            # Assert computed properties based on DATA_ROOT_DIR
+            assert settings.temp_upload_dir.replace("\\", "/") == "/var/data/temp_uploads"
+            assert settings.file_storage_dir.replace("\\", "/") == "/var/data/uploads"
             assert settings.default_metric == "custom_metric"
             assert not settings.default_metric_higher_is_better
             assert not settings.auto_select_best_configs

@@ -567,13 +567,19 @@ class AppSettings(BaseSettings):
         default=50 * 1024 * 1024,  # 50 MB default
         description="Maximum upload size in bytes",
     )
-    temp_upload_dir: str = Field(
-        default="./temp_uploads", description="Directory for temporary file uploads"
-    )
-    file_storage_dir: str = Field(
-        default="./uploads",
-        description="Base directory for storing uploaded files (models, reports, etc.)",
-    )
+    @property
+    def temp_upload_dir(self) -> str:
+        """Directory for temporary file uploads."""
+        path = os.path.join(self.data_root_dir, "temp_uploads")
+        ensure_directory_exists(path)
+        return path
+
+    @property
+    def file_storage_dir(self) -> str:
+        """Base directory for storing uploaded files (models, reports, etc.)."""
+        path = os.path.join(self.data_root_dir, "uploads")
+        ensure_directory_exists(path)
+        return path
 
     # Model and parameters selection settings
     default_metric: str = Field(
@@ -685,20 +691,7 @@ class AppSettings(BaseSettings):
         """Path to DataSphere job configuration file."""
         return os.path.join(self.datasphere_jobs_base_dir, "config.yaml")
 
-    # Legacy compatibility properties (updated paths)
-    @property
-    def temp_upload_dir_computed(self) -> str:
-        """Computed temp upload directory."""
-        path = os.path.join(self.data_root_dir, "temp_uploads")
-        ensure_directory_exists(path)
-        return path
-
-    @property
-    def file_storage_dir_computed(self) -> str:
-        """Computed file storage directory."""
-        path = os.path.join(self.data_root_dir, "uploads")
-        ensure_directory_exists(path)
-        return path
+    
 
     # Валидатор для создания базовой директории данных
     @field_validator("data_root_dir", mode="after")
