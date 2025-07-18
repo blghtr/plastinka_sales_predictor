@@ -5,6 +5,7 @@ Centralized logic for checking required environment variables.
 
 import os
 from typing import Dict, List, Any
+from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict
 
 
@@ -37,6 +38,7 @@ class EnvironmentConfig:
 
 def get_missing_required_variables() -> List[str]:
     """Get list of missing required environment variables."""
+    load_dotenv()  # Загружаем переменные из .env файла
     missing = []
     for var in EnvironmentConfig.REQUIRED_VARS:
         if var == "API_ADMIN_API_KEY":

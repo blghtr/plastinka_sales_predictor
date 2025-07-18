@@ -102,7 +102,7 @@ def create_training_params_fn():
         train_ds_config = TrainingDatasetConfig(alpha=0.05, span=12)
 
         return TrainingConfig(
-            model_config=model_config,
+            nn_model_config=model_config,
             optimizer_config=optimizer_config,
             lr_shed_config=lr_shed_config,
             train_ds_config=train_ds_config,

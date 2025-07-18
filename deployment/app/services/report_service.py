@@ -108,7 +108,9 @@ def _generate_prediction_report(
     logger.info(f"Found {len(training_jobs)} training jobs for prediction month")
 
     # Extract predictions for these jobs
-    predictions_data = _extract_predictions_for_jobs(training_jobs, filters, model_id)
+    predictions_data = _extract_predictions_for_jobs(
+        training_jobs, filters, dal, model_id
+    )
 
     if predictions_data.empty:
         logger.warning("No prediction data found for training jobs")
@@ -236,14 +238,16 @@ def _find_training_jobs_for_prediction_month(
 def _extract_predictions_for_jobs(
     training_jobs: list[dict[str, Any]],
     filters: dict[str, Any],
+    dal: DataAccessLayer,  # Pass the DAL instance
     model_id: str | None = None,
 ) -> pd.DataFrame:
     """
-    Extract prediction data for the given training jobs.
+    Extract prediction data for the given training jobs using the DataAccessLayer.
 
     Args:
         training_jobs: List of training job records
         filters: Additional filters to apply
+        dal: The DataAccessLayer instance
         model_id: Optional model_id for filtering
 
     Returns:
@@ -253,70 +257,10 @@ def _extract_predictions_for_jobs(
         return pd.DataFrame()
 
     job_ids = [job["job_id"] for job in training_jobs]
-    job_ids_placeholder = ",".join(["?" for _ in job_ids])
-
-    # Get prediction results for these jobs
-    base_query = f"""
-        SELECT DISTINCT pr.result_id, pr.job_id, pr.model_id
-        FROM prediction_results pr
-        WHERE pr.job_id IN ({job_ids_placeholder})
-    """
-
-    params_list: list[Any] = job_ids.copy()
-
-    if model_id:
-        base_query += " AND pr.model_id = ?"
-        params_list.append(model_id)
 
     try:
-        prediction_results = execute_query(
-            base_query, tuple(params_list), fetchall=True
-        )
-
-        if not prediction_results:
-            logger.warning("No prediction results found for training jobs")
-            return pd.DataFrame()
-
-        result_ids = [pr["result_id"] for pr in prediction_results]
-        result_ids_placeholder = ",".join(["?" for _ in result_ids])
-
-        # Get actual prediction data
-        predictions_query = f"""
-            SELECT
-                fp.result_id,
-                dmm.barcode,
-                dmm.artist,
-                dmm.album,
-                dmm.cover_type,
-                dmm.price_category,
-                dmm.release_type,
-                dmm.recording_decade,
-                dmm.release_decade,
-                dmm.style,
-                dmm.record_year,
-                fp.model_id,
-                fp.prediction_date,
-                fp.quantile_05,
-                fp.quantile_25,
-                fp.quantile_50,
-                fp.quantile_75,
-                fp.quantile_95
-            FROM fact_predictions fp
-            JOIN dim_multiindex_mapping dmm ON fp.multiindex_id = dmm.multiindex_id
-            WHERE fp.result_id IN ({result_ids_placeholder})
-            ORDER BY dmm.artist, dmm.album, fp.prediction_date
-        """
-
-        if model_id:
-            predictions_query += " AND fp.model_id = ?"
-
-        query_params = result_ids.copy()
-        if model_id:
-            query_params.append(model_id)
-
-        predictions_data = execute_query(
-            predictions_query, tuple(query_params), fetchall=True
-        )
+        # Use the new DAL method to fetch predictions
+        predictions_data = dal.get_predictions_for_jobs(job_ids=job_ids, model_id=model_id)
 
         if not predictions_data:
             logger.warning("No prediction data found in fact_predictions")
@@ -333,7 +277,7 @@ def _extract_predictions_for_jobs(
         return df
 
     except Exception as e:
-        logger.error(f"Error extracting predictions: {e}")
+        logger.error(f"Error extracting predictions using DAL: {e}", exc_info=True)
         return pd.DataFrame()
 
 
@@ -691,7 +635,7 @@ def _join_predictions_with_enriched_metrics(
                     f"Column '{col}': {non_null_count}/{len(merged_df)} rows have data"
                 )
 
-        return merged_df
+        return merged_df.fillna('None')
 
     except Exception as e:
         logger.error(

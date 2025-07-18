@@ -583,7 +583,7 @@ async def create_prediction_report_job(
         report_df = generate_report(params=params, dal=dal) # Pass DAL to report generator
 
         # Convert DataFrame to CSV string
-        csv_data = report_df.to_csv(index=False)
+        csv_data = report_df.to_csv()
 
         # Create and return the response
         return ReportResponse(

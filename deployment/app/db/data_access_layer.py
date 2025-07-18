@@ -30,6 +30,7 @@ from deployment.app.db.database import (
     get_latest_prediction_month,
     get_prediction_result,
     get_prediction_results_by_month,
+    get_predictions_for_jobs,
     get_report_result,
     get_recent_models,
     get_top_configs,
@@ -172,6 +173,10 @@ class DataAccessLayer:
     ) -> list[dict]:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_prediction_results_by_month(prediction_month, model_id, connection)
+
+    def get_predictions_for_jobs(self, job_ids: list[str], model_id: str | None = None, connection: sqlite3.Connection = None) -> list[dict]:
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return get_predictions_for_jobs(job_ids, model_id, connection)
 
     def get_report_result(self, result_id: str, connection: sqlite3.Connection = None) -> Dict:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])

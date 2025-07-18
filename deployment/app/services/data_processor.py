@@ -48,6 +48,7 @@ async def process_data_files(
         # Process the data using the existing pipeline
         sales_dir_path = temp_dir / "sales"
         features = process_data(
+            stock_path=str(stock_path),
             sales_path=str(sales_dir_path),
             cutoff_date=cutoff_date,
             bins=settings.price_category_interval_index,

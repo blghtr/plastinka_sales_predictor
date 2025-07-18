@@ -503,47 +503,47 @@ class TestComponentHealthChecks:
         assert "Connection failed" in result.details["error"]
         mock_dal.execute_raw_query.assert_called_once()
 
-    @patch.dict(
-        os.environ,
-        {
-            "DATASPHERE_PROJECT_ID": "project123",
-            "DATASPHERE_FOLDER_ID": "folder456",
-            "API_X_API_KEY": "api_key_789",
-            "API_ADMIN_API_KEY": "admin_key_123",
-            "DATASPHERE_OAUTH_TOKEN": "oauth_token_def",
-        },
-    )
-    def test_check_environment_healthy(self):
-        """Test get_environment_status returns healthy when all vars are set."""
-        # Act
-        result = get_environment_status()
+    @patch('deployment.app.utils.environment.load_dotenv')
+    def test_check_environment_healthy_with_dotenv(self, mock_load_dotenv, tmp_path):
+        """Test get_environment_status returns healthy when vars are in .env file."""
+        # Arrange
+        dotenv_content = """
+DATASPHERE_PROJECT_ID=project123
+DATASPHERE_FOLDER_ID=folder456
+API_X_API_KEY=api_key_789
+API_ADMIN_API_KEY=admin_key_123
+DATASPHERE_OAUTH_TOKEN=oauth_token_def
+        """
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text(dotenv_content)
+
+        # Simulate that load_dotenv sets the environment variables
+        def dotenv_side_effect():
+            os.environ['DATASPHERE_PROJECT_ID'] = 'project123'
+            os.environ['DATASPHERE_FOLDER_ID'] = 'folder456'
+            os.environ['API_X_API_KEY'] = 'api_key_789'
+            os.environ['API_ADMIN_API_KEY'] = 'admin_key_123'
+            os.environ['DATASPHERE_OAUTH_TOKEN'] = 'oauth_token_def'
+            return True
+
+        mock_load_dotenv.side_effect = dotenv_side_effect
+
+        with patch.dict(os.environ, {}, clear=True):
+            # Act
+            result = get_environment_status()
 
         # Assert
         assert result.status == "healthy"
         assert result.details == {}
+        mock_load_dotenv.assert_called_once()
 
-    @patch.dict(
-        os.environ,
-        {
-            "DATASPHERE_PROJECT_ID": "project123",
-            "DATASPHERE_FOLDER_ID": "folder456",
-            "API_X_API_KEY": "api_key_789",
-            "API_ADMIN_API_KEY": "admin_key_123",
-            "DATASPHERE_YC_PROFILE": "default",
-        },
-    )
-    def test_check_environment_healthy_with_yc_profile(self):
-        """Test environment health check is healthy with full config (YC profile)."""
-        # Act
-        result = get_environment_status()
-
-        # Assert
-        assert result.status == "healthy"
-        assert result.details == {}
-
+    @patch('deployment.app.utils.environment.load_dotenv')
     @patch.dict(os.environ, {}, clear=True)
-    def test_check_environment_degraded(self):
+    def test_check_environment_degraded(self, mock_load_dotenv):
         """Test get_environment_status returns degraded when env vars are missing."""
+        # Arrange
+        mock_load_dotenv.return_value = False # Simulate .env not found or empty
+
         # Act
         result = get_environment_status()
 
@@ -559,6 +559,91 @@ class TestComponentHealthChecks:
         assert "DATASPHERE_PROJECT_ID" in missing_vars_text
         assert "DATASPHERE_FOLDER_ID" in missing_vars_text
         assert ("DATASPHERE_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text)
+
+    @patch('deployment.app.utils.environment.load_dotenv')
+    def test_check_environment_healthy_with_legacy_api_key(self, mock_load_dotenv, tmp_path):
+        """Test get_environment_status returns healthy when using legacy API_API_KEY."""
+        # Arrange: Mock load_dotenv to prevent loading real .env file
+        mock_load_dotenv.return_value = None
+        
+        # Arrange
+        dotenv_content = """
+DATASPHERE_PROJECT_ID=project123
+DATASPHERE_FOLDER_ID=folder456
+API_X_API_KEY=api_key_789
+API_API_KEY=legacy_admin_key_123
+DATASPHERE_OAUTH_TOKEN=oauth_token_def
+        """
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text(dotenv_content)
+
+        with patch.dict(os.environ, {
+            'DATASPHERE_PROJECT_ID': 'project123',
+            'DATASPHERE_FOLDER_ID': 'folder456',
+            'API_X_API_KEY': 'api_key_789',
+            'API_API_KEY': 'legacy_admin_key_123',  # Legacy key
+            'DATASPHERE_OAUTH_TOKEN': 'oauth_token_def'
+        }, clear=True):
+            # Act
+            result = get_environment_status()
+
+        # Assert
+        assert result.status == "healthy"
+        assert result.details == {}
+
+    @patch('deployment.app.utils.environment.load_dotenv')
+    def test_check_environment_degraded_missing_auth(self, mock_load_dotenv, tmp_path):
+        """Test get_environment_status returns degraded when DataSphere auth is missing."""
+        # Arrange: Mock load_dotenv to prevent loading real .env file
+        mock_load_dotenv.return_value = None
+        
+        # Arrange: Only patch environment, do not create .env file
+        with patch.dict(os.environ, {
+            'DATASPHERE_PROJECT_ID': 'project123',
+            'DATASPHERE_FOLDER_ID': 'folder456',
+            'API_X_API_KEY': 'api_key_789',
+            'API_ADMIN_API_KEY': 'admin_key_123'
+            # Missing DataSphere auth
+        }, clear=True):
+            # Act
+            result = get_environment_status()
+
+        # Assert
+        assert result.status == "degraded"
+        assert "missing_variables" in result.details
+        missing_vars_text = " ".join(result.details["missing_variables"])
+        assert "DATASPHERE_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text
+
+    @patch('deployment.app.utils.environment.load_dotenv')
+    def test_check_environment_healthy_with_yc_profile(self, mock_load_dotenv, tmp_path):
+        """Test get_environment_status returns healthy when using YC profile auth."""
+        # Arrange: Mock load_dotenv to prevent loading real .env file
+        mock_load_dotenv.return_value = None
+        
+        # Arrange
+        dotenv_content = """
+DATASPHERE_PROJECT_ID=project123
+DATASPHERE_FOLDER_ID=folder456
+API_X_API_KEY=api_key_789
+API_ADMIN_API_KEY=admin_key_123
+DATASPHERE_YC_PROFILE=default
+        """
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text(dotenv_content)
+
+        with patch.dict(os.environ, {
+            'DATASPHERE_PROJECT_ID': 'project123',
+            'DATASPHERE_FOLDER_ID': 'folder456',
+            'API_X_API_KEY': 'api_key_789',
+            'API_ADMIN_API_KEY': 'admin_key_123',
+            'DATASPHERE_YC_PROFILE': 'default'  # YC profile auth
+        }, clear=True):
+            # Act
+            result = get_environment_status()
+
+        # Assert
+        assert result.status == "healthy"
+        assert result.details == {}
 
     def test_check_database_unhealthy_missing_tables(self, mock_dal):
         """Test check_database returns unhealthy if required tables are missing."""

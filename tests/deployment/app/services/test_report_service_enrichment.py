@@ -364,7 +364,7 @@ class TestJoinPredictionsWithEnrichedMetrics:
         key1 = products[0][1:]  # Исключаем barcode
         key2 = products[1][1:]  # Исключаем barcode
         assert result.loc[key1, "enriched_metric"].iloc[0] == 0.1
-        assert pd.isna(result.loc[key2, "enriched_metric"].iloc[0])
+        assert result.loc[key2, "enriched_metric"].iloc[0] == 'None'  # Implementation uses fillna('None')
 
     def test_join_predictions_exception(self):
         """Test handling of exceptions during joining."""

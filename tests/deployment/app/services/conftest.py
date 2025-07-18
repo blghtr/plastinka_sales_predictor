@@ -396,6 +396,151 @@ def mock_get_datasets():
     """Мокирует get_datasets, чтобы не генерировать реальные датасеты."""
     with patch(
         "deployment.app.services.datasphere_service.get_datasets",
-        return_value=({"train": 1}, {"val": 1}),
+        return_value=({'train': 1}, {'val': 1}),
     ) as mock_func:
         yield mock_func
+
+
+@pytest.fixture
+def mock_save_model():
+    """Мокирует save_model_file_and_db, чтобы не сохранять реальные файлы."""
+    with patch(
+        "deployment.app.services.datasphere_service.save_model_file_and_db",
+        return_value="model-id-123",
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_save_predictions():
+    """Мокирует save_predictions_to_db, чтобы не записывать в БД."""
+    with patch(
+        "deployment.app.services.datasphere_service.save_predictions_to_db",
+        return_value="prediction-result-id-123",
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_update_job_status():
+    """Мокирует update_job_status для отслеживания вызовов."""
+    with patch(
+        "deployment.app.services.datasphere_service.update_job_status"
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_get_job():
+    """Мокирует get_job для возврата тестовых данных."""
+    with patch(
+        "deployment.app.services.datasphere_service.get_job",
+        return_value={"job_id": "job-id-123", "status": "pending"},
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_create_model_record():
+    """Мокирует create_model_record для отслеживания вызовов."""
+    with patch(
+        "deployment.app.services.datasphere_service.create_model_record"
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_get_active_model():
+    """Мокирует get_active_model для возврата тестовых данных."""
+    with patch(
+        "deployment.app.services.datasphere_service.get_active_model",
+        return_value={"model_id": "active-model-id", "model_path": "/path/to/model"},
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_get_active_config():
+    """Мокирует get_active_config для возврата тестовых данных."""
+    with patch(
+        "deployment.app.services.datasphere_service.get_active_config",
+        return_value={"config_id": "active-config-id", "parameters": {}},
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_create_training_result():
+    """Мокирует create_training_result для отслеживания вызовов."""
+    with patch(
+        "deployment.app.services.datasphere_service.create_training_result",
+        return_value="training-result-id-123",
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_create_prediction_result():
+    """Мокирует create_prediction_result для отслеживания вызовов."""
+    with patch(
+        "deployment.app.services.datasphere_service.create_prediction_result",
+        return_value="prediction-result-id-123",
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_get_effective_config():
+    """Мокирует get_effective_config для возврата тестовых данных."""
+    with patch(
+        "deployment.app.services.datasphere_service.get_effective_config",
+        return_value={"config_id": "effective-config-id", "parameters": {}},
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_auto_activate_best_model():
+    """Мокирует auto_activate_best_model_if_enabled."""
+    with patch(
+        "deployment.app.services.datasphere_service.auto_activate_best_model_if_enabled"
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_auto_activate_best_config():
+    """Мокирует auto_activate_best_config_if_enabled."""
+    with patch(
+        "deployment.app.services.datasphere_service.auto_activate_best_config_if_enabled"
+    ) as mock_func:
+        yield mock_func
+
+
+@pytest.fixture
+def mock_dal(mocker):
+    """
+    Creates a comprehensive mock for the DataAccessLayer.
+    This mock can be used in service-level tests to isolate them from the database.
+    """
+    dal_mock = mocker.MagicMock()
+
+    # Mock methods that return data
+    dal_mock.get_job.return_value = {"job_id": "mock-job-id", "status": "pending"}
+    dal_mock.get_active_model.return_value = {"model_id": "active-model", "model_path": "/fake/path"}
+    dal_mock.get_active_config.return_value = {"config_id": "active-config", "config": {}}
+    dal_mock.get_prediction_results_by_month.return_value = [
+        {"job_id": "mock-job-id", "result_id": "pred-res-1"}
+    ]
+    dal_mock.get_predictions_for_jobs.return_value = [
+        {"barcode": "123", "artist": "Test Artist", "album": "Test Album", "quantile_50": 10}
+    ]
+
+    # Mock methods that perform actions (return None or an ID)
+    dal_mock.create_job.return_value = "new-mock-job-id"
+    dal_mock.update_job_status.return_value = None
+    dal_mock.create_model_record.return_value = None
+    dal_mock.create_prediction_result.return_value = "new-pred-res-id"
+    dal_mock.create_training_result.return_value = "new-train-res-id"
+
+    return dal_mock

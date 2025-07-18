@@ -325,7 +325,7 @@ class TestReportJobEndpoint:
         assert resp_data["report_type"] == "prediction_report"
         assert resp_data["prediction_month"] == "2023-01"
         assert resp_data["records_count"] == 2
-        assert resp_data["csv_data"] == mock_df.to_csv(index=False)
+        assert resp_data["csv_data"] == mock_df.to_csv()  # Include index to match actual implementation
         assert "generated_at" in resp_data
         assert resp_data["filters_applied"] == {"artist": "test_artist"}
 

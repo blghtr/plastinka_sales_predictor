@@ -1540,6 +1540,67 @@ def test_get_best_config_by_metric_integration_with_mocked_settings(in_memory_db
     assert best_config["metrics"]["val_MIC"] == 0.05
 
 
+def test_get_predictions_for_jobs(in_memory_db):
+    """Test extracting prediction data for a list of job IDs."""
+    conn = in_memory_db["conn"]
+    from deployment.app.db.database import get_predictions_for_jobs, get_or_create_multiindex_id
+
+    # --- Setup Data ---
+    # 1. Create Job, Model, and Config
+    job_id_1 = create_job("prediction", {}, connection=conn)
+    job_id_2 = create_job("prediction", {}, connection=conn)
+    model_id_1 = str(uuid.uuid4())
+    model_id_2 = str(uuid.uuid4())
+    
+    create_model_record(model_id_1, job_id_1, "/path/model1.onnx", datetime.now(), connection=conn)
+    create_model_record(model_id_2, job_id_2, "/path/model2.onnx", datetime.now(), connection=conn)
+
+    # 2. Create Prediction Result
+    pred_result_id_1 = create_prediction_result(job_id_1, "2023-01-01", model_id_1, connection=conn)
+    pred_result_id_2 = create_prediction_result(job_id_2, "2023-01-01", model_id_2, connection=conn)
+
+    # 3. Create MultiIndex and Fact Predictions
+    multiindex_id = get_or_create_multiindex_id(
+        "bc1", "art1", "alb1", "c1", "p1", "r1", "d1", "d2", "s1", 2001, connection=conn
+    )
+    
+    pred_data_1 = (pred_result_id_1, multiindex_id, datetime.now().isoformat(), model_id_1, 1, 2, 3, 4, 5, datetime.now().isoformat())
+    pred_data_2 = (pred_result_id_2, multiindex_id, datetime.now().isoformat(), model_id_2, 10, 20, 30, 40, 50, datetime.now().isoformat())
+    
+    execute_many(
+        """INSERT INTO fact_predictions (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [pred_data_1, pred_data_2],
+        connection=conn
+    )
+
+    # --- Test Cases ---
+    # Case 1: Get predictions for one job
+    predictions = get_predictions_for_jobs(job_ids=[job_id_1], connection=conn)
+    assert len(predictions) == 1
+    assert predictions[0]["result_id"] == pred_result_id_1
+    assert predictions[0]["quantile_50"] == 3
+
+    # Case 2: Get predictions for multiple jobs
+    predictions = get_predictions_for_jobs(job_ids=[job_id_1, job_id_2], connection=conn)
+    assert len(predictions) == 2
+
+    # Case 3: Filter by model_id
+    predictions = get_predictions_for_jobs(job_ids=[job_id_1, job_id_2], model_id=model_id_2, connection=conn)
+    assert len(predictions) == 1
+    assert predictions[0]["result_id"] == pred_result_id_2
+    assert predictions[0]["quantile_50"] == 30
+
+    # Case 4: Job ID with no results
+    job_id_3 = create_job("prediction", {}, connection=conn)
+    predictions = get_predictions_for_jobs(job_ids=[job_id_3], connection=conn)
+    assert len(predictions) == 0
+
+    # Case 5: Empty job ID list
+    predictions = get_predictions_for_jobs(job_ids=[], connection=conn)
+    assert len(predictions) == 0
+
+
 class TestMultiIndexBatch:
     def test_batch_insert_all_new(self, in_memory_db):
         conn = in_memory_db["conn"]

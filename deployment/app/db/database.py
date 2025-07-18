@@ -1607,6 +1607,88 @@ def get_prediction_results_by_month(
     return execute_query(query, tuple(params), fetchall=True, connection=connection)
 
 
+def get_predictions_for_jobs(
+    job_ids: list[str], model_id: str | None = None, connection: sqlite3.Connection = None
+) -> list[dict]:
+    """
+    Extract prediction data for the given training jobs.
+
+    Args:
+        job_ids: List of training job IDs
+        model_id: Optional model_id for filtering
+        connection: Optional existing database connection
+
+    Returns:
+        List of dictionaries with prediction data
+    """
+    if not job_ids:
+        return []
+
+    job_ids_placeholder = ",".join(["?" for _ in job_ids])
+
+    # Get prediction results for these jobs
+    base_query = f"""
+        SELECT DISTINCT pr.result_id, pr.job_id, pr.model_id
+        FROM prediction_results pr
+        WHERE pr.job_id IN ({job_ids_placeholder})
+    """
+
+    params_list: list[Any] = job_ids.copy()
+
+    if model_id:
+        base_query += " AND pr.model_id = ?"
+        params_list.append(model_id)
+
+    prediction_results = execute_query(
+        base_query, tuple(params_list), fetchall=True, connection=connection
+    )
+
+    if not prediction_results:
+        logger.warning("No prediction results found for training jobs")
+        return []
+
+    result_ids = [pr["result_id"] for pr in prediction_results]
+    result_ids_placeholder = ",".join(["?" for _ in result_ids])
+
+    # Get actual prediction data
+    predictions_query = f"""
+        SELECT
+            fp.result_id,
+            dmm.barcode,
+            dmm.artist,
+            dmm.album,
+            dmm.cover_type,
+            dmm.price_category,
+            dmm.release_type,
+            dmm.recording_decade,
+            dmm.release_decade,
+            dmm.style,
+            dmm.record_year,
+            fp.model_id,
+            fp.prediction_date,
+            fp.quantile_05,
+            fp.quantile_25,
+            fp.quantile_50,
+            fp.quantile_75,
+            fp.quantile_95
+        FROM fact_predictions fp
+        JOIN dim_multiindex_mapping dmm ON fp.multiindex_id = dmm.multiindex_id
+        WHERE fp.result_id IN ({result_ids_placeholder})
+        ORDER BY dmm.artist, dmm.album, fp.prediction_date
+    """
+
+    query_params = result_ids.copy()
+    if model_id:
+        predictions_query += " AND fp.model_id = ?"
+        query_params.append(model_id)
+
+    return execute_query(
+        predictions_query, tuple(query_params), fetchall=True, connection=connection
+    )
+
+
+
+
 def get_report_result(result_id: str, connection: sqlite3.Connection = None) -> dict:
     """Get report result by ID"""
     query = "SELECT * FROM report_results WHERE result_id = ?"
