@@ -366,11 +366,10 @@ class PlastinkaBaseTSDataset:
             ds = self.setup_dataset(window=(0, self._n_time_steps), copy=copy)
             return ds
 
-    def _get_raw_sample_arrays(self, idx):
+    def _get_raw_sample_arrays(self, array_index, start_index, end_index):
         """
         Extracts raw NumPy arrays for a given index, common to both training and inference datasets.
         """
-        (array_index, start_index, end_index) = self._project_index(idx)
         end_index_safe = end_index if end_index is not None else self._n_time_steps
         
         series_item = np.expand_dims(
@@ -379,10 +378,10 @@ class PlastinkaBaseTSDataset:
         item_multiidx = self._idx2multiidx[array_index]
         # Renamed for clarity as per user's suggestion
         historic_future_covariates_item = self.get_future_covariates(item_multiidx)[
-            start_index : end_index_safe - self.output_chunk_length
+            start_index: end_index_safe - self.output_chunk_length
         ]
         future_covariates_item_output_chunk = self.get_future_covariates(item_multiidx)[
-            end_index_safe - self.output_chunk_length : end_index
+            end_index_safe - self.output_chunk_length: end_index
         ]
         past_covariates_item = self.get_past_covariates(item_multiidx)[
             start_index:end_index
@@ -472,6 +471,15 @@ class PlastinkaBaseTSDataset:
     @property
     def L(self):
         return self.end - self.start
+    
+    @property
+    def labels(self):
+        labels = []
+        for idx in range(len(self)):
+            array_index, _, _ = self._project_index(idx)
+            item_multiidx = self._idx2multiidx[array_index]
+            labels.append(item_multiidx)
+        return labels
 
 
 class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, TorchTrainingDataset):
@@ -479,6 +487,7 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, TorchTrainingDataset):
         super().__init__(*args, **kwargs)
 
     def __getitem__(self, idx):
+        (array_index, start_index, end_index) = self._project_index(idx)
         (
             series_item,
             past_covariates_item,
@@ -486,7 +495,7 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, TorchTrainingDataset):
             future_covariates_item_output_chunk,
             static_covariates_item,
             reweight_fn_output,
-        ) = self._get_raw_sample_arrays(idx)
+        ) = self._get_raw_sample_arrays(array_index, start_index, end_index)
 
         past_target = series_item[: -self.output_chunk_length]
         future_target = series_item[-self.output_chunk_length :]
@@ -527,6 +536,7 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
         # Extend arrays
         self._monthly_sales = np.vstack([self._monthly_sales, zero_sales])
         self._stock_features = np.vstack([self._stock_features, zero_stock])
+        self._n_time_steps = self._monthly_sales.shape[0]
 
         # Extend time index
         last_date = self._time_index[-1]
@@ -534,12 +544,16 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
             start=last_date + pd.DateOffset(months=1), periods=pad, freq="MS"
         )
         self._time_index = self._time_index.append(new_dates)
-
-        # Update derived attributes and rebuild cache
-        self._n_time_steps = self._monthly_sales.shape[0]
-        self.reset_window(copy=False)
-        self._build_index_mapping() # Ensure index mapping is rebuilt after padding
-
+        
+        self.setup_dataset(
+            window=(self._n_time_steps - (
+                self.input_chunk_length + self.output_chunk_length
+            ), self._n_time_steps),
+            copy=False,
+            reindex=True,
+        )
+        if self.save_dir is not None:
+            self.save(self.save_dir, self.dataset_name)
 
     def __getitem__(self, idx):
         (array_index, start_index, end_index) = self._project_index(idx)
@@ -551,11 +565,11 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
             future_covariates_item_output_chunk,
             static_covariates_item,
             _, # reweight_fn_output not needed for inference __getitem__
-        ) = self._get_raw_sample_arrays(idx)
+        ) = self._get_raw_sample_arrays(array_index, start_index, end_index)
 
         # Darts InferenceDataset expects a SeriesSchema for target_series (7th element)
         # and pred_time (8th element).
-        time_index_for_ts = self.time_index[start_index : end_index] # Use unpacked start_index, end_index
+        time_index_for_ts = self.time_index[start_index: end_index] # Use unpacked start_index, end_index
         
         # This is a workaround because Darts doesn't provide a direct way to build SeriesSchema
         # without a TimeSeries object from raw data, but expects a SeriesSchema from __getitem__.
@@ -903,7 +917,7 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
         validated["Дата продажи"] = validated["Дата продажи"].dt.floor("D")
     validated["Дата создания"] = validated["Дата создания"].dt.floor("D")
 
-    return validated
+    return validated, bins
 
 
 def categorize_dates(df: pd.DataFrame) -> pd.DataFrame:
@@ -968,7 +982,7 @@ def filter_by_date(
 def get_preprocessed_df(
     df: pd.DataFrame, group_keys: Sequence[str], transform_fn: Callable, bins=None
 ) -> Sequence:
-    validated_df = process_raw(df, bins)
+    validated_df, bins = process_raw(df, bins)
 
     group_keys = [k for k in group_keys if k in validated_df.columns]
     preprocessed_df = (
@@ -979,7 +993,7 @@ def get_preprocessed_df(
 
 
 def process_data(
-    stock_path: str, sales_path: str, cutoff_date: str, bins: pd.Series | None = None
+    stock_path: str, sales_path: str, cutoff_date: str, bins: pd.IntervalIndex | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     keys_no_dates = GROUP_KEYS
     all_keys = ["Дата создания", "Дата продажи", *GROUP_KEYS]

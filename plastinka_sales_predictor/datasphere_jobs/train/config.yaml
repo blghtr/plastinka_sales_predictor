@@ -7,7 +7,7 @@ desc: Sales prediction (v1.0.0)
 # --- Compute Resources ---
 # Define the resources and VM configuration for the job.
 cloud-instance-types:
-  - c1.4
+  - c1.8
 
 # --- Job Inputs ---
 inputs:

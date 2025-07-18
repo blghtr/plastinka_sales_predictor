@@ -156,8 +156,8 @@ def main(input_dir, output):
         "num_samples_light" if mode == "light" else "num_samples_full",
         50 if mode == "light" else 200,
     )
-    resources = tuning_cfg.get("resources", {"cpu": 8})
-    max_concurrent = tuning_cfg.get("max_concurrent", 4)
+    resources = tuning_cfg.get("resources", {"cpu": 32})
+    max_concurrent = tuning_cfg.get("max_concurrent", 16)
     best_configs_to_save = tuning_cfg.get("best_configs_to_save", 5)
     
     # Optional overall time budget for the entire tuning run
@@ -208,9 +208,6 @@ def main(input_dir, output):
     if mode == "light":
         _ = tunable_params.pop("model_config")
 
-    else:
-        _ = tunable_params["model_config"].pop("n_epochs")
-
     # dataset paths
     train_path = os.path.join(input_dir_real, "train.dill")
     val_path = os.path.join(input_dir_real, "val.dill")
@@ -229,7 +226,7 @@ def main(input_dir, output):
     train_with_parameters = tune.with_resources(
         train_with_parameters,
         {
-            k: max(1., float(v) / max_concurrent) 
+            k: max(1., float(v) / max_concurrent) # TODO: check if this is correct
             for k, v in resources.items()
         }
     )
@@ -250,7 +247,7 @@ def main(input_dir, output):
         train_with_parameters,
         param_space=tunable_params,
         tune_config=tune.TuneConfig(
-            num_samples=3,
+            num_samples=num_samples,
             max_concurrent_trials=max_concurrent,
             search_alg=searcher,
             scheduler=scheduler,

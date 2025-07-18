@@ -135,16 +135,9 @@ def predict_sales(model, predict_dataset: PlastinkaInferenceTSDataset) -> pd.Dat
 
         logger.info("Prediction generation complete.")
 
-        # Extract labels from dataset for creating the DataFrame
-        labels = []
-        for idx in range(len(predict_dataset)):
-            array_index, _, _ = predict_dataset._project_index(idx)
-            item_multiidx = predict_dataset._idx2multiidx[array_index]
-            labels.append(item_multiidx)
-
         predictions_df = get_predictions_df(
             predictions,
-            labels,
+            predict_dataset.labels,
             predict_dataset._index_names_mapping,
             predict_dataset.scaler,
         )
