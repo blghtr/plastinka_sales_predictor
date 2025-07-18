@@ -1,3 +1,4 @@
+from copy import deepcopy
 import hashlib
 import json
 import logging
@@ -5,12 +6,17 @@ import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+from pydantic import ValidationError
+
 from deployment.app.config import get_settings
+from deployment.app.models.api_models import TrainingConfig
 from deployment.app.utils.retry import retry_with_backoff
+from deployment.app.utils.validation import validate_historical_date_range
 
 logger = logging.getLogger("plastinka.database")
 
@@ -264,7 +270,7 @@ def execute_query(
                 conn.commit()
             result = None
 
-        return result
+        return result if result is not None else ([] if fetchall else None)
 
     except sqlite3.Error as e:
         if conn and conn_created:
@@ -642,6 +648,14 @@ def create_or_get_config(
     Returns:
         Config ID (hash)
     """
+    try:
+        # The model_validator in TrainingConfig will handle the aliasing
+        # from 'model_config' to 'nn_model_config' automatically.
+        _ = TrainingConfig(**config_dict)
+    except (ValidationError, ValueError) as e:
+        logger.error(f"Configuration is invalid: {e}", exc_info=True)
+        raise ValueError(f"Invalid configuration provided: {e}") from e
+
     conn_created = False
     try:
         if connection:
@@ -834,104 +848,34 @@ def get_best_config_by_metric(
     connection: sqlite3.Connection = None,
 ) -> dict[str, Any] | None:
     """
-    Returns the config with the best metric value based on training_results.
+    Returns the config with the best metric value by searching across both
+    training_results and tuning_results.
 
     Args:
-        metric_name: The name of the metric to use for evaluation
-        higher_is_better: True if higher values of the metric are better, False otherwise
-        connection: Optional existing database connection to use
+        metric_name: The name of the metric to use for evaluation.
+        higher_is_better: True if higher values of the metric are better.
+        connection: Optional existing database connection.
 
     Returns:
-        Dictionary with config_id, config, and metrics fields if a best config exists,
-        otherwise None.
+        A dictionary with config_id, config, and metrics, or None if no config is found.
     """
-    if metric_name not in ALLOWED_METRICS:
-        logger.error(
-            f"Invalid metric_name '{metric_name}' provided to get_best_config_by_metric."
-        )
-        raise ValueError(
-            f"Invalid metric_name: {metric_name}. Allowed metrics are: {ALLOWED_METRICS}"
-        )
+    # Use the generalized get_top_configs function to find the single best config
+    top_configs = get_top_configs(
+        metric_name=metric_name,
+        higher_is_better=higher_is_better,
+        limit=1,
+        connection=connection,
+    )
 
-    conn_created = False
-    try:
-        if connection:
-            conn = connection
-        else:
-            conn = get_db_connection()
-            conn_created = True
-
-        conn.row_factory = dict_factory  # Use dict_factory
-        cursor = conn.cursor()
-
-        order_direction = "DESC" if higher_is_better else "ASC"
-
-        # Construct the JSON path safely
-        json_path = f"'$.{metric_name}'"  # The metric_name is now validated
-
-        # Join configs and training_results to find the best metrics
-        # Ensure config_id is not NULL in training_results
-        # The metric_name for JSON_EXTRACT and order_direction are now safely constructed.
-        query = f"""
-            SELECT
-                c.config_id,
-                c.config,
-                tr.metrics,
-                JSON_EXTRACT(tr.metrics, {json_path}) as metric_value
-            FROM training_results tr
-            JOIN configs c ON tr.config_id = c.config_id
-            WHERE tr.config_id IS NOT NULL AND JSON_VALID(tr.metrics) = 1 AND JSON_EXTRACT(tr.metrics, {json_path}) IS NOT NULL
-            ORDER BY metric_value {order_direction}
-            LIMIT 1
-        """
-
-        # No parameters needed for this query as dynamic parts are validated and inlined
-        cursor.execute(query)
-        result = cursor.fetchone()
-
-        if result:
-            # Parse JSON fields
-            if result.get("config"):
-                try:
-                    result["config"] = json.loads(result["config"])
-                except json.JSONDecodeError:
-                    logger.warning(
-                        f"Could not decode config JSON for config {result['config_id']}"
-                    )
-                    result["config"] = {}  # Set to empty dict on error
-            else:
-                result["config"] = {}
-
-            if result.get("metrics"):
-                try:
-                    result["metrics"] = json.loads(result["metrics"])
-                except json.JSONDecodeError:
-                    logger.warning(
-                        f"Could not decode metrics JSON for config {result['config_id']} in training_results"
-                    )
-                    result["metrics"] = {}  # Set to empty dict on error
-            else:
-                result["metrics"] = {}
-
-            # Remove the extracted metric_value helper column
-            result.pop("metric_value", None)
-            return result
-
+    if not top_configs:
         return None
 
-    except sqlite3.Error as e:
-        logger.error(
-            f"Database error in get_best_config_by_metric for metric '{metric_name}': {e}",
-            exc_info=True,
-        )
-        # It might be better to re-raise a custom error or let DatabaseError propagate if execute_query was used
-        return None  # Or raise DatabaseError(f"Failed to get best config: {e}", original_error=e)
-    except ValueError as ve:  # Catch the ValueError from metric_name validation
-        logger.error(f"ValueError in get_best_config_by_metric: {ve}", exc_info=True)
-        raise  # Re-raise the ValueError to be handled by the caller
-    finally:
-        if conn_created and conn:
-            conn.close()  # Correct indentation
+    # get_top_configs returns a list, so we take the first element
+    best_config_result = top_configs[0]
+
+    # The result from get_top_configs already includes `config_id`, `config`, and `metrics`
+    # in the desired format, so we can return it directly.
+    return best_config_result
 
 
 def create_model_record(
@@ -1413,93 +1357,207 @@ def create_training_result(
 
 def create_prediction_result(
     job_id: str,
+    prediction_month: str,
+    model_id: str | None = None,
+    output_path: str | None = None,
+    summary_metrics: dict[str, Any] | None = None,
+    connection: sqlite3.Connection = None,
+) -> str:
+    """
+    Create or update a prediction result record.
+    If a record for the job_id and prediction_month exists, it's updated.
+    Otherwise, a new one is created.
+    """
+    result_id = generate_id()
+
+    # Check if a result already exists for this job_id and month
+    check_query = "SELECT result_id FROM prediction_results WHERE job_id = ? AND prediction_month = ?"
+    existing_result = execute_query(
+        check_query, (job_id, prediction_month), connection=connection
+    )
+
+    if existing_result:
+        # Update existing record
+        result_id = existing_result["result_id"]
+        query = """
+            UPDATE prediction_results
+            SET model_id = COALESCE(?, model_id),
+                output_path = COALESCE(?, output_path),
+                summary_metrics = COALESCE(?, summary_metrics)
+            WHERE result_id = ?
+        """
+        params = (
+            model_id,
+            output_path,
+            json.dumps(summary_metrics, default=json_default_serializer)
+            if summary_metrics
+            else None,
+            result_id,
+        )
+        logger.info(f"Updating prediction result for job {job_id} and month {prediction_month}")
+    else:
+        # Insert new record
+        query = """
+        INSERT INTO prediction_results (result_id, job_id, model_id, output_path, summary_metrics, prediction_month)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """
+        params = (
+            result_id,
+            job_id,
+            model_id,
+            output_path,
+            json.dumps(summary_metrics, default=json_default_serializer)
+            if summary_metrics
+            else None,
+            prediction_month,
+        )
+        logger.info(f"Creating new prediction result for job {job_id} and month {prediction_month}")
+
+    try:
+        execute_query(query, params, connection=connection)
+        return result_id
+    except DatabaseError:
+        logger.error(f"Failed to create/update prediction result for job {job_id}")
+        raise
+
+
+def insert_predictions(
+    result_id: str,
     model_id: str,
-    output_path: str,
-    summary_metrics: dict[str, Any] | None,
-    prediction_month: date | None = None,  # New parameter
+    df: pd.DataFrame,
     connection: sqlite3.Connection = None,
-) -> str:
-    """
-    Create a prediction result record
-
-    Args:
-        job_id: Associated job ID
-        model_id: ID of the model used for prediction
-        output_path: Path to prediction output file
-        summary_metrics: Dictionary of prediction metrics
-        prediction_month: Month for which predictions were made
-        connection: Optional existing database connection to use
-
-    Returns:
-        Generated result ID
-    """
-    result_id = generate_id()
-
-    query = """
-    INSERT INTO prediction_results (result_id, job_id, model_id, output_path, summary_metrics, prediction_month)
-    VALUES (?, ?, ?, ?, ?, ?)
-    """
-
-    params = (
-        result_id,
-        job_id,
-        model_id,
-        output_path,
-        json.dumps(summary_metrics, default=json_default_serializer)
-        if summary_metrics
-        else None,
-        prediction_month.isoformat() if prediction_month else None,
-    )
-
+):
+    conn_created = False
     try:
-        execute_query(query, params, connection=connection)
-        return result_id
-    except DatabaseError:
-        logger.error(f"Failed to create prediction result for job {job_id}")
+        if connection:
+            conn = connection
+        else:
+            conn = get_db_connection()
+            conn_created = True
+
+        timestamp = datetime.now().isoformat()
+        predictions_data = []
+
+        for _, row in df.iterrows():
+            # Get or create multiindex_id
+            # TODO: refactor to use batching ?
+            multiindex_id = get_or_create_multiindex_id(
+                barcode=row["barcode"],
+                artist=row["artist"],
+                album=row["album"],
+                cover_type=row["cover_type"],
+                price_category=row["price_category"],
+                release_type=row["release_type"],
+                recording_decade=row["recording_decade"],
+                release_decade=row["release_decade"],
+                style=row["style"],
+                record_year=int(row["record_year"]),
+                connection=conn,
+            )
+
+            # Prepare prediction data
+            prediction_row = (
+                result_id,
+                multiindex_id,
+                timestamp,  # prediction_date
+                model_id,  # model_id
+                row["0.05"],
+                row["0.25"],
+                row["0.5"],
+                row["0.75"],
+                row["0.95"],
+                timestamp,  # created_at
+            )
+            predictions_data.append(prediction_row)
+
+        # Batch insert all predictions
+        try:
+            cursor = conn.cursor()
+            cursor.executemany(
+                """
+                INSERT OR REPLACE INTO fact_predictions
+                (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                predictions_data,
+            )
+        except Exception:
+            # Если прямой вызов не сработал, используем execute_many
+            execute_many(
+                """
+                INSERT OR REPLACE INTO fact_predictions
+                (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                predictions_data,
+                conn,
+            )
+
+        # Commit the transaction instead of execute("COMMIT")
+        conn.commit()
+
+        return {"result_id": result_id, "predictions_count": len(df)}
+    
+    except Exception as e:
+        logger.error(f"Failed to insert predictions: {e}")
         raise
+    finally:
+        if conn_created and conn:
+            conn.close()
 
 
-def create_report_result(
-    job_id: str,
-    report_type: str,
-    parameters: dict[str, Any],
-    output_path: str,
-    connection: sqlite3.Connection = None,
-) -> str:
+def get_next_prediction_month(connection: sqlite3.Connection = None) -> date:
     """
-    Create a report result record
-
-    Args:
-        job_id: Associated job ID
-        report_type: Type of report
-        parameters: Dictionary of report parameters
-        output_path: Path to generated report
-        connection: Optional existing database connection to use
-
-    Returns:
-        Generated result ID
+    Finds the last month with complete data in fact_sales and returns the next month.
     """
-    result_id = generate_id()
-
     query = """
-    INSERT INTO report_results (result_id, job_id, report_type, parameters, output_path)
-    VALUES (?, ?, ?, ?, ?)
+        SELECT
+            strftime('%Y-%m', data_date) as month,
+            COUNT(DISTINCT strftime('%d', data_date)) as distinct_days,
+            julianday(strftime('%Y-%m-01', data_date, '+1 month')) - julianday(strftime('%Y-%m-01', data_date)) as days_in_month
+        FROM fact_sales
+        GROUP BY month
+        HAVING distinct_days = days_in_month
+        ORDER BY month DESC
+        LIMIT 1;
     """
-
-    params = (
-        result_id,
-        job_id,
-        report_type,
-        json.dumps(parameters, default=json_default_serializer),
-        output_path,
-    )
-
     try:
-        execute_query(query, params, connection=connection)
-        return result_id
-    except DatabaseError:
-        logger.error(f"Failed to create report result for job {job_id}")
-        raise
+        result = execute_query(query, connection=connection)
+        if result and result["month"]:
+            last_full_month = datetime.strptime(result["month"], "%Y-%m").date()
+            # Return the next month
+            return (last_full_month.replace(day=1) + timedelta(days=32)).replace(day=1)
+        else:
+            # If no full month is found, default to the month after the latest data point
+            latest_data_query = "SELECT MAX(data_date) as max_date FROM fact_sales"
+            latest_data_result = execute_query(latest_data_query, connection=connection)
+            if latest_data_result and latest_data_result["max_date"]:
+                max_date = date.fromisoformat(latest_data_result["max_date"])
+                return (max_date.replace(day=1) + timedelta(days=32)).replace(day=1)
+            # Fallback to the current month's next month if no data exists at all
+            today = date.today()
+            return (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+
+    except (DatabaseError, TypeError, ValueError) as e:
+        logger.error(f"Failed to get next prediction month: {e}")
+        # Fallback in case of any error
+        today = date.today()
+        return (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+
+
+def get_latest_prediction_month(connection: sqlite3.Connection = None) -> date | None:
+    """
+    Get the most recent prediction_month from the prediction_results table.
+    """
+    query = "SELECT MAX(prediction_month) as latest_month FROM prediction_results"
+    try:
+        result = execute_query(query, connection=connection)
+        if result and result["latest_month"]:
+            return date.fromisoformat(result["latest_month"])
+        return None
+    except (DatabaseError, TypeError, ValueError) as e:
+        logger.error(f"Failed to get latest prediction month: {e}")
+        return None
 
 
 def get_data_upload_result(
@@ -1510,10 +1568,20 @@ def get_data_upload_result(
     return execute_query(query, (result_id,), connection=connection)
 
 
-def get_training_result(result_id: str, connection: sqlite3.Connection = None) -> dict:
-    """Get training result by ID"""
-    query = "SELECT * FROM training_results WHERE result_id = ?"
-    return execute_query(query, (result_id,), connection=connection)
+def get_training_results(
+    result_id: str | None = None, limit: int = 100, connection: sqlite3.Connection = None
+) -> dict | list[dict]:
+    """
+    Get training result(s) by ID or a list of recent results.
+    If result_id is provided, returns a single dict.
+    If result_id is None, returns a list of dicts, ordered by creation date and limited.
+    """
+    if result_id:
+        query = "SELECT * FROM training_results WHERE result_id = ?"
+        return execute_query(query, (result_id,), connection=connection)
+    else:
+        query = "SELECT * FROM training_results ORDER BY created_at DESC LIMIT ?"
+        return execute_query(query, (limit,), fetchall=True, connection=connection)
 
 
 def get_prediction_result(
@@ -1522,6 +1590,21 @@ def get_prediction_result(
     """Get prediction result by ID"""
     query = "SELECT * FROM prediction_results WHERE result_id = ?"
     return execute_query(query, (result_id,), connection=connection)
+
+
+def get_prediction_results_by_month(
+    prediction_month: str, model_id: str | None = None, connection: sqlite3.Connection = None
+) -> list[dict]:
+    """Get all prediction results for a specific month, optionally filtered by model_id."""
+    query = "SELECT * FROM prediction_results WHERE prediction_month = ?"
+    params = [prediction_month]
+
+    if model_id:
+        query += " AND model_id = ?"
+        params.append(model_id)
+
+    query += " ORDER BY prediction_date DESC"
+    return execute_query(query, tuple(params), fetchall=True, connection=connection)
 
 
 def get_report_result(result_id: str, connection: sqlite3.Connection = None) -> dict:
@@ -1614,6 +1697,90 @@ def update_processing_run(
 
 
 # MultiIndex mapping functions
+
+
+def get_or_create_multiindex_ids_batch(
+    tuples_to_process: list[tuple], connection: sqlite3.Connection
+) -> dict[tuple, int]:
+    """
+    Efficiently gets or creates multiple multi-index IDs in a single batch.
+
+    Args:
+        tuples_to_process: A list of unique tuples, each representing a multi-index.
+        connection: An active sqlite3.Connection object.
+
+    Returns:
+        A dictionary mapping each input tuple to its integer multiindex_id.
+    """
+    if not tuples_to_process:
+        return {}
+
+    cursor = connection.cursor()
+    
+    # Use a temporary table for efficient lookup of existing tuples.
+    # This is more robust than complex WHERE clauses with many ORs or tuple comparisons,
+    # which are not well-supported across all SQLite versions.
+    cursor.execute("CREATE TEMP TABLE _tuples_to_find (barcode TEXT, artist TEXT, album TEXT, cover_type TEXT, price_category TEXT, release_type TEXT, recording_decade TEXT, release_decade TEXT, style TEXT, record_year INTEGER)")
+    
+    try:
+        # Insert all tuples we need to find/create into the temporary table
+        cursor.executemany("INSERT INTO _tuples_to_find VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuples_to_process)
+
+        # Find which tuples already exist in the main table by joining with the temp table
+        query_existing = """
+            SELECT t.*, m.multiindex_id
+            FROM _tuples_to_find t
+            JOIN dim_multiindex_mapping m ON
+                m.barcode = t.barcode AND
+                m.artist = t.artist AND
+                m.album = t.album AND
+                m.cover_type = t.cover_type AND
+                m.price_category = t.price_category AND
+                m.release_type = t.release_type AND
+                m.recording_decade = t.recording_decade AND
+                m.release_decade = t.release_decade AND
+                m.style = t.style AND
+                m.record_year = t.record_year
+        """
+        cursor.execute(query_existing)
+        existing_rows = cursor.fetchall()
+
+        # Create a set of existing tuples for quick lookup
+        existing_tuples = set()
+        id_map = {}
+        for row in existing_rows:
+            # Reconstruct the tuple from the row dictionary
+            existing_tuple = tuple(row[col] for col in row.keys() if col != 'multiindex_id')
+            existing_tuples.add(existing_tuple)
+            id_map[existing_tuple] = row['multiindex_id']
+
+        # Identify new tuples that need to be inserted
+        new_tuples = [t for t in tuples_to_process if tuple(t) not in existing_tuples]
+
+        # Batch insert the new tuples
+        if new_tuples:
+            insert_query = """
+            INSERT OR IGNORE INTO dim_multiindex_mapping (
+                barcode, artist, album, cover_type, price_category,
+                release_type, recording_decade, release_decade, style, record_year
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            cursor.executemany(insert_query, new_tuples)
+
+            # Now, we need to get the IDs of the newly inserted tuples.
+            # We can re-query for all processed tuples to get their IDs.
+            # This is simpler and more reliable than using last_insert_rowid() in a batch context.
+            cursor.execute(query_existing) # Re-run the join to get all IDs
+            all_rows = cursor.fetchall()
+            for row in all_rows:
+                full_tuple = tuple(row[col] for col in row.keys() if col != 'multiindex_id')
+                id_map[full_tuple] = row['multiindex_id']
+
+    finally:
+        # Always drop the temporary table
+        cursor.execute("DROP TABLE _tuples_to_find")
+
+    return id_map
 
 
 def get_or_create_multiindex_id(
@@ -1773,14 +1940,15 @@ def delete_configs_by_ids(
         with conn:  # Use connection as a context manager for transaction
             cursor = conn.cursor()
 
-            placeholders = ",".join("?" for _ in config_ids)
+            # Use batching to avoid SQLite variable limit
+            from deployment.app.utils.batch_utils import execute_query_with_batching
 
             # Find which configs are active
-            cursor.execute(
-                f"SELECT config_id FROM configs WHERE config_id IN ({placeholders}) AND is_active = 1",
-                config_ids,
+            active_query = "SELECT config_id FROM configs WHERE config_id IN ({placeholders}) AND is_active = 1"
+            active_results = execute_query_with_batching(
+                active_query, config_ids, connection=conn
             )
-            active_configs = {row["config_id"] for row in cursor.fetchall()}
+            active_configs = {row["config_id"] for row in active_results}
 
             summary["skipped_configs"] = list(active_configs)
             summary["skipped_count"] = len(active_configs)
@@ -1790,19 +1958,19 @@ def delete_configs_by_ids(
             if not configs_to_delete:
                 return summary
 
-            delete_placeholders = ",".join("?" for _ in configs_to_delete)
-
             # Find jobs using these configs
-            cursor.execute(
-                f"SELECT config_id FROM jobs WHERE config_id IN ({delete_placeholders})"
+            jobs_query = "SELECT config_id FROM jobs WHERE config_id IN ({placeholders})"
+            jobs_results = execute_query_with_batching(
+                jobs_query, configs_to_delete, connection=conn
             )
-            used_configs_in_jobs = {row["config_id"] for row in cursor.fetchall()}
+            used_configs_in_jobs = {row["config_id"] for row in jobs_results}
 
             # Also check training_results
-            cursor.execute(
-                f"SELECT config_id FROM training_results WHERE config_id IN ({delete_placeholders})"
+            training_query = "SELECT config_id FROM training_results WHERE config_id IN ({placeholders})"
+            training_results = execute_query_with_batching(
+                training_query, configs_to_delete, connection=conn
             )
-            used_configs_in_results = {row["config_id"] for row in cursor.fetchall()}
+            used_configs_in_results = {row["config_id"] for row in training_results}
 
             used_configs = used_configs_in_jobs.union(used_configs_in_results)
 
@@ -1820,15 +1988,19 @@ def delete_configs_by_ids(
             if not final_configs_to_delete:
                 return summary
 
-            final_placeholders = ",".join("?" for _ in final_configs_to_delete)
+            # Delete the unused, non-active configs using batching
+            from deployment.app.utils.batch_utils import split_ids_for_batching
 
-            # Now delete the unused, non-active configs
-            cursor.execute(
-                f"DELETE FROM configs WHERE config_id IN ({final_placeholders})",
-                final_configs_to_delete,
-            )
+            deleted_count = 0
+            for batch in split_ids_for_batching(final_configs_to_delete):
+                batch_placeholders = ",".join("?" for _ in batch)
+                cursor.execute(
+                    f"DELETE FROM configs WHERE config_id IN ({batch_placeholders})",
+                    batch,
+                )
+                deleted_count += cursor.rowcount
 
-            summary["deleted_count"] = cursor.rowcount
+            summary["deleted_count"] = deleted_count
 
     except Exception as e:
         logger.error(f"Error deleting configs by IDs: {e}", exc_info=True)
@@ -1930,14 +2102,15 @@ def delete_models_by_ids(
             cursor = conn.cursor()
             models_base_dir = get_settings().models_dir
 
-            placeholders = ",".join("?" for _ in model_ids)
+            # Use batching to avoid SQLite variable limit
+            from deployment.app.utils.batch_utils import execute_query_with_batching, split_ids_for_batching
 
             # Find which models are active
-            cursor.execute(
-                f"SELECT model_id FROM models WHERE model_id IN ({placeholders}) AND is_active = 1",
-                model_ids,
+            active_query = "SELECT model_id FROM models WHERE model_id IN ({placeholders}) AND is_active = 1"
+            active_results = execute_query_with_batching(
+                active_query, model_ids, connection=conn
             )
-            active_models = {row["model_id"] for row in cursor.fetchall()}
+            active_models = {row["model_id"] for row in active_results}
 
             summary["skipped_models"] = list(active_models)
             summary["skipped_count"] = len(active_models)
@@ -1949,28 +2122,32 @@ def delete_models_by_ids(
             if not models_to_delete_ids:
                 return summary
 
-            delete_placeholders = ",".join("?" for _ in models_to_delete_ids)
-
             # Get model paths before deleting records from DB
-            cursor.execute(
-                f"SELECT model_id, model_path FROM models WHERE model_id IN ({delete_placeholders})",
-                models_to_delete_ids,
-            )
-            models_to_delete_with_paths = cursor.fetchall()
-
-            # Delete associated training results first
-            cursor.execute(
-                f"DELETE FROM training_results WHERE model_id IN ({delete_placeholders})",
-                models_to_delete_ids,
+            paths_query = "SELECT model_id, model_path FROM models WHERE model_id IN ({placeholders})"
+            models_to_delete_with_paths = execute_query_with_batching(
+                paths_query, models_to_delete_ids, connection=conn
             )
 
-            # Now delete the models from DB
-            cursor.execute(
-                f"DELETE FROM models WHERE model_id IN ({delete_placeholders})",
-                models_to_delete_ids,
-            )
+            # Delete associated training results first using batching
+            deleted_count = 0
+            for batch in split_ids_for_batching(models_to_delete_ids):
+                batch_placeholders = ",".join("?" for _ in batch)
+                cursor.execute(
+                    f"DELETE FROM training_results WHERE model_id IN ({batch_placeholders})",
+                    batch,
+                )
+                deleted_count += cursor.rowcount
 
-            summary["deleted_count"] = cursor.rowcount
+            # Now delete the models from DB using batching
+            for batch in split_ids_for_batching(models_to_delete_ids):
+                batch_placeholders = ",".join("?" for _ in batch)
+                cursor.execute(
+                    f"DELETE FROM models WHERE model_id IN ({batch_placeholders})",
+                    batch,
+                )
+                deleted_count += cursor.rowcount
+
+            summary["deleted_count"] = deleted_count
 
             # Finally, delete the physical files
             for model_info in models_to_delete_with_paths:
@@ -2195,64 +2372,63 @@ def create_tuning_result(
             conn.close()
 
 
-def get_top_tuning_results(
-    metric_name: str,
-    higher_is_better: bool = True,
-    limit: int = 10,
-    threshold: float | None = None,
+def get_tuning_results(
+    result_id: str | None = None,
+    metric_name: str | None = None,
+    higher_is_better: bool | None = None,
+    limit: int = 100,
     connection: sqlite3.Connection = None,
-) -> list[dict[str, Any]]:
-    """Return top tuning_results ordered by specific metric.
-
-    Rows where metric is NULL are ignored.  Optionally filter by threshold.
+) -> dict | list[dict]:
     """
-    if metric_name not in ALLOWED_METRICS:
-        raise ValueError(
-            f"Invalid metric_name: {metric_name}. Allowed: {ALLOWED_METRICS}"
-        )
+    Get tuning result(s).
+    - If result_id is provided, fetches a single result by its ID.
+    - If result_id is None, fetches a list of results, sorted by a specified metric
+      or by creation date if no metric is provided.
 
-    conn_created = False
-    try:
-        if connection:
-            conn = connection
-        else:
-            conn = get_db_connection()
-            conn_created = True
-        conn.row_factory = dict_factory
-        cursor = conn.cursor()
+    Args:
+        result_id: The specific result ID to fetch.
+        metric_name: The metric to sort by (e.g., 'val_loss').
+        higher_is_better: Direction for sorting the metric. Required if metric_name is set.
+        limit: The maximum number of results to return in list view.
+        connection: Optional existing database connection.
 
-        order = "DESC" if higher_is_better else "ASC"
+    Returns:
+        A single dictionary if result_id is provided, otherwise a list of dictionaries.
+    """
+    # Fetch a single result by ID
+    if result_id:
+        query = "SELECT * FROM tuning_results WHERE result_id = ?"
+        return execute_query(query, (result_id,), fetchall=False, connection=connection)
+
+    # Fetch a list of results, with optional sorting
+    params = [limit]
+    
+    if metric_name:
+        if higher_is_better is None:
+            raise ValueError("`higher_is_better` must be specified when `metric_name` is provided.")
+        if metric_name not in ALLOWED_METRICS:
+            raise ValueError(f"Invalid metric name: {metric_name}")
+        
+        order_direction = "DESC" if higher_is_better else "ASC"
         json_path = f"'$.{metric_name}'"
-
-        sql = f"""
-            SELECT result_id, job_id, config_id, metrics,
-                   JSON_EXTRACT(metrics, {json_path}) AS metric_value,
-                   duration, created_at
+        
+        query = f"""
+            SELECT *, json_extract(metrics, {json_path}) as metric_value
             FROM tuning_results
-            WHERE JSON_VALID(metrics)=1
-              AND JSON_EXTRACT(metrics, {json_path}) IS NOT NULL
+            WHERE json_valid(metrics) = 1 AND json_extract(metrics, {json_path}) IS NOT NULL
+            ORDER BY metric_value {order_direction}
+            LIMIT ?
         """
-        params: tuple = ()
-        if threshold is not None:
-            comp = ">=" if higher_is_better else "<="
-            sql += f" AND JSON_EXTRACT(metrics, {json_path}) {comp} ?"
-            params = (threshold,)
-        sql += f" ORDER BY metric_value {order} LIMIT ?"
-        params += (limit,)
+    else:
+        # Default sorting by creation date if no metric is specified
+        query = "SELECT * FROM tuning_results ORDER BY created_at DESC LIMIT ?"
 
-        cursor.execute(sql, params)
-        rows = cursor.fetchall() or []
-        # parse metrics JSON for convenience
-        for r in rows:
-            try:
-                r["metrics"] = json.loads(r["metrics"] or "{}")
-            except json.JSONDecodeError:
-                r["metrics"] = {}
-            r.pop("metric_value", None)
-        return rows
-    finally:
-        if conn_created and conn:
-            conn.close()
+    try:
+        results = execute_query(query, tuple(params), fetchall=True, connection=connection)
+        return results if results is not None else []
+    except DatabaseError as e:
+        logger.error(f"Failed to get tuning results: {e}")
+        raise
 
 
 def get_top_configs(
@@ -2299,25 +2475,18 @@ def get_top_configs(
                     c.created_at,
                     c.is_active,
                     -- Get best metric from training_results
-                    MAX(CASE 
-                        WHEN tr.metrics IS NOT NULL 
-                        AND JSON_VALID(tr.metrics) = 1 
-                        AND JSON_EXTRACT(tr.metrics, {json_path}) IS NOT NULL
-                        THEN JSON_EXTRACT(tr.metrics, {json_path})
-                        ELSE NULL
-                    END) as training_metric,
+                    (SELECT JSON_EXTRACT(tr.metrics, {json_path}) 
+                     FROM training_results tr 
+                     WHERE tr.config_id = c.config_id 
+                     AND JSON_VALID(tr.metrics) = 1 AND JSON_EXTRACT(tr.metrics, {json_path}) IS NOT NULL 
+                     ORDER BY JSON_EXTRACT(tr.metrics, {json_path}) {order} LIMIT 1) as training_metric,
                     -- Get best metric from tuning_results  
-                    MAX(CASE 
-                        WHEN tu.metrics IS NOT NULL 
-                        AND JSON_VALID(tu.metrics) = 1 
-                        AND JSON_EXTRACT(tu.metrics, {json_path}) IS NOT NULL
-                        THEN JSON_EXTRACT(tu.metrics, {json_path})
-                        ELSE NULL
-                    END) as tuning_metric
+                    (SELECT JSON_EXTRACT(tu.metrics, {json_path}) 
+                     FROM tuning_results tu 
+                     WHERE tu.config_id = c.config_id 
+                     AND JSON_VALID(tu.metrics) = 1 AND JSON_EXTRACT(tu.metrics, {json_path}) IS NOT NULL 
+                     ORDER BY JSON_EXTRACT(tu.metrics, {json_path}) {order} LIMIT 1) as tuning_metric
                 FROM configs c
-                LEFT JOIN training_results tr ON c.config_id = tr.config_id
-                LEFT JOIN tuning_results tu ON c.config_id = tu.config_id
-                GROUP BY c.config_id, c.config, c.created_at, c.is_active
             ),
             final_metrics AS (
                 -- Combine metrics and select the best one
@@ -2339,7 +2508,9 @@ def get_top_configs(
                     END as best_metric
                 FROM config_metrics
             )
-            SELECT config_id, config, created_at, is_active, best_metric
+            SELECT config_id, config, created_at, is_active, best_metric,
+                   (SELECT metrics FROM training_results WHERE config_id = final_metrics.config_id ORDER BY JSON_EXTRACT(metrics, {json_path}) {order} LIMIT 1) as training_metrics_json,
+                   (SELECT metrics FROM tuning_results WHERE config_id = final_metrics.config_id ORDER BY JSON_EXTRACT(metrics, {json_path}) {order} LIMIT 1) as tuning_metrics_json
             FROM final_metrics
         """
         
@@ -2356,21 +2527,42 @@ def get_top_configs(
         # ensure config json parsed
         top_cfgs = []
         for r in rows:
+            new_row = dict(r)
             try:
-                cfg = json.loads(r["config"])
-                top_cfgs.append(cfg)
-            except Exception as e:
-                logger.warning(f"Failed to parse config JSON for {r['config_id']}: {e}")
+                new_row["config"] = json.loads(r["config"])
+                
+                # Determine which metrics to use
+                training_metrics = json.loads(new_row.pop('training_metrics_json')) if new_row.get('training_metrics_json') else None
+                tuning_metrics = json.loads(new_row.pop('tuning_metrics_json')) if new_row.get('tuning_metrics_json') else None
+                
+                # Choose the better metrics based on the metric value
+                if training_metrics and tuning_metrics:
+                    train_val = training_metrics.get(metric_name)
+                    tune_val = tuning_metrics.get(metric_name)
+                    if train_val is not None and tune_val is not None:
+                        if (higher_is_better and train_val >= tune_val) or (not higher_is_better and train_val <= tune_val):
+                            new_row["metrics"] = training_metrics
+                        else:
+                            new_row["metrics"] = tuning_metrics
+                    elif training_metrics:
+                        new_row["metrics"] = training_metrics
+                    else:
+                        new_row["metrics"] = tuning_metrics
+                elif training_metrics:
+                    new_row["metrics"] = training_metrics
+                elif tuning_metrics:
+                    new_row["metrics"] = tuning_metrics
+                else:
+                    new_row["metrics"] = {}
+
+                top_cfgs.append(new_row)
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Failed to parse config or metrics JSON for {r.get('config_id')}: {e}")
                 continue
         return top_cfgs
     finally:
         if conn_created and conn:
             conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Retry events persistence helpers (used by RetryMonitor)
-# ---------------------------------------------------------------------------
 
 
 def insert_retry_event(event: dict[str, Any], connection: sqlite3.Connection = None) -> None:
@@ -2408,3 +2600,66 @@ def fetch_recent_retry_events(limit: int = 1000, connection: sqlite3.Connection 
     rows = execute_query(query, (limit,), fetchall=True, connection=connection) or []
     rows.reverse()
     return rows
+
+
+
+def adjust_dataset_boundaries(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    connection: sqlite3.Connection = None,
+) -> date | None:
+    """
+    Adjusts the end date for the training dataset.
+
+    1. Validates the date range.
+    2. Finds the latest available date in fact_sales within the specified range.
+    3. Checks if the month of that date is complete.
+    4. If the month is complete, returns the original end_date.
+    5. If the month is incomplete, returns the end of the previous complete month.
+
+    Returns:
+        The adjusted end date (date) or None if no data is found.
+
+    Raises:
+        ValueError: If the date range is invalid.
+    """
+    # Base query to find the last date
+    query = "SELECT MAX(data_date) as last_date FROM fact_sales"
+    params = []
+
+    # Add date range conditions if provided
+    if start_date and end_date:
+        query += " WHERE data_date BETWEEN ? AND ?"
+        params.extend([start_date.isoformat(), end_date.isoformat()])
+    elif start_date:
+        query += " WHERE data_date >= ?"
+        params.append(start_date.isoformat())
+    elif end_date:
+        query += " WHERE data_date <= ?"
+        params.append(end_date.isoformat())
+
+    try:
+        result = execute_query(query, tuple(params), connection=connection)
+
+        if not result or not result.get("last_date"):
+            # No data found — return the original end_date
+            logger.warning("No sales data found for date range, returning original end_date.")
+            return end_date
+
+        last_date_in_data = date.fromisoformat(result["last_date"])
+
+        # Check if the month is complete
+        last_day_of_month = (last_date_in_data.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        is_month_complete = last_date_in_data == last_day_of_month
+
+        if is_month_complete:
+            # Month is complete — return the original end_date
+            return end_date
+        else:
+            # Month is incomplete — return the end of the previous month
+            adjusted_end_date = last_date_in_data.replace(day=1) - timedelta(days=1)
+            return adjusted_end_date
+
+    except (DatabaseError, TypeError, ValueError) as e:
+        logger.error(f"Failed to adjust dataset boundaries: {e}", exc_info=True)
+        return end_date

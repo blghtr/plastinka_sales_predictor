@@ -269,8 +269,8 @@ class TestMigrationCompatibility:
         assert config.nn_model_config is not None
         assert config.lags == 12
         assert len(config.quantiles) == 5
-        # model_id is None by default in create_training_params
-        assert config.model_id is None
+        # model_id has default value 'Plastinka_TiDE' in TrainingConfig
+        assert config.model_id == 'Plastinka_TiDE'
 
         # Test with base params
         base_params = {"batch_size": 64, "learning_rate": 0.01}

@@ -2,6 +2,7 @@ import shutil
 from pathlib import Path
 
 # Import our custom modules
+from deployment.app.config import get_settings
 from deployment.app.db.database import create_data_upload_result, update_job_status
 from deployment.app.db.feature_storage import save_features
 from deployment.app.models.api_models import JobStatus
@@ -29,6 +30,7 @@ async def process_data_files(
     """
     temp_dir = Path(temp_dir_path)
     stock_path = Path(stock_file_path)
+    settings = get_settings()
 
     try:
         # Update job status to running
@@ -46,9 +48,9 @@ async def process_data_files(
         # Process the data using the existing pipeline
         sales_dir_path = temp_dir / "sales"
         features = process_data(
-            stock_path=str(stock_path),
             sales_path=str(sales_dir_path),
             cutoff_date=cutoff_date,
+            bins=settings.price_category_interval_index,
         )
 
         update_job_status(job_id, JobStatus.RUNNING.value, progress=80)

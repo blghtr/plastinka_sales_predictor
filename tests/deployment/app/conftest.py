@@ -47,16 +47,15 @@ from deployment.app.db.database import (
     update_processing_run,
     create_processing_run,
     get_prediction_result,
-    get_training_result,
+    get_training_results,
     get_report_result,
     get_data_upload_result,
     create_data_upload_result,
-    create_report_result,
     get_or_create_multiindex_id,
     insert_retry_event,
     fetch_recent_retry_events,
     create_tuning_result,
-    get_top_tuning_results,
+    get_tuning_results,
 )
 from deployment.app.db.schema import init_db
 from deployment.app.models.api_models import (
@@ -134,20 +133,12 @@ def sample_model_data():
 
 
 @pytest.fixture
-def sample_config():
+def sample_config(create_training_params_fn):
     """
-    Sample config for testing
+    Sample config for testing, now returns a valid nested TrainingConfig structure.
     """
-    return {
-        "input_chunk_length": 12,
-        "output_chunk_length": 6,
-        "hidden_size": 64,
-        "lstm_layers": 2,
-        "dropout": 0.2,
-        "batch_size": 32,
-        "max_epochs": 10,
-        "learning_rate": 0.001,
-    }
+    # Use the helper from the root conftest to create a valid, nested config
+    return create_training_params_fn().model_dump(mode="json")
 
 
 @pytest.fixture
@@ -338,16 +329,46 @@ def file_based_db():
         config_id_1 = "param-1"
         config_id_2 = "param-2"
         config_data_1 = TrainingConfig(
-            model_config=ModelConfig(num_encoder_layers=2, batch_size=32),
-            optimizer_config=OptimizerConfig(lr=0.01),
-            lr_shed_config=LRSchedulerConfig(T_0=10),
-            train_ds_config=TrainingDatasetConfig(alpha=0.1),
+            nn_model_config=ModelConfig(
+                num_encoder_layers=3,
+                num_decoder_layers=2,
+                decoder_output_dim=128,
+                temporal_width_past=12,
+                temporal_width_future=6,
+                temporal_hidden_size_past=64,
+                temporal_hidden_size_future=64,
+                temporal_decoder_hidden=128,
+                batch_size=32,
+                dropout=0.2,
+                use_reversible_instance_norm=True,
+                use_layer_norm=True,
+            ),
+            optimizer_config=OptimizerConfig(lr=0.01, weight_decay=0.0001),
+            lr_shed_config=LRSchedulerConfig(T_0=10, T_mult=2),
+            train_ds_config=TrainingDatasetConfig(alpha=0.1, span=12),
+            lags=12,
+            quantiles=[0.05, 0.25, 0.5, 0.75, 0.95]
         ).model_dump(mode="json")
         config_data_2 = TrainingConfig(
-            model_config=ModelConfig(num_encoder_layers=4, batch_size=64),
-            optimizer_config=OptimizerConfig(lr=0.005),
-            lr_shed_config=LRSchedulerConfig(T_0=20),
-            train_ds_config=TrainingDatasetConfig(alpha=0.05),
+            nn_model_config=ModelConfig(
+                num_encoder_layers=4,
+                num_decoder_layers=3,
+                decoder_output_dim=256,
+                temporal_width_past=24,
+                temporal_width_future=12,
+                temporal_hidden_size_past=128,
+                temporal_hidden_size_future=128,
+                temporal_decoder_hidden=256,
+                batch_size=64,
+                dropout=0.3,
+                use_reversible_instance_norm=False,
+                use_layer_norm=False,
+            ),
+            optimizer_config=OptimizerConfig(lr=0.005, weight_decay=0.00001),
+            lr_shed_config=LRSchedulerConfig(T_0=20, T_mult=1),
+            train_ds_config=TrainingDatasetConfig(alpha=0.01, span=24),
+            lags=24,
+            quantiles=[0.01, 0.5, 0.99]
         ).model_dump(mode="json")
 
         cursor.execute(
@@ -512,18 +533,17 @@ def mocked_db(in_memory_db, monkeypatch):
         "update_processing_run": update_processing_run,
         "create_processing_run": create_processing_run,
         "get_prediction_result": get_prediction_result,
-        "get_training_result": get_training_result,
+        "get_training_results": get_training_results,
         "get_report_result": get_report_result,
         "get_data_upload_result": get_data_upload_result,
         "create_data_upload_result": create_data_upload_result,
-        "create_report_result": create_report_result,
         "get_or_create_multiindex_id": get_or_create_multiindex_id,
         "execute_many": execute_many,
         "insert_retry_event": insert_retry_event,
         "fetch_recent_retry_events": fetch_recent_retry_events,
         "create_tuning_result": create_tuning_result,
-        "get_top_tuning_results": get_top_tuning_results,
-    }
+        "get_tuning_results": get_tuning_results,
+}
     return _
 
 @pytest.fixture(scope="function", autouse=True)
@@ -579,6 +599,9 @@ def set_session_db_path(session_monkeypatch):
 
     # Set up the database_path as a PropertyMock so it behaves like a property
     type(mock_settings).database_path = PropertyMock(return_value=session_db_path)
+    
+    # Add the newly required attribute for batching
+    mock_settings.sqlite_max_variables = 900 # A reasonable default for tests
     
     # Patch the get_settings function itself immediately
     session_monkeypatch.setattr("deployment.app.config.get_settings", lambda: mock_settings)
@@ -679,5 +702,35 @@ def isolated_db_session():
             os.remove(db_path)
         except Exception:
             pass
+
+@pytest.fixture
+def db_with_sales_data(in_memory_db):
+    """Provides a db with controlled sales data for date logic tests."""
+    conn = in_memory_db["conn"]
+
+    # get_or_create_multiindex_id needs to be imported or mocked.
+    # For simplicity, we'll manually insert into dim_multiindex_mapping.
+    multiindex_id = 1
+    conn.execute(
+        """
+        INSERT INTO dim_multiindex_mapping (multiindex_id, barcode, artist, album)
+        VALUES (?, ?, ?, ?)
+        """,
+        (multiindex_id, "barcode1", "artist1", "album1"),
+    )
+
+    sales_data = [
+        # --- 2023 ---
+        (multiindex_id, "2023-10-31", 10),  # Full month
+        (multiindex_id, "2023-11-01", 5),  # Incomplete month
+        (multiindex_id, "2023-11-02", 5),
+    ]
+
+    conn.executemany(
+        "INSERT INTO fact_sales (multiindex_id, data_date, value) VALUES (?, ?, ?)",
+        sales_data,
+    )
+    conn.commit()
+    return conn
 
 # NOTE: All DB fixtures yield dicts. Use .get('conn') for DB operations, .get('db_path') for path-based tests.

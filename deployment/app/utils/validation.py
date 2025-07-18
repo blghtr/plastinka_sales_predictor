@@ -339,3 +339,18 @@ def validate_pagination_params(offset: int, limit: int) -> tuple[int, int]:
     normalized_limit = max(1, min(1000, limit))
 
     return normalized_offset, normalized_limit
+
+
+def validate_date_range_or_none(start_date, end_date, format_str="%Y-%m-%d"):
+    """
+    Validates that start_date and end_date (if both provided) form a valid range.
+    Raises ValueError if invalid. Does nothing if either is None.
+    """
+    if start_date and end_date:
+        is_valid, error_msg, _, _ = validate_historical_date_range(
+            start_date.strftime(format_str),
+            end_date.strftime(format_str),
+            format_str=format_str
+        )
+        if not is_valid:
+            raise ValueError(error_msg)

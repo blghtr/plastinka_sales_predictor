@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class JobStatus(str, Enum):
@@ -179,11 +179,20 @@ class TrainingConfig(BaseModel):
         None, description="Quantiles for probabilistic forecasting"
     )
     model_id: str | None = Field(
-        None, description="ID of the model to use for training"
+        'Plastinka_TiDE', description="ID of the model to use for training"
     )
     additional_hparams: dict[str, Any] | None = Field(
         None, description="Additional training hparams"
     )
+
+    @model_validator(mode='before')
+    @classmethod
+    def _handle_model_config_alias(cls, data: Any) -> Any:
+        if isinstance(data, dict) and 'model_config' in data:
+            if 'nn_model_config' in data:
+                raise ValueError("Cannot provide both 'model_config' and 'nn_model_config'")
+            data['nn_model_config'] = data.pop('model_config')
+        return data
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -235,8 +244,9 @@ class ReportParams(BaseModel):
         ReportType.PREDICTION_REPORT,
         description="Type of report to generate (only prediction_report supported)",
     )
-    prediction_month: datetime = Field(
-        ..., description="Month for which to generate predictions (YYYY-MM format)"
+    prediction_month: date | None = Field(
+        None,
+        description="Month for which to generate predictions (YYYY-MM-DD). If null, latest available month is used.",
     )
     filters: dict[str, Any] | None = Field(
         None, description="Filters to apply to report data"
@@ -249,6 +259,54 @@ class ReportParams(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TrainingParams(BaseModel):
+    """Parameters for a training job."""
+
+    dataset_start_date: date | None = Field(
+        None, description="Start date for the training dataset (YYYY-MM-DD)."
+    )
+    dataset_end_date: date | None = Field(
+        None, description="End date for the training dataset (YYYY-MM-DD)."
+    )
+
+    @model_validator(mode="after")
+    def check_date_range(self):
+        from deployment.app.utils.validation import validate_date_range_or_none
+        validate_date_range_or_none(self.dataset_start_date, self.dataset_end_date)
+        return self
+
+    model_config = ConfigDict(from_attributes=True)
+
+class TuningParams(BaseModel):
+    """Parameters for a tuning job."""
+
+    dataset_start_date: date | None = Field(
+        None, 
+        description="Start date for the training dataset (YYYY-MM-DD)."
+    )
+    dataset_end_date: date | None = Field(
+        None, 
+        description="End date for the training dataset (YYYY-MM-DD)."
+    )
+    mode: str | None = Field(
+        None, 
+        description="Tuning mode: full or light", 
+        pattern="^(light|full)$"
+    )
+    time_budget_s: int | None = Field(
+        None, 
+        description="Time budget for tuning in seconds", 
+        gt=0
+    )
+
+    @model_validator(mode="after")
+    def check_date_range(self):
+        from deployment.app.utils.validation import validate_date_range_or_none
+        validate_date_range_or_none(self.dataset_start_date, self.dataset_end_date)
+        return self
+
+    model_config = ConfigDict(from_attributes=True)
+
 class ReportResponse(BaseModel):
     """Response model for report generation"""
 
@@ -258,12 +316,6 @@ class ReportResponse(BaseModel):
     )
     records_count: int = Field(..., description="Number of records in the report")
     csv_data: str = Field(..., description="CSV data as string")
-    has_enriched_metrics: bool = Field(
-        ..., description="Whether report includes enriched metrics"
-    )
-    enriched_columns: list[str] = Field(
-        default_factory=list, description="List of enriched column names"
-    )
     generated_at: datetime = Field(..., description="When the report was generated")
     filters_applied: dict[str, Any] | None = Field(
         None, description="Filters that were applied"
@@ -279,11 +331,36 @@ class ConfigResponse(BaseModel):
     """Response model for config information"""
 
     config_id: str
-    configs: dict[str, Any]
+    config: dict[str, Any]
     is_active: bool | None = False
     created_at: datetime | None = None
-    default_metric_name: str | None = None
-    default_metric_value: float | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TrainingResultResponse(BaseModel):
+    """Response model for a single training result"""
+
+    result_id: str
+    job_id: str
+    model_id: str
+    config_id: str
+    metrics: dict[str, Any]
+    duration: float
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TuningResultResponse(BaseModel):
+    """Response model for a single tuning result"""
+
+    result_id: str
+    job_id: str
+    config_id: str
+    metrics: dict[str, Any]
+    duration: float
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 

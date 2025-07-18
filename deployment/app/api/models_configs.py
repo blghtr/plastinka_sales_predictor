@@ -317,12 +317,12 @@ async def upload_config(
     """Upload (create) a new config."""
     try:
         config_id = dal.create_or_get_config(
-            request.json_payload, is_active=request.is_active
+            request.json_payload, is_active=request.is_active, source="manual_upload"
         )
                 
         return ConfigResponse(
             config_id=config_id,
-            configs=request.json_payload,
+            config=request.json_payload,
             is_active=request.is_active,
         )
     except Exception as e:

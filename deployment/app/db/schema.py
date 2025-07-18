@@ -151,12 +151,13 @@ CREATE TABLE IF NOT EXISTS training_results (
     result_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     model_id TEXT,
-    config_id TEXT,  -- New column added
-    metrics TEXT,           -- JSON of training metrics
-    duration INTEGER,       -- in seconds
+    config_id TEXT,
+    metrics TEXT, -- JSON dictionary of metrics
+    duration REAL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id),
-    FOREIGN KEY (model_id) REFERENCES models(model_id), -- Added FK to new models table
-    FOREIGN KEY (config_id) REFERENCES configs(config_id) -- Added FK
+    FOREIGN KEY (model_id) REFERENCES models(model_id),
+    FOREIGN KEY (config_id) REFERENCES configs(config_id)
 );
 
 CREATE TABLE IF NOT EXISTS prediction_results (
@@ -183,9 +184,9 @@ CREATE TABLE IF NOT EXISTS tuning_results (
     result_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     config_id TEXT NOT NULL,
-    metrics TEXT,           -- JSON of tuning metrics
-    duration INTEGER,       -- in seconds
-    created_at TIMESTAMP NOT NULL,
+    metrics TEXT,
+    duration REAL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id),
     FOREIGN KEY (config_id) REFERENCES configs(config_id)
 );

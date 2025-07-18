@@ -15,7 +15,7 @@ class TestConfigEndpoints:
     """Tests for config-related endpoints in /api/v1/models-configs."""
 
     def test_get_active_config_success(self, client, mock_dal):
-        mock_dal.get_active_config.return_value = {"config_id": "active-config", "configs": {}, "is_active": True}
+        mock_dal.get_active_config.return_value = {"config_id": "active-config", "config": {}, "is_active": True}
         response = client.get("/api/v1/models-configs/configs/active", headers={"X-API-Key": TEST_X_API_KEY})
         assert response.status_code == 200
         assert response.json()["config_id"] == "active-config"
@@ -39,22 +39,22 @@ class TestConfigEndpoints:
         assert response.status_code == 404
 
     def test_get_best_config(self, client, mock_dal):
-        mock_dal.get_best_config_by_metric.return_value = {"config_id": "best-config", "configs": {"param": "value"}}
+        mock_dal.get_best_config_by_metric.return_value = {"config_id": "best-config", "config": {"param": "value"}}
         response = client.get("/api/v1/models-configs/configs/best", headers={"X-API-Key": TEST_X_API_KEY})
         assert response.status_code == 200
         assert response.json()["config_id"] == "best-config"
 
     def test_get_configs_list(self, client, mock_dal):
         mock_dal.get_configs.return_value = [
-            {"config_id": "cfg1", "configs": {}, "created_at": "2023-01-01T00:00:00", "is_active": True},
-            {"config_id": "cfg2", "configs": {}, "created_at": "2023-01-02T00:00:00", "is_active": False},
+            {"config_id": "cfg1", "config": {}, "created_at": "2023-01-01T00:00:00", "is_active": True},
+            {"config_id": "cfg2", "config": {}, "created_at": "2023-01-02T00:00:00", "is_active": False},
         ]
         response = client.get("/api/v1/models-configs/configs", headers={"X-API-Key": TEST_X_API_KEY})
         print("RESPONSE CONFIGS:", response.json())
         assert response.status_code == 200
         assert isinstance(response.json(), list)
         assert len(response.json()) == 2
-        assert "configs" in response.json()[0]
+        assert "config" in response.json()[0]
         assert "config_id" in response.json()[0]
 
     def test_delete_configs(self, client, mock_dal):

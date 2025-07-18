@@ -172,7 +172,9 @@ class TestTrainingJobEndpoint:
     def test_create_training_job_success(
         self, client, mock_dal, monkeypatch
     ):
-        """Test successful creation of a training job."""
+        """Test successful creation of a training job.
+        NOTE: Не проверяем вызовы mock_dal.create_prediction_result, так как они происходят только в background task.
+        Проверяем только факт постановки задачи в очередь и корректный ответ API."""
         # Arrange
         job_id = str(uuid.uuid4())
         mock_dal.create_job.return_value = job_id
@@ -180,12 +182,21 @@ class TestTrainingJobEndpoint:
             "config_id": "test-config",
             "config": {},
         }
+        # Mock the new date determination logic
+        mock_dal.adjust_dataset_boundaries.return_value = datetime(2023, 1, 31).date()
+        mock_dal.create_prediction_result.return_value = "pred-res-123"
+
         mock_add_task = MagicMock()
         monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
 
         # Act
         response = client.post(
-            "/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY}
+            "/api/v1/jobs/training",
+            json={
+                "dataset_start_date": "2022-01-01",
+                "dataset_end_date": "2023-01-31",
+            },
+            headers={"X-API-Key": TEST_X_API_KEY},
         )
 
         # Assert
@@ -193,8 +204,15 @@ class TestTrainingJobEndpoint:
         resp_data = response.json()
         assert resp_data["job_id"] == job_id
         assert resp_data["status"] == JobStatus.PENDING.value
+        mock_dal.adjust_dataset_boundaries.assert_called_once()
         mock_dal.create_job.assert_called_once()
+        # mock_dal.create_prediction_result.assert_called_once()  # УДАЛЕНО: вызывается только в background task
         mock_add_task.assert_called_once()
+        # Verify that the adjusted end date is passed to the background task
+        assert (
+            mock_add_task.call_args.kwargs["dataset_end_date"]
+            == datetime(2023, 1, 31).date()
+        )
 
     def test_create_training_job_db_error(
         self, client, mock_dal, monkeypatch
@@ -206,10 +224,14 @@ class TestTrainingJobEndpoint:
             "config_id": "test-config",
             "config": {},
         }
+        # Add a mock for the date determination to satisfy the endpoint's logic
+        mock_dal.adjust_dataset_boundaries.return_value = datetime(2022, 12, 31).date()
 
         # Act
         response = client.post(
-            "/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY}
+            "/api/v1/jobs/training",
+            json={"dataset_start_date": "2022-01-01", "dataset_end_date": "2022-12-31"},
+            headers={"X-API-Key": TEST_X_API_KEY},
         )
 
         # Assert
@@ -221,32 +243,74 @@ class TestTrainingJobEndpoint:
     ):
         """Test training job creation fails with 400 if no active config is found and returns ErrorDetailResponse."""
         # Arrange
-        mock_dal.get_effective_config.side_effect = ValueError("No active config and no best config by metric available")
+        mock_dal.get_effective_config.side_effect = ValueError(
+            "No active config and no best config by metric available"
+        )
+        # Add a mock for the date determination to satisfy the endpoint's logic
+        mock_dal.adjust_dataset_boundaries.return_value = datetime(2022, 12, 31).date()
 
         # Act
         response = client.post(
-            "/api/v1/jobs/training", headers={"X-API-Key": TEST_X_API_KEY}
+            "/api/v1/jobs/training",
+            json={"dataset_start_date": "2022-01-01", "dataset_end_date": "2022-12-31"},
+            headers={"X-API-Key": TEST_X_API_KEY},
         )
 
         # Assert
         assert response.status_code == 400
-        assert_detail(response, expected_code="invalid_input_data", expect_type=dict)
+        assert_detail(response, expected_code="no_config_available", expect_type=dict)
 
+    def test_create_training_job_invalid_date_range(
+        self, client, mock_dal
+    ):
+        """Test training job creation fails with 422 if the date range is invalid.
+        NOTE: ValueError из валидатора Pydantic приводит к 422 Unprocessable Entity, а не 400.
+        """
+        # Arrange
+        mock_dal.adjust_dataset_boundaries.side_effect = ValueError(
+            "End date cannot be before start date"
+        )
+        mock_dal.get_effective_config.return_value = {
+            "config_id": "test-config",
+            "config": {},
+        }
+
+        # Act
+        response = client.post(
+            "/api/v1/jobs/training",
+            json={
+                "dataset_start_date": "2023-02-01",
+                "dataset_end_date": "2023-01-31",
+            },
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
+
+        # Assert
+        assert response.status_code == 422
+        # The response structure is complex due to error handlers,
+        # so we'll check for the message in the raw text.
+        assert "Start date must be before or equal to end date" in response.text
+        assert "value_error" in response.text
+
+
+import pandas as pd
 
 class TestReportJobEndpoint:
     """Test suite for /api/v1/jobs/reports endpoint."""
 
-    def test_create_report_job_success(self, client, mock_dal, monkeypatch):
+    def test_create_report_job_success(self, client, monkeypatch):
         """Test successful creation of a prediction report job."""
         # Arrange
-        job_id = str(uuid.uuid4())
-        mock_dal.create_job.return_value = job_id
-        mock_add_task = MagicMock()
-        monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
+        mock_df = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
+        mock_generate_report = MagicMock(return_value=mock_df)
+        monkeypatch.setattr(
+            "deployment.app.api.jobs.generate_report", mock_generate_report
+        )
 
         params = {
             "report_type": "prediction_report",
             "prediction_month": "2023-01-01T00:00:00Z",
+            "filters": {"artist": "test_artist"},
         }
 
         # Act
@@ -257,19 +321,60 @@ class TestReportJobEndpoint:
         # Assert
         assert response.status_code == 200
         resp_data = response.json()
-        assert resp_data["job_id"] == job_id
-        assert resp_data["status"] == JobStatus.PENDING.value
 
-        # Assert create_job was called with processed data
-        mock_dal.create_job.assert_called_once()
-        call_args, call_kwargs = mock_dal.create_job.call_args
-        assert call_kwargs["job_type"] == JobType.REPORT
-        called_params = call_kwargs["parameters"]
-        assert called_params["report_type"] == params["report_type"]
-        assert called_params["prediction_month"] == datetime.fromisoformat(
-            params["prediction_month"].replace("Z", "+00:00")
+        assert resp_data["report_type"] == "prediction_report"
+        assert resp_data["prediction_month"] == "2023-01"
+        assert resp_data["records_count"] == 2
+        assert resp_data["csv_data"] == mock_df.to_csv(index=False)
+        assert "generated_at" in resp_data
+        assert resp_data["filters_applied"] == {"artist": "test_artist"}
+
+        mock_generate_report.assert_called_once()
+
+    def test_create_report_job_no_month_provided_success(
+        self, client, mock_dal, monkeypatch
+    ):
+        """Test report job defaults to the latest month when none is provided."""
+        # Arrange
+        mock_dal.get_latest_prediction_month.return_value = datetime(2023, 5, 1).date()
+        mock_df = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
+        mock_generate_report = MagicMock(return_value=mock_df)
+        monkeypatch.setattr(
+            "deployment.app.api.jobs.generate_report", mock_generate_report
         )
-        mock_add_task.assert_called_once()
+
+        params = {"report_type": "prediction_report"}  # No prediction_month
+
+        # Act
+        response = client.post(
+            "/api/v1/jobs/reports", json=params, headers={"X-API-Key": TEST_X_API_KEY}
+        )
+
+        # Assert
+        assert response.status_code == 200
+        resp_data = response.json()
+        assert resp_data["prediction_month"] == "2023-05"
+        mock_dal.get_latest_prediction_month.assert_called_once()
+        # Verify that the DAL was passed to generate_report
+        mock_generate_report.assert_called_once()
+        assert "dal" in mock_generate_report.call_args.kwargs
+        assert mock_generate_report.call_args.kwargs["dal"] == mock_dal
+
+    def test_create_report_job_no_predictions_found(self, client, mock_dal):
+        """Test report job returns 404 if no predictions exist for the latest month."""
+        # Arrange
+        mock_dal.get_latest_prediction_month.return_value = None
+
+        params = {"report_type": "prediction_report"}
+
+        # Act
+        response = client.post(
+            "/api/v1/jobs/reports", json=params, headers={"X-API-Key": TEST_X_API_KEY}
+        )
+
+        # Assert
+        assert response.status_code == 404
+        assert_detail(response, expected_code="no_predictions_found", expect_type=dict)
 
 
 class TestJobStatusEndpoint:
@@ -296,8 +401,8 @@ class TestJobStatusEndpoint:
         # Arrange
         job_id = "job-123"
         mock_dal.get_job.side_effect = lambda jid: self.get_full_mock_job_data(jid, JobType.TRAINING, JobStatus.COMPLETED)
-        mock_dal.get_training_result.return_value = {
-            "model_id": "model-abc",
+        mock_dal.get_training_results.return_value = {
+            "model_id": "model1",
             "metrics": json.dumps({"accuracy": 0.95}),
             "parameters": json.dumps({"param": "value"}),
             "duration": 120,
@@ -316,48 +421,7 @@ class TestJobStatusEndpoint:
         assert "result" in data
         assert data["result"]["model_id"] == "model-abc"
 
-    def test_get_job_status_report_completed(
-        self, client, mock_dal
-    ):
-        """Test getting status of a completed report job with all ReportResponse fields."""
-        # Arrange
-        job_id = "report-job-456"
-        mock_dal.get_job.side_effect = lambda jid: self.get_full_mock_job_data(jid, JobType.REPORT, JobStatus.COMPLETED)
-        mock_dal.get_report_result.return_value = {
-            "report_type": "prediction_report",
-            "prediction_month": "2023-01-01",
-            "records_count": 100,
-            "csv_data": "header1,header2\nvalue1,value2",
-            "has_enriched_metrics": True,
-            "enriched_columns": json.dumps(["enriched_col1", "enriched_col2"]),
-            "generated_at": "2023-01-01T10:20:00",
-            "filters_applied": json.dumps({"region": "Europe"}),
-            "parameters": json.dumps({"model_id": "model-xyz"}),
-            "output_path": "/path/to/report.csv",
-        }
-
-        # Act
-        response = client.get(
-            f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY}
-        )
-
-        # Assert
-        assert response.status_code == 200
-        data = response.json()
-        assert data["job_id"] == job_id
-        assert data["status"] == JobStatus.COMPLETED.value
-        assert "result" in data
-        result = data["result"]
-        assert result["report_type"] == "prediction_report"
-        assert result["prediction_month"] == "2023-01-01"
-        assert result["records_count"] == 100
-        assert result["csv_data"] == "header1,header2\nvalue1,value2"
-        assert result["has_enriched_metrics"] is True
-        assert result["enriched_columns"] == ["enriched_col1", "enriched_col2"]
-        assert result["generated_at"] == "2023-01-01T10:20:00"
-        assert result["filters_applied"] == {"region": "Europe"}
-        assert result["parameters"] == {"model_id": "model-xyz"}
-        assert result["output_path"] == "/path/to/report.csv"
+    
 
     def test_get_job_status_pending(self, client, mock_dal):
         """Test getting status of a pending job."""

@@ -452,12 +452,27 @@ class TestComponentHealthChecks:
     def test_check_database_degraded_missing_tables(self, mock_dal):
         """Test check_database returns degraded if tables are missing."""
         # Arrange
-        mock_dal.execute_raw_query.side_effect = [
-            # First call for "SELECT 1"
-            [{"1": 1}],
-            # Second call for "SELECT name FROM sqlite_master..."
-            [{"name": "jobs"}],
-        ]
+        def side_effect_for_missing_tables(query, params=(), fetchall=False, connection=None):
+            if query == "SELECT 1":
+                return [{"1": 1}]
+            if "SELECT name FROM sqlite_master" in query:
+                # Return only "jobs" table, missing all others
+                return [{"name": "jobs"}]
+            if "fact_sales" in query or "fact_stock_changes" in query:
+                # Return empty for fact table queries since they don't exist
+                return []
+            return []
+
+        mock_dal.execute_raw_query.side_effect = side_effect_for_missing_tables
+        
+        # Mock execute_query_with_batching to return the same result for table checks
+        def batching_side_effect(query_template, ids, **kwargs):
+            if "sqlite_master" in query_template.lower():
+                # Return only "jobs" table from the requested tables
+                return [{"name": "jobs"}] if "jobs" in ids else []
+            return []
+        
+        mock_dal.execute_query_with_batching.side_effect = batching_side_effect
 
         # Act
         from deployment.app.api.health import check_database
@@ -549,10 +564,27 @@ class TestComponentHealthChecks:
         """Test check_database returns unhealthy if required tables are missing."""
         # Arrange
         # Simulate that the query for tables returns only one table.
-        mock_dal.execute_raw_query.side_effect = [
-            [{"1": 1}],  # For the initial "SELECT 1" check
-            [{"name": "jobs"}],  # For the "SELECT name FROM sqlite_master" check
-        ]
+        def side_effect_for_missing_tables(query, params=(), fetchall=False, connection=None):
+            if query == "SELECT 1":
+                return [{"1": 1}]
+            if "SELECT name FROM sqlite_master" in query:
+                # Return only "jobs" table, missing all others
+                return [{"name": "jobs"}]
+            if "fact_sales" in query or "fact_stock_changes" in query:
+                # Return empty for fact table queries since they don't exist
+                return []
+            return []
+
+        mock_dal.execute_raw_query.side_effect = side_effect_for_missing_tables
+        
+        # Mock execute_query_with_batching to return the same result for table checks
+        def batching_side_effect(query_template, ids, **kwargs):
+            if "sqlite_master" in query_template.lower():
+                # Return only "jobs" table from the requested tables
+                return [{"name": "jobs"}] if "jobs" in ids else []
+            return []
+        
+        mock_dal.execute_query_with_batching.side_effect = batching_side_effect
 
         # Act
         from deployment.app.api.health import check_database
@@ -584,13 +616,21 @@ class TestComponentHealthChecks:
 
         mock_dal.execute_raw_query.side_effect = side_effect_for_missing_months
 
+        # Mock execute_query_with_batching to return all tables as existing
+        def batching_side_effect(query_template, ids, **kwargs):
+            if "sqlite_master" in query_template.lower():
+                # Return all requested tables as existing
+                return [{"name": table} for table in ids]
+            return []
+        
+        mock_dal.execute_query_with_batching.side_effect = batching_side_effect
+
         from deployment.app.api.health import check_database
         result = check_database(mock_dal)
         assert result.status == "unhealthy"
-        assert "missing_months" in result.details
-        assert "fact_sales" in result.details["missing_months"]
-        assert result.details["missing_months"]["fact_sales"] == ["2024-02-01"] # check_monotonic_months returns this format
-        assert "fact_stock_changes" not in result.details["missing_months"]
+        assert "missing_months_sales" in result.details
+        assert result.details["missing_months_sales"] == ["2024-02-01"] # check_monotonic_months returns this format
+        assert "missing_months_stock_changes" not in result.details
 
     def test_check_database_healthy_no_missing_months(self, mock_dal):
         """Test check_database returns healthy if all months are present in both tables."""
@@ -607,6 +647,15 @@ class TestComponentHealthChecks:
             return []
 
         mock_dal.execute_raw_query.side_effect = side_effect_for_healthy
+
+        # Mock execute_query_with_batching to return all tables as existing
+        def batching_side_effect(query_template, ids, **kwargs):
+            if "sqlite_master" in query_template.lower():
+                # Return all requested tables as existing
+                return [{"name": table} for table in ids]
+            return []
+        
+        mock_dal.execute_query_with_batching.side_effect = batching_side_effect
 
         from deployment.app.api.health import check_database
         result = check_database(mock_dal)

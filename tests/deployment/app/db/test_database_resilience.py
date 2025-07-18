@@ -455,17 +455,24 @@ def test_set_config_active_nonexistent_id(temp_db):
     assert set_config_active("non-existent-id", connection=conn) is False
 
 
-def test_create_or_get_config_idempotent(temp_db):
+def test_create_or_get_config_idempotent(temp_db, create_training_params_fn):
     """Test that create_or_get_config is idempotent"""
     conn = temp_db["conn"]
-    params = {"a": 1, "b": 2}
+    
+    # Generate a unique and valid config for this test
+    params = create_training_params_fn(base_params={"batch_size": 256, "dropout": 0.5}).model_dump(mode="json")
     config_id1 = create_or_get_config(params, connection=conn)
+    assert config_id1 is not None
+
+    # Try to create the same config again - should return the same ID
     config_id2 = create_or_get_config(params, connection=conn)
+    assert config_id2 == config_id1
 
-    assert config_id1 == config_id2
-
-    res = conn.execute("SELECT COUNT(*) AS count FROM configs").fetchone()
-    assert res["count"] == 1
+    # Verify only one record exists for this config
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM configs WHERE config_id = ?", (config_id1,))
+    count = cursor.fetchone()["COUNT(*)"]
+    assert count == 1
 
 
 @patch("deployment.app.db.database.create_or_get_config")

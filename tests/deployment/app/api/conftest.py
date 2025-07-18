@@ -6,6 +6,7 @@ from datetime import datetime
 import types
 import os
 from types import SimpleNamespace
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -57,7 +58,7 @@ def mock_dal():
     all_tables = [
         'jobs', 'models', 'configs', 'training_results', 'prediction_results',
         'job_status_history', 'dim_multiindex_mapping', 'fact_sales', 'fact_stock',
-        'fact_prices', 'fact_stock_changes', 'fact_predictions', 'sqlite_sequence',
+        'fact_prices', 'fact_stock_changes', 'fact_predictions',
         'processing_runs', 'data_upload_results', 'report_results'
     ]
 
@@ -119,10 +120,43 @@ def mock_dal():
     dal.get_job.side_effect = get_job_side_effect
 
     # --- get_training_result ---
-    dal.get_training_result.return_value = {"result_id": "result-1", "metrics": {"val_MIC": 0.9}}
+    training_base_data = {
+        "job_id": "job1",
+        "model_id": "model-abc",
+        "config_id": "config1",
+        "metrics": {"val_MIC": 0.9},
+        "parameters": {"param1": "value1"},
+        "duration": 120,
+        "created_at": str(datetime.now()),
+    }
+
+    def get_training_results_side_effect_func(result_id=None, **kwargs):
+        if result_id:
+            if result_id == "not-found":
+                return None
+            return {**training_base_data, "result_id": result_id}
+        return [{**training_base_data, "result_id": "result-1"}]
+    dal.get_training_results.side_effect = get_training_results_side_effect_func
+
+    # --- get_tuning_result ---
+    tuning_base_data = {
+        "job_id": "job-tune-1",
+        "config_id": "config-tune-1",
+        "metrics": {"val_loss": 0.1},
+        "duration": 250,
+        "created_at": str(datetime.now()),
+    }
+
+    def get_tuning_results_side_effect_func(result_id=None, **kwargs):
+        if result_id:
+            if result_id == "not-found":
+                return None
+            return {**tuning_base_data, "result_id": result_id}
+        return [{**tuning_base_data, "result_id": "tuning-res-1"}]
+    dal.get_tuning_results.side_effect = get_tuning_results_side_effect_func
 
     # --- get_report_result ---
-    dal.get_report_result.return_value = {"result_id": "report-1", "report_type": "summary"}
+    dal.get_report_result.return_value = {"result_id": "report-1", "report_type": "prediction_report", "prediction_month": "2023-01-01", "records_count": 100, "csv_data": "header1,header2\nvalue1,value2", "has_enriched_metrics": True, "enriched_columns": "[]", "generated_at": str(datetime.now()), "filters_applied": "{}", "parameters": "{}", "output_path": "/fake/path"}
 
     # --- get_active_model ---
     dal.get_active_model.return_value = {"model_id": "model-1", "model_path": "/fake/model1.onnx", "metadata": {}}
@@ -173,11 +207,41 @@ def mock_dal():
 
     # --- execute_raw_query ---
     def execute_raw_query_side_effect(query, params=(), fetchall=False, connection=None):
-        if "sqlite_master" in query:
-            # Возвращаем все нужные таблицы
-            return [{"name": t} for t in all_tables]
+        query_upper = query.upper()
+        if "SELECT 1" in query_upper:
+            return [{"1": 1}]
+        
+        if "SQLITE_MASTER" in query_upper and "NAME IN" in query_upper:
+            # When check_database asks for specific tables, return them from all_tables
+            # based on the parameters it passes.
+            # This allows individual health tests to control which tables are "found"
+            requested_tables = list(params)
+            found_tables = [t for t in all_tables if t in requested_tables]
+            return [{"name": t} for t in found_tables]
+        
+        # For monotonic checks, ensure 'data_date' is returned in correct format
+        if ("FACT_SALES" in query_upper or "FACT_STOCK_CHANGES" in query_upper) and "DATA_DATE" in query_upper:
+            if "DISTINCT DATA_DATE" in query_upper:
+                # Return consecutive months without gaps for healthy scenario
+                return [{"data_date": f"2024-{i:02d}-01"} for i in range(1, 4)]
+        
         return []
     dal.execute_raw_query.side_effect = execute_raw_query_side_effect
+
+    # --- execute_query_with_batching ---
+    def execute_query_with_batching_side_effect(query_template, ids, batch_size=None, connection=None, fetchall=True, placeholder_name="placeholders"):
+        """Mock for execute_query_with_batching that handles table existence checks."""
+        query_upper = query_template.upper()
+        
+        if "SQLITE_MASTER" in query_upper and "NAME IN" in query_upper:
+            # For table existence checks, return all requested tables that exist in all_tables
+            requested_tables = list(ids)
+            found_tables = [t for t in all_tables if t in requested_tables]
+            return [{"name": t} for t in found_tables]
+        
+        # For other queries, return empty list
+        return []
+    dal.execute_query_with_batching.side_effect = execute_query_with_batching_side_effect
 
     # --- auto_activate_best_config_if_enabled ---
     dal.auto_activate_best_config_if_enabled.return_value = True
@@ -266,6 +330,7 @@ def mock_settings(monkeypatch, tmp_path_factory):
         default_metric_higher_is_better=True,
         auto_select_best_configs=False,
         auto_select_best_model=False,
+        sqlite_max_variables=900, # Added for batching fix
     )
     monkeypatch.setattr("deployment.app.config.get_settings", lambda: settings)
     return settings

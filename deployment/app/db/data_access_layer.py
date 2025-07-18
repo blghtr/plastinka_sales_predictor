@@ -11,12 +11,12 @@ from deployment.app.db.database import (
     create_or_get_config,
     create_prediction_result,
     create_processing_run,
-    create_report_result,
     create_training_result,
     create_tuning_result,
     delete_configs_by_ids,
     delete_model_record_and_file,
     delete_models_by_ids,
+    adjust_dataset_boundaries,
     fetch_recent_retry_events,
     get_active_config,
     get_active_model,
@@ -27,12 +27,14 @@ from deployment.app.db.database import (
     get_data_upload_result,
     get_effective_config,
     get_job,
+    get_latest_prediction_month,
     get_prediction_result,
+    get_prediction_results_by_month,
     get_report_result,
     get_recent_models,
     get_top_configs,
-    get_top_tuning_results,
-    get_training_result,
+    get_tuning_results,
+    get_training_results,
     list_jobs,
     set_config_active,
     set_model_active,
@@ -43,6 +45,12 @@ from deployment.app.db.database import (
     execute_query,
     auto_activate_best_config_if_enabled,
     auto_activate_best_model_if_enabled
+)
+
+# Import batch utility functions
+from deployment.app.utils.batch_utils import (
+    execute_query_with_batching,
+    execute_many_with_batching,
 )
 
 # Define roles/permissions (example - these would be defined more formally elsewhere)
@@ -144,21 +152,26 @@ class DataAccessLayer:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return create_prediction_result(job_id, model_id, output_path, summary_metrics, prediction_month, connection)
 
-    def create_report_result(self, job_id: str, report_type: str, parameters: dict[str, Any], output_path: str, connection: sqlite3.Connection = None) -> str:
-        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return create_report_result(job_id, report_type, parameters, output_path, connection)
-
     def get_data_upload_result(self, result_id: str, connection: sqlite3.Connection = None) -> Dict:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_data_upload_result(result_id, connection)
 
-    def get_training_result(self, result_id: str, connection: sqlite3.Connection = None) -> Dict:
+    def get_training_results(self, result_id: str | None = None, limit: int = 100, connection: sqlite3.Connection = None) -> dict | list[dict]:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return get_training_result(result_id, connection)
+        return get_training_results(result_id, limit, connection)
 
     def get_prediction_result(self, result_id: str, connection: sqlite3.Connection = None) -> Dict:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_prediction_result(result_id, connection)
+
+    def get_prediction_results_by_month(
+        self,
+        prediction_month: date,
+        model_id: str | None = None,
+        connection: sqlite3.Connection = None,
+    ) -> list[dict]:
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return get_prediction_results_by_month(prediction_month, model_id, connection)
 
     def get_report_result(self, result_id: str, connection: sqlite3.Connection = None) -> Dict:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
@@ -200,9 +213,9 @@ class DataAccessLayer:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return create_tuning_result(job_id, config_id, metrics, duration, connection)
 
-    def get_top_tuning_results(self, metric_name: str, higher_is_better: bool = True, limit: int = 10, threshold: float | None = None, connection: sqlite3.Connection = None) -> List[Dict[str, Any]]:
+    def get_tuning_results(self, result_id: str | None = None, metric_name: str | None = None, higher_is_better: bool | None = None, limit: int = 100, connection: sqlite3.Connection = None) -> dict | list[dict]:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return get_top_tuning_results(metric_name, higher_is_better, limit, threshold, connection)
+        return get_tuning_results(result_id, metric_name, higher_is_better, limit, connection)
 
     def get_top_configs(self, limit: int = 5, metric_name: str | None = None, higher_is_better: bool = True, include_active: bool = True, connection: sqlite3.Connection = None) -> List[Dict[str, Any]]:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
@@ -226,4 +239,44 @@ class DataAccessLayer:
 
     def auto_activate_best_model_if_enabled(self, connection: sqlite3.Connection = None) -> bool:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return auto_activate_best_model_if_enabled(connection) 
+        return auto_activate_best_model_if_enabled(connection)
+
+    def adjust_dataset_boundaries(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        connection: sqlite3.Connection = None,
+    ) -> date | None:
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return adjust_dataset_boundaries(start_date, end_date, connection)
+    
+    def get_latest_prediction_month(self, connection: sqlite3.Connection = None) -> date:
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return get_latest_prediction_month(connection)
+
+    # Batch utility methods
+    def execute_query_with_batching(
+        self,
+        query_template: str,
+        ids: List[Any],
+        batch_size: Optional[int] = None,
+        connection: Optional[sqlite3.Connection] = None,
+        fetchall: bool = True,
+        placeholder_name: str = "placeholders"
+    ) -> List[Any]:
+        """Execute query with IN clause using batching to avoid SQLite variable limit."""
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return execute_query_with_batching(
+            query_template, ids, batch_size, connection, fetchall, placeholder_name
+        )
+
+    def execute_many_with_batching(
+        self,
+        query: str,
+        params_list: List[tuple],
+        batch_size: Optional[int] = None,
+        connection: Optional[sqlite3.Connection] = None
+    ) -> None:
+        """Execute multiple queries through batching to avoid SQLite variable limit."""
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return execute_many_with_batching(query, params_list, batch_size, connection)

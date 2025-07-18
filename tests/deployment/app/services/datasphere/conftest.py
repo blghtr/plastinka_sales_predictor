@@ -589,14 +589,17 @@ def temp_db(sample_predictions_data):
 
         # Pre-populate jobs and models tables since they are foreign keys
         cursor = conn.cursor()
+        # Добавляю параметры с prediction_month
+        job_parameters = json.dumps({"prediction_month": "2023-10-01"})
         cursor.execute(
-            "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, parameters) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 job_id,
                 "prediction",
                 "running",
                 datetime.now().isoformat(),
                 datetime.now().isoformat(),
+                job_parameters,
             ),
         )
         cursor.execute(

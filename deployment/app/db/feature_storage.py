@@ -12,7 +12,7 @@ from deployment.app.db.database import (
     create_processing_run,
     execute_many,
     execute_query,
-    get_or_create_multiindex_id,
+    get_or_create_multiindex_ids_batch,
     update_processing_run,
 )
 
@@ -36,6 +36,10 @@ class SQLFeatureStore:
 
             self.db_conn = get_db_connection()
             self._conn_created_internally = True
+        
+        # Initialize DAL for batch operations
+        from deployment.app.db.data_access_layer import DataAccessLayer, UserContext, UserRoles
+        self._dal = DataAccessLayer(UserContext([UserRoles.SYSTEM]))
 
     def __enter__(self):
         # Connection is already established in __init__
@@ -115,37 +119,43 @@ class SQLFeatureStore:
             return
 
         table = config["table"]
-        params_list = []
-
-        # Все features теперь приходят в едином формате: даты в индексе, multiindex в колонках
-        if isinstance(df.index, pd.DatetimeIndex):
-            # Стандартный формат: даты в индексе, multiindex в колонках
-            for date_idx, row in df.iterrows():
-                date_str = self._convert_to_date_str(date_idx)
-                
-                for col_idx, value in row.items():
-                    if pd.notna(value):
-                        multiindex_id = self._get_multiindex_id(col_idx)
-                        if multiindex_id:
-                            params_list.append((multiindex_id, date_str, value))
-        else:
+        
+        if not isinstance(df.index, pd.DatetimeIndex):
             logger.warning(f"Unexpected DataFrame format for {feature_type}: expected DatetimeIndex in index")
             return
+
+        # 1. Collect all unique multi-index tuples from the DataFrame columns
+        unique_tuples = [tuple(col) for col in df.columns]
+
+        # 2. Get all multi-index IDs in one batch
+        from deployment.app.db.database import get_or_create_multiindex_ids_batch
+        id_map = get_or_create_multiindex_ids_batch(unique_tuples, self.db_conn)
+
+        # 3. Prepare the list of parameters for insertion
+        params_list = []
+        for date_idx, row in df.iterrows():
+            date_str = self._convert_to_date_str(date_idx)
+            for col_idx, value in row.items():
+                if pd.notna(value):
+                    multiindex_id = id_map.get(tuple(col_idx))
+                    if multiindex_id:
+                        params_list.append((multiindex_id, date_str, value))
 
         if not params_list:
             logger.warning(f"No valid data to save for feature type '{feature_type}'")
             return
 
-        # Clear existing data if not appending
+        # 4. Clear existing data if not appending
         if not append:
             cursor = self.db_conn.cursor()
             cursor.execute(f"DELETE FROM {table}")
 
-        # Insert new data
+        # 5. Insert new data in a single batch
         query = f"INSERT OR REPLACE INTO {table} (multiindex_id, data_date, value) VALUES (?, ?, ?)"
-        cursor = self.db_conn.cursor()
-        cursor.executemany(query, params_list)
-        self.db_conn.commit()
+        
+        # Use execute_many for batch insertion
+        from deployment.app.db.database import execute_many
+        execute_many(query, params_list, self.db_conn)
 
         logger.info(f"Saved {len(params_list)} records to {table}")
 
@@ -197,56 +207,7 @@ class SQLFeatureStore:
                 )
                 return default
 
-    def _get_multiindex_id(self, idx) -> int:
-        """Retrieve or create multiindex_id based on index values"""
-        # Проверяем тип idx и обрабатываем соответственно
-        if isinstance(idx, pd.Timestamp) or not hasattr(idx, "__len__"):
-            # Если это Timestamp или другой объект без len(), вернуть None
-            logger.warning(f"Invalid index type for multiindex_id: {type(idx)}")
-            return None
-        
-        # Ensure index is a tuple of the correct length (10 elements)
-        # Pad with None if the index is shorter (e.g., during loading)
-        if len(idx) < 10:
-            idx = tuple(list(idx) + [None] * (10 - len(idx)))
-        elif len(idx) > 10:
-            idx = tuple(idx[:10])  # Take only the first 10 elements if longer
-        else:
-            idx = tuple(idx)
-
-        # Extract components, handling potential None values
-        (
-            barcode,
-            artist,
-            album,
-            cover_type,
-            price_category,
-            release_type,
-            recording_decade,
-            release_decade,
-            style,
-            record_year,
-        ) = idx
-
-        return get_or_create_multiindex_id(
-            barcode=str(barcode) if barcode is not None else "UNKNOWN",
-            artist=str(artist) if artist is not None else "UNKNOWN",
-            album=str(album) if album is not None else "UNKNOWN",
-            cover_type=str(cover_type) if cover_type is not None else "UNKNOWN",
-            price_category=str(price_category)
-            if price_category is not None
-            else "UNKNOWN",
-            release_type=str(release_type) if release_type is not None else "UNKNOWN",
-            recording_decade=str(recording_decade)
-            if recording_decade is not None
-            else "UNKNOWN",
-            release_decade=str(release_decade)
-            if release_decade is not None
-            else "UNKNOWN",
-            style=str(style) if style is not None else "UNKNOWN",
-            record_year=self._convert_to_int(record_year, default=0),
-            connection=self.db_conn,  # Pass connection
-        )
+    
 
     def load_features(
         self,
@@ -308,17 +269,17 @@ class SQLFeatureStore:
             return empty_index, []
 
         # Query with multiindex_id included to maintain mapping
+        # Use batching to avoid SQLite variable limit
         unique_ids = list(set(multiindex_ids))
-        placeholders = ", ".join("?" * len(unique_ids))
-        query = f"""
+        query_template = """
         SELECT multiindex_id, barcode, artist, album, cover_type, price_category, 
                release_type, recording_decade, release_decade, style, record_year
         FROM dim_multiindex_mapping
         WHERE multiindex_id IN ({placeholders})
         """
 
-        mapping_data = execute_query(
-            query, tuple(unique_ids), fetchall=True, connection=self.db_conn
+        mapping_data = self._dal.execute_query_with_batching(
+            query_template, unique_ids, connection=self.db_conn
         )
 
         # Create mapping from ID to tuple for O(1) lookup

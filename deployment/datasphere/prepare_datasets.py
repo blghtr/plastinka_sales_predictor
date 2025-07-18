@@ -96,6 +96,7 @@ def prepare_datasets(
     config: dict | None,
     save_directory: str,
     datasets_to_generate: Sequence[str] = ("train", "val"),
+    bins=None,  # Add bins parameter
 ) -> tuple[PlastinkaTrainingTSDataset, PlastinkaTrainingTSDataset]:
     """
     Loads data from DB, prepares features, creates full dataset.
@@ -187,9 +188,9 @@ def prepare_datasets(
             )
 
         if "val" in datasets_to_generate:
-            if train_dataset is not None:
+            if train_dataset:
                 val_dataset = train_dataset.setup_dataset(
-                    window=(dataset_length - length, dataset_length),
+                    window=(dataset_length - length, dataset_length)
                 )
                 val_dataset.save(dataset_name="val")
             else:
@@ -203,14 +204,15 @@ def prepare_datasets(
 
         if "inference" in datasets_to_generate:
             # Inference dataset uses the full data range for its initial setup
-            # The window will be adjusted later in train_and_predict.py
-            inference_dataset = PlastinkaInferenceTSDataset(
-                **dataset_params,
-                start=0,  # Start from the beginning of the available data
-                end=None,  # Use the full length, will be padded internally
-                dataset_name="inference",
-            )
-            logger.info("Inference dataset created and saved.")
+            # The window will be adjusted later in __init__
+            if train_dataset:
+                dataset_params["scaler"] = train_dataset.scaler if train_dataset else scaler
+                dataset_params["static_transformer"] = train_dataset.static_transformer if train_dataset else static_transformer
+                inference_dataset = PlastinkaInferenceTSDataset(
+                    **dataset_params,
+                    dataset_name="inference",
+                )
+                logger.info("Inference dataset created and saved.")
 
         logger.info("Datasets created.")
 
@@ -247,6 +249,14 @@ def get_datasets(
     logger.info("get_datasets function started...")
 
     try:
+        # Get bins from config if available
+        settings = get_settings()
+        bins = settings.price_category_interval_index
+    except (ImportError, AttributeError):
+        # Fallback for standalone execution
+        bins = None
+
+    try:
         raw_features = load_data(start_date, end_date, feature_types, connection=connection)
 
         logger.info("Raw features loaded, calling prepare_datasets...")
@@ -257,6 +267,7 @@ def get_datasets(
             config,
             output_dir,
             datasets_to_generate,
+            bins=bins,  # Pass bins to prepare_datasets
         )
 
         logger.info(

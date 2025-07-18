@@ -21,12 +21,23 @@ def test_save_predictions_to_db(
     mock_get_db.return_value = conn
 
     # Вызываем тестируемую функцию с прямым соединением
+    # Временно печатаем параметры job для диагностики
+    import json
+    cursor = conn.cursor()
+    cursor.execute("SELECT parameters FROM jobs WHERE job_id = ?", (temp_db["job_id"],))
+    job_params_row = cursor.fetchone()
+    print("DIAG JOB PARAMETERS:", job_params_row["parameters"])
+    # Теперь вызываем функцию
     result = save_predictions_to_db(
         predictions_path=temp_db["predictions_path"],
         job_id=temp_db["job_id"],
         model_id=temp_db["model_id"],
         direct_db_connection=conn,
     )
+    # Диагностика: смотрим, что реально в prediction_results
+    cursor.execute("SELECT * FROM prediction_results WHERE job_id = ?", (temp_db["job_id"],))
+    pred_result_row = cursor.fetchone()
+    print("DIAG PREDICTION_RESULTS ROW:", pred_result_row)
 
     # Используем общую функцию проверки результатов
     verify_predictions_saved(conn, result, sample_predictions_data)

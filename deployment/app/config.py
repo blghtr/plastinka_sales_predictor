@@ -22,6 +22,8 @@ from pydantic_settings.sources import (  # Added
     SecretsSettingsSource,
 )  # PydanticSettingsSource removed as it's likely internal
 import functools
+import pandas as pd
+import pandas as pd
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
@@ -524,11 +526,11 @@ class TuningSettings(BaseSettings):
 
     num_samples_light: int = Field(50, description="Samples for light mode")
     num_samples_full: int = Field(200, description="Samples for full mode")
-    max_concurrent: int = Field(4, description="Max concurrent Ray trials")
-    resources: dict[str, int] = Field({"cpu": 8}, description="Resource allocation per trial")
+    max_concurrent: int = Field(16, description="Max concurrent Ray trials")
+    resources: dict[str, int] = Field({"cpu": 32}, description="Resource allocation per trial")
     best_configs_to_save: int = Field(5, description="How many best configs to persist after tuning")
     seed_configs_limit: int = Field(5, description="How many historical configs to pass to tuning as starters")
-    metric_threshold: float = Field(0.8, description="Minimum metric for initial configs selection")
+    metric_threshold: float = Field(1.2, description="Minimum metric for initial configs selection")
 
     # NEW: default tuning mode (overridable per-job via API) – 'light' or 'full'
     mode: str = Field("light", description="Default tuning mode: light or full")
@@ -567,6 +569,32 @@ class AppSettings(BaseSettings):
         default=50 * 1024 * 1024,  # 50 MB default
         description="Maximum upload size in bytes",
     )
+    
+    # SQLite configuration
+    sqlite_max_variables: int = Field(
+        default=900,
+        description="Maximum number of variables in SQLite queries (safe limit below 999)",
+    )
+
+    PRICE_CATEGORY_BINS: list[float] = Field(
+        default=[
+            689.999,
+            2490.0,
+            3990.0,
+            5590.0,
+            7390.0,
+            8590.0,
+            11990.0,
+        ],
+        description="Static bins for price categorization as a sequence of scalars.",
+    )
+
+    @property
+    def price_category_interval_index(self) -> pd.IntervalIndex:
+        """Get price category bins as a pandas IntervalIndex."""
+        import pandas as pd
+        return pd.IntervalIndex.from_breaks(self.PRICE_CATEGORY_BINS, closed="right")
+
     @property
     def temp_upload_dir(self) -> str:
         """Directory for temporary file uploads."""

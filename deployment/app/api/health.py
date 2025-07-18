@@ -111,11 +111,16 @@ def check_monotonic_months(table_name: str, dal: DataAccessLayer) -> list[str]:
 
 
 def check_database(dal: DataAccessLayer) -> ComponentHealth:
-    """Check database connection and monotonicity of months in sales & changes."""
-    try:
-        dal.execute_raw_query("SELECT 1")
+    """Perform database health checks."""
+    logger.info("Performing database health check...")
+    status = "healthy"
+    details = {}
 
-        # Check if required tables exist
+    try:
+        # 1. Basic connection check: try to execute a simple query
+        dal.execute_raw_query("SELECT 1", fetchall=False)
+
+        # 2. Check for required tables
         required_tables = [
             "jobs",
             "models",
@@ -129,41 +134,49 @@ def check_database(dal: DataAccessLayer) -> ComponentHealth:
             "fact_prices",
             "fact_stock_changes",
             "fact_predictions",
-            "sqlite_sequence",
             "processing_runs",
             "data_upload_results",
             "report_results",
         ]
 
-        # Construct the query to check for these tables efficiently
-        placeholders = ", ".join(["?" for _ in required_tables])
-        query_check_tables = f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
-        tables_found_rows = dal.execute_raw_query(query_check_tables, tuple(required_tables), fetchall=True)
+        # Construct the query to check for these tables efficiently using batching
+        query_template = "SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
+        tables_found_rows = dal.execute_query_with_batching(
+            query_template, required_tables, connection=None
+        )
         tables_found = [row["name"] for row in tables_found_rows] if tables_found_rows else []
 
         missing_tables = [table for table in required_tables if table not in tables_found]
         if missing_tables:
+            status = "degraded"
+            details["missing_tables"] = missing_tables
             logger.warning(f"Database degraded: missing tables {missing_tables}")
-            return ComponentHealth(
-                status="degraded", details={"missing_tables": missing_tables}
+
+        # 3. Check for monotonic growth of months in fact tables
+        missing_months_sales = check_monotonic_months("fact_sales", dal)
+        if missing_months_sales:
+            status = "unhealthy"
+            details["missing_months_sales"] = missing_months_sales
+            logger.warning(
+                f"Database unhealthy: missing months in fact_sales: {missing_months_sales}"
             )
 
-        # --- Проверка монотонности месяцев ---
-        monotonicity_issues = {}
-        for table in ["fact_sales", "fact_stock_changes"]:
-            missing_months = check_monotonic_months(table, dal)
-            if missing_months:
-                monotonicity_issues[table] = missing_months
-        if monotonicity_issues:
-            logger.error(f"Database unhealthy: missing months in tables: {monotonicity_issues}")
-            return ComponentHealth(
-                status="unhealthy", details={"missing_months": monotonicity_issues}
+        missing_months_stock_changes = check_monotonic_months(
+            "fact_stock_changes", dal
+        )
+        if missing_months_stock_changes:
+            status = "unhealthy"
+            details["missing_months_stock_changes"] = missing_months_stock_changes
+            logger.warning(
+                f"Database unhealthy: missing months in fact_stock_changes: {missing_months_stock_changes}"
             )
 
-        return ComponentHealth(status="healthy")
     except Exception as e:
-        logger.error(f"Database health check failed: {str(e)}", exc_info=True)
-        return ComponentHealth(status="unhealthy", details={"error": str(e)})
+        status = "unhealthy"
+        details["error"] = str(e)
+        logger.error(f"Database health check failed: {e}", exc_info=True)
+
+    return ComponentHealth(status=status, details=details)
 
 
 router = APIRouter(

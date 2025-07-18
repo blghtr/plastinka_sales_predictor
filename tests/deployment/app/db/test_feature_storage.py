@@ -231,58 +231,7 @@ def test_save_prices_feature_with_mixed_types(feature_store_env):
     assert results[0]["value"] in [123.45, 100, 99.99]
 
 
-def test_get_multiindex_id(feature_store_env):
-    """Test the _get_multiindex_id method with various index formats."""
-    conn = feature_store_env["conn"]
-    cursor = feature_store_env["cursor"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        result = store._get_multiindex_id(idx_tuple)
-        assert result == 1
 
-        idx_list = list(idx_tuple)
-        result = store._get_multiindex_id(idx_list)
-        assert result == 1
-
-        multi_idx = pd.MultiIndex.from_tuples([idx_tuple])
-        result = store._get_multiindex_id(multi_idx[0])
-        assert result == 1
-
-        partial_idx = (
-            "999",
-            "New Artist",
-            "New Album",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        result = store._get_multiindex_id(partial_idx)
-        assert result > 1
-
-        cursor.execute(
-            "SELECT * FROM dim_multiindex_mapping WHERE multiindex_id = ?", (result,)
-        )
-        new_entry = cursor.fetchone()
-        assert new_entry is not None
-        assert new_entry["barcode"] == "999"
-        assert new_entry["artist"] == "New Artist"
-        assert new_entry["album"] == "New Album"
-        assert new_entry["record_year"] == 0
 
 
 # New connection management tests:
@@ -588,20 +537,22 @@ def test_build_multiindex_from_mapping(feature_store_env):
         )
         assert multiindex[0] == expected_tuple
 
-        new_idx_id = store._get_multiindex_id(
-            (
-                "987",
-                "Art2",
-                "Alb2",
-                "LP",
-                "High",
-                "Live",
-                "2000s",
-                "2000s",
-                "Jazz",
-                2005,
-            )
+        # Use the new batch approach instead of the removed _get_multiindex_id method
+        new_tuple = (
+            "987",
+            "Art2",
+            "Alb2",
+            "LP",
+            "High",
+            "Live",
+            "2000s",
+            "2000s",
+            "Jazz",
+            2005,
         )
+        from deployment.app.db.database import get_or_create_multiindex_ids_batch
+        id_map = get_or_create_multiindex_ids_batch([new_tuple], conn)
+        new_idx_id = id_map[new_tuple]
         multiindex_multi, mask_multi = store._build_multiindex_from_mapping([1, new_idx_id])
 
         assert len(multiindex_multi) == 2

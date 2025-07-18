@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -19,6 +19,7 @@ from deployment.app.db.database import (
     create_or_get_config,
     create_training_result,
     create_tuning_result,
+    create_prediction_result,
     delete_models_by_ids,
     execute_many,
     execute_query,
@@ -28,6 +29,7 @@ from deployment.app.db.database import (
     get_or_create_multiindex_id,
     get_recent_models,
     get_top_configs,
+    insert_predictions,
     update_job_status,
 )
 from deployment.app.models.api_models import JobStatus, TrainingConfig
@@ -940,33 +942,17 @@ def save_predictions_to_db(
                 f"Predictions file missing required columns: {missing_cols}"
             )
 
-        # Generate a UUID for the prediction result
-        result_id = str(uuid.uuid4())
-
-        # Calculate prediction month from job parameters
-        prediction_month = None
+        # Get prediction month from job parameters
+        prediction_month: str | None = None
         try:
             job_details = get_job(job_id, connection=direct_db_connection)
             if job_details and job_details.get("parameters"):
                 params = json.loads(job_details["parameters"])
-                dataset_end_date_str = params.get("dataset_end_date")
+                prediction_month = params.get("prediction_month")
 
-                if dataset_end_date_str:
-                    # Parse dataset_end_date and add 1 month
-                    dataset_end_date = datetime.fromisoformat(
-                        dataset_end_date_str.replace("Z", "+00:00")
-                    )
-                    if dataset_end_date.month == 12:
-                        prediction_month = dataset_end_date.replace(
-                            year=dataset_end_date.year + 1, month=1, day=1
-                        )
-                    else:
-                        prediction_month = dataset_end_date.replace(
-                            month=dataset_end_date.month + 1, day=1
-                        )
-
+                if prediction_month:
                     logger.info(
-                        f"Calculated prediction month: {prediction_month.strftime('%Y-%m')} for job {job_id}"
+                        f"Calculated prediction month: {prediction_month} for job {job_id}"
                     )
         except Exception as e:
             logger.warning(
@@ -976,116 +962,46 @@ def save_predictions_to_db(
         # Create a connection to the database
         conn = direct_db_connection if direct_db_connection else get_db_connection()
 
+        prediction_result_id = None
         try:
-            conn.commit()
-
-            # Begin transaction
-            conn.execute("BEGIN TRANSACTION")
-
-            # Create a record in prediction_results table
-            timestamp = datetime.now().isoformat()
-            conn.execute(
-                """
-                INSERT INTO prediction_results
-                (result_id, job_id, model_id, prediction_date, prediction_month, output_path, summary_metrics)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    result_id,
-                    job_id,
-                    model_id,
-                    timestamp,
-                    prediction_month.date().isoformat() if prediction_month else None,
-                    predictions_path,
-                    "{}",
-                ),
+            prediction_result_id = create_prediction_result(
+                job_id=job_id,
+                prediction_month=prediction_month,
+                model_id=model_id,
+                output_path=predictions_path,
+                summary_metrics="{}",
+                connection=conn,
             )
 
-            # Prepare data for batch insert into fact_predictions
-            predictions_data = []
+        except Exception as e:
+            logger.error(
+                f"[{job_id}] Error creating prediction result: {e}"
+            )
 
-            for _, row in df.iterrows():
-                # Get or create multiindex_id
-                multiindex_id = get_or_create_multiindex_id(
-                    barcode=row["barcode"],
-                    artist=row["artist"],
-                    album=row["album"],
-                    cover_type=row["cover_type"],
-                    price_category=row["price_category"],
-                    release_type=row["release_type"],
-                    recording_decade=row["recording_decade"],
-                    release_decade=row["release_decade"],
-                    style=row["style"],
-                    record_year=int(row["record_year"]),
+        if prediction_result_id is not None:
+            try:
+                insert_result = insert_predictions(
+                    result_id=prediction_result_id,
+                    model_id=model_id,
+                    df=df,
                     connection=conn,
                 )
-
-                # Prepare prediction data
-                prediction_row = (
-                    result_id,
-                    multiindex_id,
-                    timestamp,  # prediction_date
-                    model_id,  # model_id
-                    row["0.05"],
-                    row["0.25"],
-                    row["0.5"],
-                    row["0.75"],
-                    row["0.95"],
-                    timestamp,  # created_at
-                )
-                predictions_data.append(prediction_row)
-
-            # Batch insert all predictions
-            try:
-                # Проверка соединения и таблицы перед вставкой
-                check_cursor = conn.cursor()
-                check_cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_predictions'"
-                )
-                table_exists = check_cursor.fetchone()
-                if not table_exists:
-                    raise ValueError(
-                        "Table fact_predictions does not exist in the database"
-                    )
-
-                # Попробуем прямой вызов вместо execute_many
-                cursor = conn.cursor()
-                cursor.executemany(
-                    """
-                    INSERT OR REPLACE INTO fact_predictions
-                    (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    predictions_data,
-                )
-            except Exception:
-                # Если прямой вызов не сработал, используем execute_many
-                execute_many(
-                    """
-                    INSERT OR REPLACE INTO fact_predictions
-                    (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    predictions_data,
-                    conn,
-                )
-
-            # Commit the transaction instead of execute("COMMIT")
-            conn.commit()
-
-            return {"result_id": result_id, "predictions_count": len(df)}
-
-        except Exception as e:
-            # Rollback on error
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            raise e
-        finally:
-            # Не закрываем соединение, если это внешнее соединение
-            if not direct_db_connection and conn:
-                conn.close()
+                # Явно возвращаем результат
+                return insert_result
+            except Exception as e:
+                # Rollback on error
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise e
+            finally:
+                # Не закрываем соединение, если это внешнее соединение
+                if not direct_db_connection and conn:
+                    conn.close()
+        else:
+            logger.error(f"[{job_id}] No prediction result created")
+            raise ValueError(f"No prediction result created for job {job_id}")
 
     except pd.errors.EmptyDataError as e:
         raise ValueError("Predictions file is empty") from e
@@ -1456,3 +1372,5 @@ async def save_model_file_and_db(
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
         # We don't update job status here, the caller should handle it
         raise RuntimeError(error_msg) from e
+
+

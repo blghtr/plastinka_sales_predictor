@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 
 import aiofiles
@@ -35,13 +35,16 @@ from deployment.app.models.api_models import (
     PredictionParams,
     PredictionResponse,
     ReportParams,
+    ReportResponse,
     TrainingResponse,
     ErrorDetailResponse,
+    TrainingParams,
+    TuningParams,
 )
 from deployment.app.services.auth import get_current_api_key_validated
 from deployment.app.services.data_processor import process_data_files
 from deployment.app.services.datasphere_service import run_job
-from deployment.app.services.report_service import run_report_job
+from deployment.app.services.report_service import generate_report
 from deployment.app.utils.error_handling import ErrorDetail, AppValidationError
 from deployment.app.utils.file_validation import validate_data_file_upload
 from deployment.app.utils.validation import (
@@ -80,6 +83,37 @@ async def _save_uploaded_file(uploaded_file: UploadFile, directory: Path) -> Pat
             os.remove(file_path)
         raise  # Re-raise the exception to be caught by the main handler
     return file_path
+
+
+def get_next_month(dataset_end_date) -> date:
+    """
+    Возвращает первый день месяца, следующего за dataset_end_date.
+
+    Args:
+        dataset_end_date (str | date | datetime): Дата окончания датасета (строка в ISO-формате или объект date/datetime)
+
+    Returns:
+        date: Первый день следующего месяца
+
+    Пример:
+        >>> get_next_month("2024-03-15")
+        datetime.date(2024, 4, 1)
+        >>> get_next_month(date(2024, 12, 31))
+        datetime.date(2025, 1, 1)
+    """
+    if isinstance(dataset_end_date, str):
+        dt = datetime.fromisoformat(dataset_end_date.replace("Z", "+00:00"))
+    elif isinstance(dataset_end_date, datetime):
+        dt = dataset_end_date
+    elif isinstance(dataset_end_date, date):
+        dt = datetime.combine(dataset_end_date, datetime.min.time())
+    else:
+        raise ValueError("dataset_end_date must be str, date, or datetime")
+    # Переход на следующий месяц
+    if dt.month == 12:
+        return date(dt.year + 1, 1, 1)
+    else:
+        return date(dt.year, dt.month + 1, 1)
 
 
 @router.post("/data-upload", response_model=DataUploadResponse)
@@ -318,79 +352,33 @@ async def create_data_upload_job(
 async def create_training_job(
     request: Request,
     background_tasks: BackgroundTasks,
-    dataset_start_date: str | None = None,
-    dataset_end_date: str | None = None,
+    params: TrainingParams,
     api_key: bool = Depends(get_current_api_key_validated),
-    dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
+    dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
     Submit a job to train a model using the active parameter set.
-
-    This will:
-    1. Prepare the training dataset using the specified date range
-    2. Train the model using the active parameter set or best parameter set
-    3. Save the trained model
-
-    Returns a job ID that can be used to check the job status.
-
-    Returns:
-        HTTPException: If there's no active parameter set and no best parameter set by metric.
+    The prediction month is determined automatically.
     """
     logger.info("Received request to create training job")
+    dataset_start_date = params.dataset_start_date
+    if dataset_start_date:
+        dataset_start_date = dataset_start_date.isoformat()
+    dataset_end_date = params.dataset_end_date
+    if dataset_end_date:
+        dataset_end_date = dataset_end_date.isoformat()
+
     try:
-        # 1. Валидация и парсинг дат
-        parsed_start_date = None
-        parsed_end_date = None
+        # 1. Determine adjusted training end date automatically
+        dataset_end_date = dal.adjust_dataset_boundaries(
+            start_date=dataset_start_date,
+            end_date=dataset_end_date,
+        )
+        logger.info(
+            f"Determined dataset_end_date: {dataset_end_date if dataset_end_date else 'None'}"
+        )
 
-        if dataset_start_date:
-            is_valid, parsed_start_date = validate_date_format(
-                dataset_start_date, format_str="%d.%m.%Y"
-            )
-            if not is_valid:
-                logger.warning(f"Invalid start date format: {dataset_start_date}")
-                raise HTTPException(
-                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "message": "Invalid start date format. Expected DD.MM.YYYY.",
-                        "code": "invalid_date_format",
-                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
-                        "details": {"date": dataset_start_date},
-                    },
-                )
-        if dataset_end_date:
-            is_valid, parsed_end_date = validate_date_format(
-                dataset_end_date, format_str="%d.%m.%Y"
-            )
-            if not is_valid:
-                logger.warning(f"Invalid end date format: {dataset_end_date}")
-                raise HTTPException(
-                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "message": "Invalid end date format. Expected DD.MM.YYYY.",
-                        "code": "invalid_date_format",
-                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
-                        "details": {"date": dataset_end_date},
-                    },
-                )
-
-        # 2. Логическая валидация диапазона дат (если обе даты заданы)
-        if parsed_start_date and parsed_end_date:
-            is_valid, error_msg, _, _ = validate_historical_date_range(
-                parsed_start_date, parsed_end_date, format_str="%d.%m.%Y"
-            )
-            if not is_valid:
-                logger.warning(f"Invalid date range: {error_msg}")
-                raise HTTPException(
-                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "message": error_msg,
-                        "code": "invalid_date_range",
-                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
-                        "details": {"start_date": dataset_start_date, "end_date": dataset_end_date},
-                    },
-                )
-
-        # 3. Получение конфига
+        # 2. Get the effective configuration
         config = dal.get_effective_config(get_settings(), logger=logger)
         if config is None:
             raise HTTPException(
@@ -398,30 +386,29 @@ async def create_training_job(
                 detail={
                     "message": "No active config and no best config by metric available",
                     "code": "no_config_available",
-                    "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
-                    "details": None,
                 },
             )
         logger.info(f"Using configuration: {config['config_id']}")
 
-        # 4. Создание задания в БД
+        # 3. Create the job record in the database
         job_params = {"config_id": config["config_id"]}
-        if parsed_start_date:
-            job_params["dataset_start_date"] = parsed_start_date
-        if parsed_end_date:
-            job_params["dataset_end_date"] = parsed_end_date
+        if dataset_start_date:
+            job_params["dataset_start_date"] = dataset_start_date
+        if dataset_end_date:
+            job_params["dataset_end_date"] = dataset_end_date
+            job_params["prediction_month"] = get_next_month(dataset_end_date)
 
         job_id = dal.create_job(JobType.TRAINING, parameters=job_params)
         logger.info(f"Job record created with ID: {job_id}")
 
-        # 5. Запуск фоновой задачи
+        # 4. Start the background task with the *adjusted* end date
         background_tasks.add_task(
             run_job,
             job_id=job_id,
             training_config=config["config"],
             config_id=config["config_id"],
-            dataset_start_date=parsed_start_date,
-            dataset_end_date=parsed_end_date,
+            dataset_start_date=params.dataset_start_date,
+            dataset_end_date=dataset_end_date,  # Use the adjusted date
         )
         logger.info(f"Background task added for job ID: {job_id}")
 
@@ -433,25 +420,20 @@ async def create_training_job(
         )
 
     except HTTPException as e:
-        # Re-raise HTTPExceptions that were intentionally raised (e.g., from get_effective_config)
         logger.warning(
             f"HTTPException caught in create_training_job: {e.status_code} - {e.detail}"
         )
         raise e
     except ValueError as e:
-        # Catch ValueErrors, potentially from date parsing issues before the function signature,
-        # or custom validation added inside.
-        logger.error(f"ValueError in create_training_job: {e}", exc_info=True)
+        logger.warning(f"Validation error in create_training_job: {e}")
         error = ErrorDetail(
-            message=f"Invalid input data: {e}",
-            code="invalid_input_data",
+            message=str(e),
+            code="invalid_date_range",
             status_code=fastapi_status.HTTP_400_BAD_REQUEST,
-            details={"error": str(e)},
         )
         error.log_error(request)
         raise HTTPException(
-            status_code=error.status_code,
-            detail=error.to_response_model().model_dump(),
+            status_code=error.status_code, detail=error.to_response_model().model_dump()
         )
     except Exception as e:
         logger.error(
@@ -474,14 +456,7 @@ async def create_training_job(
 async def create_tuning_job(
     request: Request,
     background_tasks: BackgroundTasks,
-    dataset_start_date: str | None = None,
-    dataset_end_date: str | None = None,
-    mode: str | None = Query(None, regex="^(light|full)$", description="Tuning mode: light or full"),
-    time_budget_s: int | None = Query(
-        None,
-        gt=0,
-        description="Global time budget for Ray Tune in seconds (positive integer)",
-    ),
+    params: TuningParams,
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
@@ -493,48 +468,19 @@ async def create_tuning_job(
     """
     logger.info("Received request to create tuning job")
     try:
-        parsed_start_date = None
-        parsed_end_date = None
+        # Determine adjusted training end date automatically
+        dataset_start_date = params.dataset_start_date
+        dataset_end_date = params.dataset_end_date
+        mode = params.mode
+        time_budget_s = params.time_budget_s
+        dataset_end_date = dal.adjust_dataset_boundaries(
+            start_date=dataset_start_date,
+            end_date=dataset_end_date,
+        )
+        logger.info(
+            f"Determined adjusted dataset_end_date: {dataset_end_date.isoformat() if dataset_end_date else 'None'}"
+        )
 
-        if dataset_start_date:
-            is_valid, parsed_start_date = validate_date_format(dataset_start_date, format_str="%d.%m.%Y")
-            if not is_valid:
-                raise HTTPException(
-                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "message": "Invalid start date format. Expected DD.MM.YYYY.",
-                        "code": "invalid_date_format",
-                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
-                        "details": {"date": dataset_start_date},
-                    },
-                )
-        if dataset_end_date:
-            is_valid, parsed_end_date = validate_date_format(dataset_end_date, format_str="%d.%m.%Y")
-            if not is_valid:
-                raise HTTPException(
-                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "message": "Invalid end date format. Expected DD.MM.YYYY.",
-                        "code": "invalid_date_format",
-                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
-                        "details": {"date": dataset_end_date},
-                    },
-                )
-
-        # Logical validation of range
-        if parsed_start_date and parsed_end_date:
-            is_valid, error_msg, _, _ = validate_historical_date_range(parsed_start_date, parsed_end_date, format_str="%d.%m.%Y")
-            if not is_valid:
-                raise HTTPException(
-                    status_code=fastapi_status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "message": error_msg,
-                        "code": "invalid_date_range",
-                        "status_code": fastapi_status.HTTP_400_BAD_REQUEST,
-                        "details": {"start_date": dataset_start_date, "end_date": dataset_end_date},
-                    },
-                )
-            
         config = dal.get_effective_config(get_settings(), logger=logger)
         if config is None:
             raise HTTPException(
@@ -551,10 +497,10 @@ async def create_tuning_job(
         job_params = {
             "mode": mode or get_settings().tuning.mode,
         }
-        if parsed_start_date:
-            job_params["dataset_start_date"] = parsed_start_date
-        if parsed_end_date:
-            job_params["dataset_end_date"] = parsed_end_date
+        if dataset_start_date:
+            job_params["dataset_start_date"] = dataset_start_date
+        if dataset_end_date:
+            job_params["dataset_end_date"] = dataset_end_date
         if time_budget_s is not None:
             job_params["time_budget_s"] = time_budget_s
 
@@ -575,8 +521,8 @@ async def create_tuning_job(
             training_config=config["config"],
             config_id=config["config_id"],
             job_type="tune",
-            dataset_start_date=parsed_start_date,
-            dataset_end_date=parsed_end_date,
+            dataset_start_date=dataset_start_date,
+            dataset_end_date=dataset_end_date,
             additional_job_params=additional_params,
         )
 
@@ -596,45 +542,68 @@ async def create_tuning_job(
             },
         ) from e
 
-@router.post("/reports", response_model=JobResponse)
+@router.post("/reports", response_model=ReportResponse)
 async def create_prediction_report_job(
     request: Request,
     params: ReportParams,
-    background_tasks: BackgroundTasks,
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
-    Submit a job to generate a prediction report.
+    Generate and return a prediction report immediately.
 
     This will:
-    1. Create a job record in the database.
-    2. Add a background task to generate the report.
-
-    Returns a job ID that can be used to check the job status.
+    1. Generate the report data directly.
+    2. Return the report as a CSV string in the response.
     """
     try:
+        prediction_month = params.prediction_month
+        if prediction_month is None:
+            # If no month is provided, get the latest one from prediction_results
+            latest_month = dal.get_latest_prediction_month()
+            if not latest_month:
+                raise HTTPException(
+                    status_code=fastapi_status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "message": "No predictions found. Cannot generate a report for the latest month.",
+                        "code": "no_predictions_found",
+                    },
+                )
+            prediction_month = latest_month
+            logger.info(f"Prediction month not provided for report, determined latest available month: {prediction_month}")
+
+        # Update params with the determined month to pass to the report generator
+        params.prediction_month = prediction_month
+
         logger.info(
-            f"Received request to generate report for month: {params.prediction_month.strftime('%Y-%m')}"
+            f"Received request to generate report for month: {prediction_month.strftime('%Y-%m')}"
         )
 
-        # Create a job record
-        job_id = dal.create_job(job_type=JobType.REPORT, parameters=params.model_dump())
+        # Generate the report directly
+        report_df = generate_report(params=params, dal=dal) # Pass DAL to report generator
 
-        # Add the report generation to background tasks
-        background_tasks.add_task(run_report_job, job_id=job_id, params=params)
+        # Convert DataFrame to CSV string
+        csv_data = report_df.to_csv(index=False)
 
-        logger.info(f"Report job created with ID: {job_id}")
-        return JobResponse(job_id=job_id, status=JobStatus.PENDING)
-
+        # Create and return the response
+        return ReportResponse(
+            report_type=params.report_type.value,
+            prediction_month=prediction_month.strftime("%Y-%m"),
+            records_count=len(report_df),
+            csv_data=csv_data,
+            generated_at=datetime.now(),
+            filters_applied=params.filters,
+        )
+    except HTTPException as e:
+        # Re-raise HTTPExceptions that were intentionally raised for specific error handling
+        raise e
     except Exception as e:
-        logger.error(f"Failed to create report job: {e}", exc_info=True)
+        logger.error(f"Failed to create report: {e}", exc_info=True)
         raise HTTPException(
             status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
-                "message": "Failed to create report job",
+                "message": "Failed to create report",
                 "code": "internal_server_error",
-                "status_code": fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR,
                 "details": {"error": str(e)},
             },
         ) from e
@@ -693,12 +662,12 @@ async def get_job_status(
                     }
 
             elif job["job_type"] == JobType.TRAINING.value:
-                training_result = dal.get_training_result(job["result_id"])
+                training_result = dal.get_training_results(result_id=job["result_id"])
                 if training_result:
                     result = {
                         "model_id": training_result["model_id"],
-                        "metrics": json.loads(training_result["metrics"]),
-                        "parameters": json.loads(training_result["parameters"]),
+                        "metrics": training_result["metrics"],
+                        "parameters": training_result["parameters"],
                         "duration": training_result["duration"],
                     }
 
@@ -727,7 +696,7 @@ async def get_job_status(
                         "enriched_columns": json.loads(report_result.get("enriched_columns", "[]")),
                         "generated_at": report_result.get("generated_at"),
                         "filters_applied": json.loads(report_result.get("filters_applied", "{}")),
-                        "parameters": json.loads(report_result["parameters"]),
+                        "parameters": report_result["parameters"],
                         "output_path": report_result["output_path"],
                     }
 
