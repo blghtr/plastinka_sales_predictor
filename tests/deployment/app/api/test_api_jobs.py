@@ -309,7 +309,7 @@ class TestReportJobEndpoint:
 
         params = {
             "report_type": "prediction_report",
-            "prediction_month": "2023-01-01T00:00:00Z",
+            "prediction_month": "2023-01-01",
             "filters": {"artist": "test_artist"},
         }
 
