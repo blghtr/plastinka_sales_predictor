@@ -11,6 +11,8 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from collections import defaultdict
+
 import pandas as pd
 
 from deployment.app.config import get_settings
@@ -27,11 +29,14 @@ from deployment.app.db.database import (
     get_db_connection,
     get_job,
     get_or_create_multiindex_id,
+    get_or_create_multiindex_ids_batch,
     get_recent_models,
     get_top_configs,
     insert_predictions,
     update_job_status,
+    insert_report_features,
 )
+from deployment.app.db.feature_storage import load_features
 from deployment.app.models.api_models import JobStatus, TrainingConfig
 from deployment.app.services.job_registries.input_preparator_registry import (
     get_input_preparator,
@@ -878,7 +883,6 @@ async def _cleanup_directories(job_id: str, dir_paths: list[str]) -> list[str]:
             logger.info(
                 f"[{job_id}] Directory not found or not a directory, skipping cleanup: {dir_path}"
             )
-
     # Return any cleanup errors to be handled by caller
     return cleanup_errors
 
@@ -1029,8 +1033,244 @@ JOB_TYPE_TUNE = "tune"
 # as part of the unified result processing architecture
 
 
+
+def _process_features_for_report(
+    raw_features: dict[str, pd.DataFrame], prediction_month: datetime
+) -> dict[str, pd.DataFrame]:
+    """
+    Simplified version of notebook's process_features adapted for database system.
+    """
+    try:
+        logger.info(
+            f"Processing features for report generation for {prediction_month.strftime('%Y-%m')}"
+        )
+        required_features = ["sales", "change", "stock", "prices"]
+        missing_features = [
+            f for f in required_features
+            if f not in raw_features or raw_features[f].empty
+        ]
+        if missing_features:
+            logger.warning(
+                f"Missing required features for processing: {missing_features}"
+            )
+            return {}
+
+        new_features = defaultdict(list)
+        sales = raw_features["sales"]
+        change = raw_features["change"]
+        stock = raw_features["stock"].T
+        prices = raw_features["prices"].T
+        change_groups = change.groupby(change.index.to_period("M"))
+        sales_groups = sales.abs().groupby(sales.index.to_period("M"))
+
+        for month, daily_change in change_groups:
+            try:
+                change_pivot = daily_change.T
+                try:
+                    sales_pivot = sales_groups.get_group(month).T
+                except KeyError:
+                    logger.warning(
+                        f"No sales data found for month {month}"
+                    )
+                    continue
+
+                stock = stock.join(
+                    change_pivot, 
+                    how="outer"
+                ).fillna(0).cumsum(axis=1)
+                try:
+                    stock = stock.sort_index(axis=1)
+                except TypeError:
+                    pass
+
+                last_stock, stock = stock.iloc[:, -1:], stock.iloc[:, :-1]
+                conf = stock.clip(0, 5) / 5
+                month_conf = conf.mean(1).rename(month)
+                in_stock = stock.clip(0, 1)
+                availability_mask = in_stock > 0
+                in_stock_frac = in_stock.mean(1).rename(month)
+                common_index = sales_pivot.index
+                masked_mean_sales_items = (
+                    sales_pivot.where(availability_mask)
+                    .mean(axis=1, skipna=True)
+                    .fillna(0)
+                    .round(2)
+                    .loc[common_index]
+                    .rename(month)
+                )
+                try:
+                    prices_for_index = prices.loc[
+                        masked_mean_sales_items.index,
+                    ].rename(columns=lambda _: month).iloc[:, 0]
+                except KeyError:
+                    logger.warning(
+                        f"Price data not found for some items in month {month}"
+                    )
+                    prices_for_index = pd.Series(
+                        0, index=masked_mean_sales_items.index, name=month
+                    )
+                masked_mean_sales_rub = (
+                    masked_mean_sales_items.mul(prices_for_index)
+                    .fillna(0)
+                    .loc[common_index]
+                    .astype(int)
+                )
+                lost_sales = (
+                    (~availability_mask)
+                    .astype(int)
+                    .sum(axis=1, skipna=True)
+                    .rename(month)
+                    .mul(masked_mean_sales_rub)
+                    .fillna(0)
+                    .loc[common_index]
+                )
+                stock = last_stock
+                new_features["availability"].append(in_stock_frac)
+                new_features["confidence"].append(month_conf)
+                new_features["masked_mean_sales_items"].append(
+                    masked_mean_sales_items
+                )
+                new_features["masked_mean_sales_rub"].append(
+                    masked_mean_sales_rub
+                )
+                new_features["lost_sales"].append(lost_sales)
+            except Exception as e:
+                logger.error(
+                    f"Error processing month {month}: {e}", 
+                    exc_info=True
+                )
+                continue
+
+        processed_features = {}
+        for k, v in new_features.items():
+            if v:
+                try:
+                    k_df = pd.concat(v, axis=1).fillna(0).T
+                    k_df = k_df.set_index(k_df.index.to_timestamp("ms"))
+                    processed_features[k] = k_df
+                except Exception as e:
+                    logger.error(f"Error consolidating feature {k}: {e}")
+                    continue
+        logger.info(f"Successfully processed {len(processed_features)} feature types")
+        return processed_features
+    except Exception as e:
+        logger.error(f"Error in process_features_for_report: {e}", exc_info=True)
+        return {}
+
+
+def _extract_features_for_month(
+    processed_features: dict[str, pd.DataFrame], target_month: datetime
+) -> pd.DataFrame:
+    """
+    Extracts features for a specific prediction month using system feature names.
+    """
+    try:
+        target_date = pd.to_datetime(target_month.strftime("%Y-%m-01"))
+        logger.info(f"Extracting features for target date: {target_date}")
+        columns_data = []
+        system_features = [
+            "masked_mean_sales_items",
+            "masked_mean_sales_rub",
+            "lost_sales",
+        ]
+        for feature_key in system_features:
+            if feature_key in processed_features:
+                feature_df = processed_features[feature_key]
+                available_dates = pd.to_datetime(feature_df.index)
+                if target_date in available_dates:
+                    selected_date = target_date
+                else:
+                    same_month_dates = available_dates[
+                        (available_dates.year == target_date.year)
+                        & (available_dates.month == target_date.month)
+                    ]
+                    if len(same_month_dates) > 0:
+                        selected_date = same_month_dates[0]
+                    else:
+                        selected_date = available_dates.max()
+                        logger.warning(
+                            f"No data for target month {target_month.strftime('%Y-%m')}, using {selected_date}"
+                        )
+                if selected_date in feature_df.index:
+                    column_data = pd.DataFrame(
+                        {feature_key: feature_df.loc[selected_date]}
+                    )
+                    columns_data.append(column_data)
+        if columns_data:
+            result = pd.concat(columns_data, axis=1)
+            logger.info(f"Successfully extracted features: {result.shape}")
+            return result
+        else:
+            logger.warning("No feature columns could be extracted")
+            return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Error extracting features for month: {e}", exc_info=True)
+        return pd.DataFrame()
+
+
+async def calculate_and_store_report_features(prediction_month: date, connection: Optional[sqlite3.Connection] = None) -> None:
+    """
+    Calculates and stores report features for a given prediction month.
+    """
+    logger.info(f"Starting report feature calculation for month: {prediction_month.strftime('%Y-%m')}")
+    try:
+        raw_features = load_features(
+            store_type="sql",
+            feature_types=["sales", "change", "stock", "prices"],
+            connection=connection
+        )
+        if not raw_features:
+            logger.warning("No raw features loaded, skipping report feature calculation.")
+            return
+
+        processed_features = _process_features_for_report(
+            raw_features,
+            prediction_month
+        )
+        if not processed_features:
+            logger.warning("No features processed, skipping report feature calculation.")
+            return
+
+        enriched_columns = _extract_features_for_month(
+            processed_features,
+            prediction_month
+        )
+        if enriched_columns.empty:
+            logger.warning("No enriched columns extracted, skipping report feature calculation.")
+            return
+
+        # Get all unique multi-index tuples from the enriched columns
+        multiindex_tuples = list(enriched_columns.index)
+
+        # Get all multi-index IDs in one batch
+        multiindex_id_map = get_or_create_multiindex_ids_batch(multiindex_tuples, connection)
+
+        # Prepare data for batch insert
+        features_to_insert = []
+        now = datetime.now().isoformat()
+        for multiindex_tuple, row in enriched_columns.iterrows():
+            multiindex_id = multiindex_id_map.get(multiindex_tuple)
+            if multiindex_id is not None:
+                features_to_insert.append((
+                    prediction_month.strftime('%Y-%m-01'),
+                    multiindex_id,
+                    row.get('masked_mean_sales_items', 0),
+                    row.get('masked_mean_sales_rub', 0),
+                    row.get('lost_sales', 0),
+                    now,
+                ))
+
+        if features_to_insert:
+            insert_report_features(features_to_insert, connection=connection)
+            logger.info(f"Successfully stored {len(features_to_insert)} report features for {prediction_month.strftime('%Y-%m')}.")
+
+    except Exception as e:
+        logger.error(f"Failed to calculate and store report features for {prediction_month.strftime('%Y-%m')}: {e}", exc_info=True)
+
+
 # Main Orchestrator Function
 async def run_job(
+
     job_id: str,
     training_config: dict | None = None,
     config_id: str | None = None,
@@ -1306,8 +1546,8 @@ async def save_model_file_and_db(
     """
     try:
         # Generate a unique model ID based on the config's model_id (base name)
-        model_id = f"{config.model_id}_{uuid.uuid4().hex[:8]}"
-        logger.info(f"[{job_id}] Generated new model ID: {model_id}")
+        model_id = config.model_id
+        logger.info(f"[{job_id}] Using model ID: {model_id}")
 
         # Verify source model file exists
         if not os.path.exists(model_path):

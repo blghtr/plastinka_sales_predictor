@@ -128,7 +128,6 @@ class SQLFeatureStore:
         unique_tuples = [tuple(col) for col in df.columns]
 
         # 2. Get all multi-index IDs in one batch
-        from deployment.app.db.database import get_or_create_multiindex_ids_batch
         id_map = get_or_create_multiindex_ids_batch(unique_tuples, self.db_conn)
 
         # 3. Prepare the list of parameters for insertion
@@ -154,7 +153,6 @@ class SQLFeatureStore:
         query = f"INSERT OR REPLACE INTO {table} (multiindex_id, data_date, value) VALUES (?, ?, ?)"
         
         # Use execute_many for batch insertion
-        from deployment.app.db.database import execute_many
         execute_many(query, params_list, self.db_conn)
 
         logger.info(f"Saved {len(params_list)} records to {table}")
@@ -206,8 +204,6 @@ class SQLFeatureStore:
                     f"Could not convert {value} of type {type(value)} to float, using {default}"
                 )
                 return default
-
-    
 
     def load_features(
         self,

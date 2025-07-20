@@ -32,6 +32,7 @@ from deployment.app.db.database import (
     get_prediction_results_by_month,
     get_predictions_for_jobs,
     get_report_result,
+    get_report_features,
     get_recent_models,
     get_top_configs,
     get_tuning_results,
@@ -258,6 +259,10 @@ class DataAccessLayer:
     def get_latest_prediction_month(self, connection: sqlite3.Connection = None) -> date:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_latest_prediction_month(connection)
+
+    def get_report_features(self, prediction_month: date, model_id: str | None = None, filters: dict[str, Any] = None, connection: sqlite3.Connection = None) -> list[dict]:
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return get_report_features(prediction_month, model_id, filters, connection)
 
     # Batch utility methods
     def execute_query_with_batching(

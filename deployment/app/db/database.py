@@ -1782,7 +1782,8 @@ def update_processing_run(
 
 
 def get_or_create_multiindex_ids_batch(
-    tuples_to_process: list[tuple], connection: sqlite3.Connection
+    tuples_to_process: list[tuple], 
+    connection: sqlite3.Connection
 ) -> dict[tuple, int]:
     """
     Efficiently gets or creates multiple multi-index IDs in a single batch.
@@ -1797,71 +1798,89 @@ def get_or_create_multiindex_ids_batch(
     if not tuples_to_process:
         return {}
 
-    cursor = connection.cursor()
-    
-    # Use a temporary table for efficient lookup of existing tuples.
-    # This is more robust than complex WHERE clauses with many ORs or tuple comparisons,
-    # which are not well-supported across all SQLite versions.
-    cursor.execute("CREATE TEMP TABLE _tuples_to_find (barcode TEXT, artist TEXT, album TEXT, cover_type TEXT, price_category TEXT, release_type TEXT, recording_decade TEXT, release_decade TEXT, style TEXT, record_year INTEGER)")
-    
+    conn_created = False
     try:
-        # Insert all tuples we need to find/create into the temporary table
-        cursor.executemany("INSERT INTO _tuples_to_find VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuples_to_process)
+        if connection:
+            conn = connection
+        else:
+            conn = get_db_connection()
+            conn_created = True
 
-        # Find which tuples already exist in the main table by joining with the temp table
-        query_existing = """
-            SELECT t.*, m.multiindex_id
-            FROM _tuples_to_find t
-            JOIN dim_multiindex_mapping m ON
-                m.barcode = t.barcode AND
-                m.artist = t.artist AND
-                m.album = t.album AND
-                m.cover_type = t.cover_type AND
-                m.price_category = t.price_category AND
-                m.release_type = t.release_type AND
-                m.recording_decade = t.recording_decade AND
-                m.release_decade = t.release_decade AND
-                m.style = t.style AND
-                m.record_year = t.record_year
-        """
-        cursor.execute(query_existing)
-        existing_rows = cursor.fetchall()
+        cursor = conn.cursor()
+        
+        # Use a temporary table for efficient lookup of existing tuples.
+        # This is more robust than complex WHERE clauses with many ORs or tuple comparisons,
+        # which are not well-supported across all SQLite versions.
+        cursor.execute("CREATE TEMP TABLE _tuples_to_find (barcode TEXT, artist TEXT, album TEXT, cover_type TEXT, price_category TEXT, release_type TEXT, recording_decade TEXT, release_decade TEXT, style TEXT, record_year INTEGER)")
+        
+        try:
+            # Insert all tuples we need to find/create into the temporary table
+            cursor.executemany("INSERT INTO _tuples_to_find VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuples_to_process)
 
-        # Create a set of existing tuples for quick lookup
-        existing_tuples = set()
-        id_map = {}
-        for row in existing_rows:
-            # Reconstruct the tuple from the row dictionary
-            existing_tuple = tuple(row[col] for col in row.keys() if col != 'multiindex_id')
-            existing_tuples.add(existing_tuple)
-            id_map[existing_tuple] = row['multiindex_id']
-
-        # Identify new tuples that need to be inserted
-        new_tuples = [t for t in tuples_to_process if tuple(t) not in existing_tuples]
-
-        # Batch insert the new tuples
-        if new_tuples:
-            insert_query = """
-            INSERT OR IGNORE INTO dim_multiindex_mapping (
-                barcode, artist, album, cover_type, price_category,
-                release_type, recording_decade, release_decade, style, record_year
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            # Find which tuples already exist in the main table by joining with the temp table
+            query_existing = """
+                SELECT t.*, m.multiindex_id
+                FROM _tuples_to_find t
+                JOIN dim_multiindex_mapping m ON
+                    m.barcode = t.barcode AND
+                    m.artist = t.artist AND
+                    m.album = t.album AND
+                    m.cover_type = t.cover_type AND
+                    m.price_category = t.price_category AND
+                    m.release_type = t.release_type AND
+                    m.recording_decade = t.recording_decade AND
+                    m.release_decade = t.release_decade AND
+                    m.style = t.style AND
+                    m.record_year = t.record_year
             """
-            cursor.executemany(insert_query, new_tuples)
+            cursor.execute(query_existing)
+            existing_rows = cursor.fetchall()
 
-            # Now, we need to get the IDs of the newly inserted tuples.
-            # We can re-query for all processed tuples to get their IDs.
-            # This is simpler and more reliable than using last_insert_rowid() in a batch context.
-            cursor.execute(query_existing) # Re-run the join to get all IDs
-            all_rows = cursor.fetchall()
-            for row in all_rows:
-                full_tuple = tuple(row[col] for col in row.keys() if col != 'multiindex_id')
-                id_map[full_tuple] = row['multiindex_id']
+            # Create a set of existing tuples for quick lookup
+            existing_tuples = set()
+            id_map = {}
+            for row in existing_rows:
+                # Reconstruct the tuple from the row dictionary
+                existing_tuple = tuple(row[col] for col in row.keys() if col != 'multiindex_id')
+                existing_tuples.add(existing_tuple)
+                id_map[existing_tuple] = row['multiindex_id']
+
+            # Identify new tuples that need to be inserted
+            new_tuples = [t for t in tuples_to_process if tuple(t) not in existing_tuples]
+
+            # Batch insert the new tuples
+            if new_tuples:
+                insert_query = """
+                INSERT OR IGNORE INTO dim_multiindex_mapping (
+                    barcode, artist, album, cover_type, price_category,
+                    release_type, recording_decade, release_decade, style, record_year
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                cursor.executemany(insert_query, new_tuples)
+
+                # Now, we need to get the IDs of the newly inserted tuples.
+                # We can re-query for all processed tuples to get their IDs.
+                # This is simpler and more reliable than using last_insert_rowid() in a batch context.
+                cursor.execute(query_existing) # Re-run the join to get all IDs
+                all_rows = cursor.fetchall()
+                for row in all_rows:
+                    full_tuple = tuple(row[col] for col in row.keys() if col != 'multiindex_id')
+                    id_map[full_tuple] = row['multiindex_id']
+
+        finally:
+            # Always drop the temporary table
+            cursor.execute("DROP TABLE _tuples_to_find")
+
+    except Exception as e:
+        logger.error(f"Error in get_or_create_multiindex_ids_batch: {e}", exc_info=True)
+        raise
 
     finally:
-        # Always drop the temporary table
-        cursor.execute("DROP TABLE _tuples_to_find")
-
+        if conn_created and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass  # Ignore any errors closing the connection
     return id_map
 
 
@@ -1993,6 +2012,100 @@ def get_configs(
         if conn_created and conn:
             conn.close()
 
+
+def insert_report_features(
+    features_data: list[tuple], connection: sqlite3.Connection = None
+) -> None:
+    """
+    Inserts a batch of report features into the report_features table.
+
+    Args:
+        features_data: A list of tuples, where each tuple contains the
+                       data for one row in the report_features table.
+        connection: Optional existing database connection.
+    """
+    query = """
+    INSERT OR REPLACE INTO report_features
+    (prediction_month, multiindex_id, avg_sales_items, avg_sales_rub, lost_sales_rub, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """
+    try:
+        execute_many(query, features_data, connection=connection)
+        logger.info(f"Successfully inserted/updated {len(features_data)} report features.")
+    except DatabaseError as e:
+        logger.error(f"Failed to insert report features: {e}", exc_info=True)
+        raise
+
+
+def get_report_features(
+    prediction_month: date,
+    model_id: str | None = None,
+    filters: dict[str, Any] = None,
+    connection: sqlite3.Connection = None,
+) -> list[dict]:
+    """
+    Retrieves pre-calculated report features for a given prediction month,
+    with optional filters on multi-index attributes and model_id.
+
+    Args:
+        prediction_month: The month for which to retrieve report features (YYYY-MM-DD).
+        model_id: Optional model ID to filter predictions.
+        filters: A dictionary of filters to apply on the multi-index attributes.
+                 Example: {"artist": "Artist Name", "style": "Rock"}
+        connection: Optional existing database connection.
+
+    Returns:
+        A list of dictionaries, where each dictionary represents a row of report features.
+    """
+    params = []
+    
+    # Base query with corrected column order
+    select_clause = """
+        SELECT
+            dmm.barcode, dmm.artist, dmm.album, dmm.cover_type, dmm.price_category,
+            dmm.release_type, dmm.recording_decade, dmm.release_decade, dmm.style, dmm.record_year,
+            rf.avg_sales_items, rf.avg_sales_rub, rf.lost_sales_rub,
+            fp.quantile_05, fp.quantile_25, fp.quantile_50, fp.quantile_75, fp.quantile_95
+        FROM report_features rf
+        JOIN dim_multiindex_mapping dmm ON rf.multiindex_id = dmm.multiindex_id
+    """
+
+    # Dynamically build the JOIN clause for fact_predictions
+    join_clause = """
+    LEFT JOIN fact_predictions fp ON rf.multiindex_id = fp.multiindex_id
+    LEFT JOIN prediction_results pr ON fp.result_id = pr.result_id
+    """
+
+    # Build WHERE clause
+    where_clauses = []
+    params.append(prediction_month.strftime("%Y-%m-%d"))
+    where_clauses.append("rf.prediction_month = ?")
+
+    if model_id:
+        params.append(model_id)
+        where_clauses.append("fp.model_id = ?")
+
+    if filters:
+        for key, value in filters.items():
+            if key in ["barcode", "artist", "album", "cover_type", "price_category", "release_type", "recording_decade", "release_decade", "style", "record_year"]:
+                where_clauses.append(f"dmm.{key} = ?")
+                params.append(value)
+
+    where_statement = ""
+    if where_clauses:
+        where_statement = " WHERE " + " AND ".join(where_clauses)
+
+    # Final query assembly
+    full_query = f"{select_clause} {join_clause} {where_statement} ORDER BY dmm.artist, dmm.album"
+
+    try:
+        results = execute_query(
+            full_query, tuple(params), fetchall=True, connection=connection
+        )
+        return results or []
+    except DatabaseError as e:
+        logger.error(f"Failed to get report features for {prediction_month}: {e}")
+        raise
 
 def delete_configs_by_ids(
     config_ids: list[str], connection: sqlite3.Connection = None

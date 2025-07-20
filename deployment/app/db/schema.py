@@ -191,6 +191,18 @@ CREATE TABLE IF NOT EXISTS tuning_results (
     FOREIGN KEY (config_id) REFERENCES configs(config_id)
 );
 
+
+CREATE TABLE IF NOT EXISTS report_features (
+    prediction_month DATE NOT NULL,
+    multiindex_id INTEGER NOT NULL,
+    avg_sales_items REAL,
+    avg_sales_rub REAL,
+    lost_sales_rub REAL,
+    created_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (prediction_month, multiindex_id),
+    FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
+);
+
 CREATE TABLE IF NOT EXISTS retry_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,

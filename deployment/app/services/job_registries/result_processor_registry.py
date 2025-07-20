@@ -6,6 +6,7 @@ using the registry pattern to eliminate conditional checks and improve extensibi
 """
 
 import asyncio
+from datetime import date
 import json
 import logging
 import os
@@ -55,8 +56,9 @@ async def process_training_results(
             _perform_model_cleanup,
             save_model_file_and_db,
             save_predictions_to_db,
+            calculate_and_store_report_features,
         )
-        from deployment.app.db.database import create_training_result
+        from deployment.app.db.database import create_training_result, get_job
 
         # Save model and predictions if they exist
         if model_path:
@@ -80,6 +82,22 @@ async def process_training_results(
                 logger.info(
                     f"[{job_id}] Saved {prediction_result_info.get('predictions_count', 'N/A')} predictions to database with result_id: {prediction_result_info.get('result_id', 'N/A')}"
                 )
+
+                # --- NEW: Trigger report feature calculation ---
+                job_details = get_job(job_id, connection=connection)
+                if job_details and job_details.get("parameters"):
+                    params = json.loads(job_details["parameters"])
+                    prediction_month_str = params.get("prediction_month")
+                    if prediction_month_str:
+                        prediction_month = date.fromisoformat(prediction_month_str)
+                        logger.info(f"[{job_id}] Triggering report feature calculation for {prediction_month}.")
+                        await calculate_and_store_report_features(
+                            prediction_month, 
+                            connection=connection
+                        )
+                    else:
+                        logger.warning(f"[{job_id}] No prediction_month in job parameters, cannot calculate report features.")
+
             else:
                 logger.warning(
                     f"[{job_id}] No predictions file found, cannot save predictions to DB."
