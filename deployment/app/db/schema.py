@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS fact_prices (
     multiindex_id INTEGER,
     data_date DATE,
     value REAL,
-    PRIMARY KEY (multiindex_id, data_date),
+    PRIMARY KEY (multiindex_id),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 

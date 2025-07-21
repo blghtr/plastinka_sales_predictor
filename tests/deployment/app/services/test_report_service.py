@@ -37,6 +37,7 @@ def test_generate_report_success(mock_dal):
     assert "quantile_50" in report_df.columns
     mock_dal.get_report_features.assert_called_once_with(
         prediction_month=date(2023, 1, 1),
+        model_id=mock_dal.get_active_model().__getitem__(),
         filters={"artist": "Test Artist"}
     )
 

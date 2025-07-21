@@ -203,7 +203,7 @@ class TestDataSphereNewArchitecture:
             metrics_data={"mape": 5.0},
             connection=mock_datasphere_env["mocked_db_conn"]
         )
-        assert result_model_id.startswith("test_model_new_arch_")
+        assert result_model_id == "test_model_new_arch"
 
         # Verify model was copied to permanent location
         expected_permanent_path = os.path.join(

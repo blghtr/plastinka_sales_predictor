@@ -326,7 +326,7 @@ class DataSphereSettings(BaseSettings):
     )
     
     yc_profile: str = Field(
-        default="",
+        default="datasphere-prod",
         description="Yandex Cloud CLI profile name for service account authentication.",
     )
     
@@ -377,6 +377,16 @@ class DataSphereSettings(BaseSettings):
         allowed = {"auto", "yc_profile", "oauth_token"}
         if v not in allowed:
             raise ValueError(f"Invalid auth_method '{v}'. Allowed values: {allowed}")
+        return v
+
+    @field_validator("oauth_token", mode="before")
+    @classmethod
+    def validate_oauth_token(cls, v: str):
+        # Check if YC_OAUTH_TOKEN environment variable is set
+        import os
+        yc_token = os.environ.get("YC_OAUTH_TOKEN")
+        if yc_token and not v:
+            return yc_token
         return v
 
     @property

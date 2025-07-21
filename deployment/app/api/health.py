@@ -275,7 +275,7 @@ async def health_check(
 
         raise HTTPException(
             status_code=error.status_code,
-            detail=error.to_response_model().model_dump()
+            detail=error.message
         )
 
     # If healthy, return the regular HealthResponse

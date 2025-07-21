@@ -407,7 +407,7 @@ class TestDataSphereSettings:
         # Assert
         assert settings.project_id == ""
         assert settings.folder_id == ""
-        assert settings.oauth_token is None
+        assert settings.oauth_token == ""
         assert settings.yc_profile == "datasphere-prod"
         assert settings.max_polls == 72
         assert settings.poll_interval == 300.0

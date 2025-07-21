@@ -144,18 +144,23 @@ class SQLFeatureStore:
             logger.warning(f"No valid data to save for feature type '{feature_type}'")
             return
 
-        # 4. Clear existing data if not appending
-        if not append:
-            cursor = self.db_conn.cursor()
-            cursor.execute(f"DELETE FROM {table}")
+        # Conditional logic for saving based on feature type
+        if feature_type == "stock":
+            # For stock, never delete existing data and ignore new data if PK exists.
+            query = f"INSERT OR IGNORE INTO {table} (multiindex_id, data_date, value) VALUES (?, ?, ?)"
+            execute_many(query, params_list, self.db_conn)
+            logger.info(f"Saved/ignored {len(params_list)} records to {table} (non-overwrite mode)")
+        else:
+            # For other types (sales, prices, change), maintain original behavior (overwrite or append)
+            # 4. Clear existing data if not appending
+            if not append:
+                cursor = self.db_conn.cursor()
+                cursor.execute(f"DELETE FROM {table}")
 
-        # 5. Insert new data in a single batch
-        query = f"INSERT OR REPLACE INTO {table} (multiindex_id, data_date, value) VALUES (?, ?, ?)"
-        
-        # Use execute_many for batch insertion
-        execute_many(query, params_list, self.db_conn)
-
-        logger.info(f"Saved {len(params_list)} records to {table}")
+            # 5. Insert new data in a single batch
+            query = f"INSERT OR REPLACE INTO {table} (multiindex_id, data_date, value) VALUES (?, ?, ?)"
+            execute_many(query, params_list, self.db_conn)
+            logger.info(f"Saved {len(params_list)} records to {table}")
 
     def _convert_to_date_str(self, date_value: Any) -> str:
         """Convert various date formats to a standard date string."""

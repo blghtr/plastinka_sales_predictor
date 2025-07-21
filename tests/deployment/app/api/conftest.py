@@ -78,6 +78,9 @@ def mock_dal():
     # --- create_model_record ---
     dal.create_model_record.return_value = None
 
+    # --- get_active_model_primary_metric ---
+    dal.get_active_model_primary_metric.return_value = 0.8  # Return a healthy metric value (above 0.5 threshold)
+
     # --- list_jobs ---
     dal.list_jobs.return_value = [
         {"job_id": "test-job-id", "job_type": "training", "status": "completed", "created_at": str(datetime.now()), "parameters": {}, "progress": 100},
@@ -331,6 +334,7 @@ def mock_settings(monkeypatch, tmp_path_factory):
         auto_select_best_configs=False,
         auto_select_best_model=False,
         sqlite_max_variables=900, # Added for batching fix
+        metric_thesh_for_health_check=0.5, # Added for health check mock
     )
     monkeypatch.setattr("deployment.app.config.get_settings", lambda: settings)
     return settings

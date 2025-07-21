@@ -174,61 +174,124 @@ def test_save_stock_feature_with_mixed_types(feature_store_env):
         assert results[2]["value"] == 10
 
 
-def test_save_prices_feature_with_mixed_types(feature_store_env):
-    """Test saving prices feature with mixed data types."""
+def test_save_prices_replaces_by_multiindex(feature_store_env):
+    """Test that saving prices replaces records based on multiindex_id."""
     conn = feature_store_env["conn"]
     cursor = feature_store_env["cursor"]
-    
-    # Создаем правильный multiindex для колонок (10 элементов)
+
     idx_tuple = (
-        "1234567890",
-        "Test Artist", 
-        "Test Album",
-        "CD",
-        "Standard",
-        "Studio",
-        "2010s",
-        "2010s", 
-        "Rock",
-        2015,
+        "1234567890", "Test Artist", "Test Album", "CD", "Standard",
+        "Studio", "2010s", "2010s", "Rock", 2015,
     )
     index = pd.MultiIndex.from_tuples(
         [idx_tuple],
         names=[
-            "barcode",
-            "artist",
-            "album", 
-            "cover_type",
-            "price_category",
-            "release_type",
-            "recording_decade",
-            "release_decade",
-            "style",
-            "record_year",
+            "barcode", "artist", "album", "cover_type", "price_category",
+            "release_type", "recording_decade", "release_decade", "style", "record_year",
+        ],
+    )
+
+    date1 = pd.to_datetime("2023-08-01")
+    df1 = pd.DataFrame([[1000.0]], index=[date1], columns=index)
+
+    date2 = pd.to_datetime("2023-09-01")
+    df2 = pd.DataFrame([[1200.0]], index=[date2], columns=index)
+
+    with SQLFeatureStore(connection=conn, run_id=1) as store:
+        # Save initial price
+        store._save_feature("prices", df1)
+
+        cursor.execute("SELECT data_date, value FROM fact_prices WHERE multiindex_id = 1")
+        result1 = cursor.fetchone()
+        assert result1["data_date"] == "2023-08-01"
+        assert result1["value"] == 1000.0
+
+        # Save new price for the same multiindex, should replace the old one
+        store._save_feature("prices", df2, append=True)
+
+        cursor.execute("SELECT data_date, value FROM fact_prices WHERE multiindex_id = 1")
+        results = cursor.fetchall()
+        assert len(results) == 1  # Should be only one record
+        
+        final_result = results[0]
+        assert final_result["data_date"] == "2023-09-01"  # Date should be updated
+        assert final_result["value"] == 1200.0  # Value should be updated
+
+
+def test_save_stock_ignores_duplicates(feature_store_env):
+    """Test that saving stock data ignores duplicates for the same (multiindex_id, data_date)."""
+    conn = feature_store_env["conn"]
+    cursor = feature_store_env["cursor"]
+
+    idx_tuple = (
+        "1234567890", "Test Artist", "Test Album", "CD", "Standard",
+        "Studio", "2010s", "2010s", "Rock", 2015,
+    )
+    index = pd.MultiIndex.from_tuples(
+        [idx_tuple],
+        names=[
+            "barcode", "artist", "album", "cover_type", "price_category",
+            "release_type", "recording_decade", "release_decade", "style", "record_year",
         ],
     )
     
-    # Используем правильный унифицированный формат: дата в индексе, multiindex в колонках
     stock_date = pd.to_datetime("2023-08-01")
+    df1 = pd.DataFrame([[10.0]], index=[stock_date], columns=index)
+    df2 = pd.DataFrame([[20.0]], index=[stock_date], columns=index) # Same date, different value
+
+    with SQLFeatureStore(connection=conn, run_id=1) as store:
+        # Save initial stock
+        store._save_feature("stock", df1)
+
+        cursor.execute("SELECT value FROM fact_stock WHERE multiindex_id = 1 AND data_date = '2023-08-01'")
+        result1 = cursor.fetchone()
+        assert result1["value"] == 10.0
+
+        # Try to save new stock for the same date, it should be ignored
+        store._save_feature("stock", df2, append=True)
+        
+        cursor.execute("SELECT value FROM fact_stock WHERE multiindex_id = 1 AND data_date = '2023-08-01'")
+        result2 = cursor.fetchone()
+        assert result2["value"] == 10.0 # Value should NOT be updated
+
+        # Check that there's still only one record
+        cursor.execute("SELECT COUNT(*) as count FROM fact_stock WHERE multiindex_id = 1")
+        assert cursor.fetchone()["count"] == 1
+
+
+def test_load_prices_feature_loads_latest(feature_store_env):
+    """Test loading prices features gets the single, latest value."""
+    conn = feature_store_env["conn"]
     
-    # Тестируем разные типы данных
-    df = pd.DataFrame([[123.45]], index=[stock_date], columns=index)
-    df_int = pd.DataFrame([[100]], index=[stock_date], columns=index) 
-    df_str = pd.DataFrame([[99.99]], index=[stock_date], columns=index)
-    df_nan = pd.DataFrame([[np.nan]], index=[stock_date], columns=index)
+    idx_tuple = (
+        "1234567890", "Test Artist", "Test Album", "CD", "Standard",
+        "Studio", "2010s", "2010s", "Rock", 2015,
+    )
+    index = pd.MultiIndex.from_tuples(
+        [idx_tuple],
+        names=[
+            "barcode", "artist", "album", "cover_type", "price_category",
+            "release_type", "recording_decade", "release_decade", "style", "record_year",
+        ],
+    )
+    
+    date1 = pd.to_datetime("2023-05-01")
+    date2 = pd.to_datetime("2023-09-01") # This is the latest date
+    
+    df_save1 = pd.DataFrame([[1500.50]], index=[date1], columns=index)
+    df_save2 = pd.DataFrame([[1600.00]], index=[date2], columns=index)
     
     with SQLFeatureStore(connection=conn, run_id=1) as store:
-        store._save_feature("prices", df)
-        store._save_feature("prices", df_int, append=True)
-        store._save_feature("prices", df_str, append=True) 
-        store._save_feature("prices", df_nan, append=True)
+        store._save_feature("prices", df_save1)
+        store._save_feature("prices", df_save2, append=True) # This will replace the previous record
+        
+        loaded_df = store._load_feature("prices")
     
-    # Проверяем результат
-    query = "SELECT data_date, value FROM fact_prices WHERE multiindex_id = 1"
-    cursor.execute(query)
-    results = cursor.fetchall()
-    assert len(results) == 1  # nan не сохраняется, последнее значение перезаписывает предыдущие
-    assert results[0]["value"] in [123.45, 100, 99.99]
+    assert isinstance(loaded_df, pd.DataFrame)
+    assert not loaded_df.empty
+    assert len(loaded_df) == 1 # Should only load one row
+    assert loaded_df.index[0] == date2 # Index should be the latest date
+    assert loaded_df.loc[date2, idx_tuple] == 1600.00
 
 
 
@@ -685,8 +748,9 @@ def test_load_prices_feature(feature_store_env):
     assert loaded_df.columns[0] == idx_tuple
     
     # Проверяем значения
-    # В новом формате мы сохраняем все даты, а не только последнюю
-    assert loaded_df.loc[date1, idx_tuple] == 1500.50
+    # Prices should only have one value per multiindex_id (the latest one)
+    assert len(loaded_df) == 1  # Should only load one row
+    assert loaded_df.index[0] == date2  # Index should be the latest date
     assert loaded_df.loc[date2, idx_tuple] == 1600.00
     
     conn.execute("DELETE FROM fact_prices")
