@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from deployment.app.api.admin import router as admin_router
 from deployment.app.api.health import router as health_router
+from deployment.app.api.auth import router as auth_router
 
 # Import API routers
 from deployment.app.api.jobs import router as jobs_router
@@ -67,6 +68,7 @@ app.include_router(health_router)
 app.include_router(models_params_router)
 app.include_router(admin_router)
 app.include_router(results_router)
+app.include_router(auth_router)
 
 
 # Root endpoint

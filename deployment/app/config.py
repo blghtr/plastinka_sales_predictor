@@ -320,22 +320,19 @@ class DataSphereSettings(BaseSettings):
     project_id: str = Field(default="", description="ID of the DataSphere project")
     folder_id: str = Field(default="", description="Yandex Cloud folder ID")
     
-    # ОБНОВЛЕНО: OAuth токен теперь опциональный
-    oauth_token: str | None = Field(
-        default=None,
-        description="Yandex Cloud OAuth token (for user auth, optional if using service account)",
+    oauth_token: str = Field(
+        default="",
+        description="Yandex Cloud OAuth token for user authentication.",
     )
     
-    # НОВОЕ: Поддержка YC профиля для service account
-    yc_profile: str | None = Field(
-        default="datasphere-prod",  # Значение по умолчанию для продакшена
-        description="YC CLI profile name for service account authentication (preferred for production)"
+    yc_profile: str = Field(
+        default="",
+        description="Yandex Cloud CLI profile name for service account authentication.",
     )
     
-    # НОВОЕ: Приоритет аутентификации
     auth_method: str = Field(
-        default="auto",  # auto | yc_profile | oauth_token
-        description="Authentication method: 'auto' (detect best), 'yc_profile' (SA), 'oauth_token' (user)"
+        default="auto",
+        description="Authentication method: 'auto', 'yc_profile', or 'oauth_token'.",
     )
 
     # Polling configuration
@@ -374,6 +371,14 @@ class DataSphereSettings(BaseSettings):
         description="Timeout for DataSphere client job cancellation in seconds",
     )
 
+    @field_validator("auth_method", mode="before")
+    @classmethod
+    def validate_auth_method(cls, v: str):
+        allowed = {"auto", "yc_profile", "oauth_token"}
+        if v not in allowed:
+            raise ValueError(f"Invalid auth_method '{v}'. Allowed values: {allowed}")
+        return v
+
     @property
     def client(self) -> dict[str, Any]:
         """Get client configuration as a dictionary."""
@@ -382,7 +387,7 @@ class DataSphereSettings(BaseSettings):
             "folder_id": self.folder_id,
             "oauth_token": self.oauth_token,
             "yc_profile": self.yc_profile,
-            "auth_method": self.auth_method,  # НОВОЕ: передаем метод аутентификации
+            "auth_method": self.auth_method,
         }
 
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_datasphere_config
@@ -624,6 +629,10 @@ class AppSettings(BaseSettings):
     auto_select_best_model: bool = Field(
         default=True,
         description="Whether to automatically select the best model as active",
+    )
+    metric_thesh_for_health_check: float = Field(
+        default=1.2,
+        description="Minimum value of the primary metric for the active model to be considered healthy.",
     )
     project_root_dir: str = Field(
         default=str(Path(__file__).resolve().parents[2]),

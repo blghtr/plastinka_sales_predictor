@@ -207,6 +207,42 @@ async def health_check(
         "config": get_environment_status(),
     }
 
+    # Check active model metric
+    active_model_metric = dal.get_active_model_primary_metric()
+    settings = get_settings()
+
+    if active_model_metric is None:
+        components["active_model_metric"] = ComponentHealth(
+            status="degraded",
+            details={
+                "reason": "No active model found or primary metric not available."
+            },
+        )
+    elif active_model_metric < settings.metric_thesh_for_health_check:
+        if settings.default_metric_higher_is_better:
+            components["active_model_metric"] = ComponentHealth(
+                status="degraded",
+                details={
+                    "reason": f"Active model primary metric ({active_model_metric:.4f}) is below threshold ({settings.metric_thesh_for_health_check:.4f})."
+                },
+            )
+    else:
+        if not settings.default_metric_higher_is_better:
+            components["active_model_metric"] = ComponentHealth(
+                status="degraded",
+                details={
+                    "reason": f"Active model primary metric ({active_model_metric:.4f}) is above threshold ({settings.metric_thesh_for_health_check:.4f})."
+                },
+            )
+        else:
+            components["active_model_metric"] = ComponentHealth(
+                status="healthy",
+                details={
+                    "metric_value": active_model_metric,
+                    "threshold": settings.metric_thesh_for_health_check,
+                },
+            )
+
     # Determine overall status and HTTP status code
     overall_status = "healthy"
     http_status_code = 200  # Default to 200 OK

@@ -4,6 +4,8 @@ Centralized logic for checking required environment variables.
 """
 
 import os
+import json
+import urllib.request
 from typing import Dict, List, Any
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict
@@ -31,8 +33,7 @@ class EnvironmentConfig:
     
     # DataSphere authentication alternatives (need at least one)
     DATASPHERE_AUTH_VARS = {
-        "DATASPHERE_OAUTH_TOKEN": "OAuth token for DataSphere API access",
-        "DATASPHERE_YC_PROFILE": "YC CLI profile name for service account authentication",
+        "YC_OAUTH_TOKEN": "OAuth token for DataSphere API access",
     }
 
 
@@ -56,13 +57,100 @@ def check_datasphere_authentication() -> tuple[bool, List[str]]:
     Check DataSphere authentication configuration.
     Returns (has_auth, missing_description).
     """
-    has_oauth = bool(os.environ.get("DATASPHERE_OAUTH_TOKEN"))
-    has_profile = bool(os.environ.get("DATASPHERE_YC_PROFILE"))
+    has_oauth = bool(os.environ.get("YC_OAUTH_TOKEN"))
+    has_yc_profile = bool(os.environ.get("DATASPHERE_YC_PROFILE"))
     
-    if has_oauth or has_profile:
+    if has_oauth or has_yc_profile:
         return True, []
     
-    return False, ["DATASPHERE_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)"]
+    return False, ["YC_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)"]
+
+
+def check_yc_profile_health() -> ComponentHealth:
+    """
+    Check if the Yandex Cloud CLI profile is valid and accessible.
+    """
+    profile_name = os.environ.get("DATASPHERE_YC_PROFILE", "datasphere-prod")
+    
+    try:
+        # Check if yc CLI is available
+        import subprocess
+        result = subprocess.run(
+            ["yc", "config", "profile", "get", profile_name],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode == 0:
+            return ComponentHealth(status="healthy", details={"profile": profile_name})
+        else:
+            return ComponentHealth(
+                status="unhealthy", 
+                details={
+                    "error": f"Profile '{profile_name}' not found or invalid",
+                    "stderr": result.stderr
+                }
+            )
+    except subprocess.TimeoutExpired:
+        return ComponentHealth(
+            status="unhealthy",
+            details={"error": f"Timeout checking profile '{profile_name}'"}
+        )
+    except FileNotFoundError:
+        return ComponentHealth(
+            status="unhealthy",
+            details={"error": "yc CLI not found. Please install Yandex Cloud CLI"}
+        )
+    except Exception as e:
+        return ComponentHealth(
+            status="unhealthy",
+            details={"error": f"Error checking YC profile: {str(e)}"}
+        )
+
+
+def check_yc_token_health() -> ComponentHealth:
+    """
+    Check if the Yandex Cloud token is valid by making an API call.
+    """
+    token = os.environ.get("YC_OAUTH_TOKEN")
+    if not token:
+        return ComponentHealth(status="unhealthy", details={"error": "YC_OAUTH_TOKEN is not set."})
+
+    url = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
+    data = {"yandexPassportOauthToken": token}
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(data).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            if response.status == 200:
+                return ComponentHealth(status="healthy")
+            else:
+                return ComponentHealth(
+                    status="unhealthy",
+                    details={
+                        "error": f"Yandex IAM API returned status {response.status}",
+                        "response": response.read().decode("utf-8"),
+                    },
+                )
+    except urllib.error.HTTPError as e:
+        return ComponentHealth(
+            status="unhealthy",
+            details={
+                "error": f"Yandex IAM API request failed with HTTP status {e.code}",
+                "response": e.read().decode("utf-8"),
+            },
+        )
+    except Exception as e:
+        return ComponentHealth(
+            status="unhealthy",
+            details={"error": f"An unexpected error occurred while checking YC token health: {str(e)}"},
+        )
 
 
 def get_environment_status() -> ComponentHealth:
@@ -90,6 +178,27 @@ def get_environment_status() -> ComponentHealth:
         }
         return ComponentHealth(status="degraded", details=details)
     
+    # Check authentication method and validate accordingly
+    has_oauth = bool(os.environ.get("YC_OAUTH_TOKEN"))
+    has_yc_profile = bool(os.environ.get("DATASPHERE_YC_PROFILE"))
+    
+    if has_oauth:
+        # Check YC token health
+        token_health = check_yc_token_health()
+        if token_health.status != "healthy":
+            return token_health
+    elif has_yc_profile:
+        # Check YC profile health
+        profile_health = check_yc_profile_health()
+        if profile_health.status != "healthy":
+            return profile_health
+    else:
+        # This shouldn't happen due to check_datasphere_authentication above
+        return ComponentHealth(
+            status="unhealthy",
+            details={"error": "No authentication method configured"}
+        )
+
     return ComponentHealth(status="healthy")
 
 
@@ -102,8 +211,8 @@ def get_missing_variables_simple() -> List[str]:
     has_auth, _ = check_datasphere_authentication()
     
     if not has_auth:
-        # Add both auth options to the missing list for script display
-        missing.extend(["DATASPHERE_OAUTH_TOKEN", "DATASPHERE_YC_PROFILE"])
+        # Add auth option to the missing list for script display
+        missing.append("YC_OAUTH_TOKEN or DATASPHERE_YC_PROFILE")
     
     return missing
 
@@ -113,4 +222,4 @@ def get_all_variable_descriptions() -> Dict[str, str]:
     all_vars = {}
     all_vars.update(EnvironmentConfig.REQUIRED_VARS)
     all_vars.update(EnvironmentConfig.DATASPHERE_AUTH_VARS)
-    return all_vars 
+    return all_vars

@@ -512,7 +512,7 @@ DATASPHERE_PROJECT_ID=project123
 DATASPHERE_FOLDER_ID=folder456
 API_X_API_KEY=api_key_789
 API_ADMIN_API_KEY=admin_key_123
-DATASPHERE_OAUTH_TOKEN=oauth_token_def
+YC_OAUTH_TOKEN=oauth_token_def
         """
         dotenv_file = tmp_path / ".env"
         dotenv_file.write_text(dotenv_content)
@@ -523,7 +523,7 @@ DATASPHERE_OAUTH_TOKEN=oauth_token_def
             os.environ['DATASPHERE_FOLDER_ID'] = 'folder456'
             os.environ['API_X_API_KEY'] = 'api_key_789'
             os.environ['API_ADMIN_API_KEY'] = 'admin_key_123'
-            os.environ['DATASPHERE_OAUTH_TOKEN'] = 'oauth_token_def'
+            os.environ['YC_OAUTH_TOKEN'] = 'oauth_token_def'
             return True
 
         mock_load_dotenv.side_effect = dotenv_side_effect
@@ -558,7 +558,7 @@ DATASPHERE_OAUTH_TOKEN=oauth_token_def
         assert "API_ADMIN_API_KEY" in missing_vars_text
         assert "DATASPHERE_PROJECT_ID" in missing_vars_text
         assert "DATASPHERE_FOLDER_ID" in missing_vars_text
-        assert ("DATASPHERE_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text)
+        assert ("YC_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text)
 
     @patch('deployment.app.utils.environment.load_dotenv')
     def test_check_environment_healthy_with_legacy_api_key(self, mock_load_dotenv, tmp_path):
@@ -572,7 +572,7 @@ DATASPHERE_PROJECT_ID=project123
 DATASPHERE_FOLDER_ID=folder456
 API_X_API_KEY=api_key_789
 API_API_KEY=legacy_admin_key_123
-DATASPHERE_OAUTH_TOKEN=oauth_token_def
+YC_OAUTH_TOKEN=oauth_token_def
         """
         dotenv_file = tmp_path / ".env"
         dotenv_file.write_text(dotenv_content)
@@ -582,7 +582,7 @@ DATASPHERE_OAUTH_TOKEN=oauth_token_def
             'DATASPHERE_FOLDER_ID': 'folder456',
             'API_X_API_KEY': 'api_key_789',
             'API_API_KEY': 'legacy_admin_key_123',  # Legacy key
-            'DATASPHERE_OAUTH_TOKEN': 'oauth_token_def'
+            'YC_OAUTH_TOKEN': 'oauth_token_def'
         }, clear=True):
             # Act
             result = get_environment_status()
@@ -612,7 +612,7 @@ DATASPHERE_OAUTH_TOKEN=oauth_token_def
         assert result.status == "degraded"
         assert "missing_variables" in result.details
         missing_vars_text = " ".join(result.details["missing_variables"])
-        assert "DATASPHERE_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text
+        assert "YC_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text
 
     @patch('deployment.app.utils.environment.load_dotenv')
     def test_check_environment_healthy_with_yc_profile(self, mock_load_dotenv, tmp_path):

@@ -68,7 +68,6 @@ deployment/
 │   ├── modules/              # Reusable Terraform modules
 │   │   ├── datasphere_community/ # DataSphere community setup
 │   │   ├── datasphere_project/   # DataSphere project configuration
-│   │   └── service_account/      # Service account and IAM setup
 │   └── envs/
 │       └── prod/             # Production environment configuration
 ├── scripts/                  # Deployment and utility scripts

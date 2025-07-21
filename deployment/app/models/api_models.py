@@ -5,6 +5,11 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class YandexCloudToken(BaseModel):
+    """Model for Yandex Cloud OAuth token with validation."""
+    token: str = Field(..., pattern=r"^y[0-3]_[a-zA-Z0-9_-]+$", description="Yandex Cloud OAuth token")
+
+
 class JobStatus(str, Enum):
     """Enum for job status values"""
 

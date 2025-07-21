@@ -1019,6 +1019,46 @@ def get_active_model(connection: sqlite3.Connection = None) -> dict[str, Any] | 
             conn.close()
 
 
+    return result
+
+
+def get_active_model_primary_metric(connection: sqlite3.Connection = None) -> float | None:
+    """
+    Retrieves the primary metric of the currently active model.
+
+    Args:
+        connection: Optional existing database connection.
+
+    Returns:
+        The value of the primary metric as a float, or None if not found.
+    """
+    settings = get_settings()
+    primary_metric_name = settings.default_metric
+
+    if primary_metric_name not in ALLOWED_METRICS:
+        logger.error(f"Primary metric '{primary_metric_name}' is not in ALLOWED_METRICS.")
+        return None
+
+    query = f"""
+        SELECT
+            JSON_EXTRACT(tr.metrics, '$.{primary_metric_name}') as metric_value
+        FROM models m
+        JOIN training_results tr ON m.model_id = tr.model_id
+        WHERE m.is_active = 1
+        ORDER BY m.created_at DESC
+        LIMIT 1;
+    """
+
+    try:
+        result = execute_query(query, connection=connection)
+        if result and result["metric_value"] is not None:
+            return float(result["metric_value"])
+        return None
+    except (DatabaseError, ValueError, TypeError) as e:
+        logger.error(f"Could not retrieve or cast active model's primary metric: {e}", exc_info=True)
+        return None
+
+
 def set_model_active(
     model_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None
 ) -> bool:

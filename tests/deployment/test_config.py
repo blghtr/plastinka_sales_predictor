@@ -423,7 +423,7 @@ class TestDataSphereSettings:
         {
             "DATASPHERE_PROJECT_ID": "test-project",
             "DATASPHERE_FOLDER_ID": "test-folder",
-            "DATASPHERE_OAUTH_TOKEN": "test-token",
+            "YC_OAUTH_TOKEN": "test-token",
             "DATASPHERE_YC_PROFILE": "test-profile",
             "DATASPHERE_MAX_POLLS": "200",
             "DATASPHERE_POLL_INTERVAL": "10.0",

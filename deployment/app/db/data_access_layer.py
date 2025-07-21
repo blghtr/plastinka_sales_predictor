@@ -37,6 +37,7 @@ from deployment.app.db.database import (
     get_top_configs,
     get_tuning_results,
     get_training_results,
+    get_active_model_primary_metric,
     list_jobs,
     set_config_active,
     set_model_active,
@@ -129,6 +130,10 @@ class DataAccessLayer:
     def get_active_model(self, connection: sqlite3.Connection = None) -> Dict[str, Any] | None:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_active_model(connection)
+
+    def get_active_model_primary_metric(self, connection: sqlite3.Connection = None) -> float | None:
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return get_active_model_primary_metric(connection)
 
     def set_model_active(self, model_id: str, deactivate_others: bool = True, connection: sqlite3.Connection = None) -> bool:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])

@@ -1,6 +1,6 @@
 # Terraform Infrastructure for Plastinka Sales Predictor
 
-This directory contains a declarative description of Yandex Cloud resources required for the DataSphere project, with automatic creation and configuration of a service account.
+This directory contains a declarative description of Yandex Cloud resources required for the DataSphere project.
 
 > **Note**: This infrastructure is part of the comprehensive Plastinka Sales Predictor system. See the [main README](../../README.md) for a full system overview.
 
@@ -10,7 +10,6 @@ This directory contains a declarative description of Yandex Cloud resources requ
 modules/                    # Reusable modules
   datasphere_community/     # YC DataSphere Community
   datasphere_project/       # YC DataSphere Project  
-  service_account/          # YC Service Account with IAM roles
 
 envs/
   prod/                     # Configuration for production (single environment)
@@ -27,9 +26,8 @@ versions.tf                 # Global Terraform and provider version constraints
 
 This Terraform configuration deploys the necessary Yandex Cloud infrastructure for the Plastinka Sales Predictor, including:
 
-- **DataSphere Service Account**: A service account with the minimum necessary roles for working with DataSphere, Object Storage, and other cloud resources.
 - **DataSphere Community**: An organizational unit for grouping projects.
-- **DataSphere Project**: A DataSphere project with configured resource limits and绑定 to a service account.
+- **DataSphere Project**: A DataSphere project with configured resource limits.
 - **Automatic generation of `.env` file and API keys**: Upon the first application, Terraform will automatically create or update the `.env` file in the project root, and generate and add the necessary API keys for interaction with the FastAPI application.
 
 For a more detailed description of the system components, including the ML module and FastAPI application, please refer to the [main README](../../README.md).
@@ -64,7 +62,7 @@ terraform plan
 terraform apply
 ```
 
-This command will automatically configure the `yc CLI` profile, generate `sa-key.json`, and populate the `.env` file in the project root with the necessary environment variables, including API keys for the FastAPI application. Ensure that Python 3.x is installed in the environment where `terraform apply` is run.
+This command will populate the `.env` file in the project root with the necessary environment variables, including API keys for the FastAPI application. Ensure that Python 3.x is installed in the environment where `terraform apply` is run.
 
 
 ## 🔄 Using Existing Resources
@@ -80,9 +78,6 @@ This command will automatically configure the `yc CLI` profile, generate `sa-key
 
 1. **Get IDs of existing resources:**
 ```bash
-# Service Account
-yc iam service-account list --format json | jq -r '.[] | select(.name=="datasphere-sa-prod") | .id'
-
 # Community  
 yc datasphere community list --format json | jq -r '.[] | select(.name=="prod-ds-community") | .id'
 
@@ -98,10 +93,8 @@ yc_folder_id       = "your-folder-id"
 yc_organization_id = "your-org-id"
 
 # Using existing resources
-existing_service_account_id = "your-existing-service-account-id"
 existing_community_id       = "your-existing-community-id"
 existing_project_id         = "your-existing-project-id"
-# existing_static_key_id - if you already have a static key and want to use it
 ```
 
 3. **Apply the configuration:**
@@ -131,15 +124,13 @@ terraform output import_status
 # Example output:
 # {
 #   "community": "existing",
-#   "project": "created", 
-#   "service_account": "existing",
-#   "static_key": "existing"
+#   "project": "created"
 # }
 ```
 
 ## Retrieving Data After Apply
 
-After successfully applying Terraform, you can retrieve important output data necessary for further system configuration and operation. This data includes IDs of created resources and access keys.
+After successfully applying Terraform, you can retrieve important output data necessary for further system configuration and operation. This data includes IDs of created resources.
 
 ### Main Output Values:
 ```bash
@@ -148,14 +139,6 @@ terraform output datasphere_summary
 
 # DataSphere project ID
 terraform output datasphere_project_id
-
-# Service Account data
-terraform output service_account_id
-terraform output service_account_name
-
-# Access keys (sensitive)
-terraform output -raw static_access_key_id
-terraform output -raw static_secret_key
 ```
 
 ## Integration with the Main System
