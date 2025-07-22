@@ -4,7 +4,7 @@ Authentication related API endpoints.
 
 import os
 import subprocess
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
 import logging
 from typing import Any

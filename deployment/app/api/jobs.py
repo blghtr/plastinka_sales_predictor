@@ -3,16 +3,18 @@ import logging
 import os
 import shutil
 from datetime import datetime, date
-from pathlib import Path
+from pathlib import Path as PathLibPath
 
 import aiofiles
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     File,
     Form,
     HTTPException,
+    Path,
     Query,
     Request,
     UploadFile,
@@ -63,7 +65,7 @@ logger = logging.getLogger("plastinka.api")
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
 
-async def _save_uploaded_file(uploaded_file: UploadFile, directory: Path) -> Path:
+async def _save_uploaded_file(uploaded_file: UploadFile, directory: PathLibPath) -> PathLibPath:
     """Helper function to save UploadFile asynchronously."""
     file_path = directory / uploaded_file.filename
     try:
@@ -190,7 +192,7 @@ async def create_data_upload_job(
 
         # Создаем уникальную временную директорию для этого задания
         # Используем базовую директорию из настроек
-        base_temp_dir = Path(get_settings().temp_upload_dir)
+        base_temp_dir = PathLibPath(get_settings().temp_upload_dir)
         base_temp_dir.mkdir(
             parents=True, exist_ok=True
         )  # Убедимся, что базовая директория существует

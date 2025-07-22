@@ -13,7 +13,7 @@ from ..config import AppSettings, get_settings
 logger = logging.getLogger(__name__)
 
 # Define security scheme for bearer token
-bearer_scheme = HTTPBearer()
+bearer_scheme = HTTPBearer(auto_error=False)
 
 # Define security scheme for X-API-Key header
 api_key_header_scheme = APIKeyHeader(
@@ -111,8 +111,8 @@ async def get_current_api_key_validated(
 
 
 async def get_docs_auth(
-    bearer_token: HTTPAuthorizationCredentials | None = Security(bearer_scheme, auto_error=False),
-    api_key: str | None = Security(api_key_header_scheme, auto_error=False),
+    bearer_token: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
+    api_key: str | None = Security(api_key_header_scheme),
     settings: AppSettings = Depends(get_settings),
 ) -> bool:
     """

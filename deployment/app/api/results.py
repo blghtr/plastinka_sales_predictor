@@ -1,7 +1,7 @@
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
 from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.dependencies import get_dal_for_general_user
