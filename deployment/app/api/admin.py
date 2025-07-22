@@ -20,7 +20,8 @@ from ..db.data_access_layer import DataAccessLayer
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-@router.post("/data-retention/cleanup", response_model=dict[str, Any])
+@router.post("/data-retention/cleanup", response_model=dict[str, Any],
+             summary="Trigger a full data retention cleanup job.")
 async def trigger_cleanup_job(
     background_tasks: BackgroundTasks,
     admin_user: dict[str, Any] = Depends(get_admin_user),
@@ -29,59 +30,39 @@ async def trigger_cleanup_job(
     ),  # Use a lambda to make it depend-able
 ):
     """
-    Trigger a full data retention cleanup job to run in the background.
-
-    This endpoint requires admin authentication.
-
-    Returns:
-        Dict with status message
+    Starts a background task to perform all data retention and cleanup operations,
+    such as removing old predictions, historical data, and models, based on the
+    configured retention policies. Requires admin authentication.
     """
-    background_tasks.add_task(cleanup_job_func)
-    return {"status": "ok", "message": "Data retention cleanup job started"}
 
 
-@router.post("/data-retention/clean-predictions", response_model=dict[str, Any])
+@router.post("/data-retention/clean-predictions", response_model=dict[str, Any],
+             summary="Clean up old prediction results.")
 async def clean_predictions(
-    days_to_keep: int = None,
+    days_to_keep: int = Query(None, description="The number of days of prediction data to retain. Uses settings if not provided."),
     admin_user: dict[str, Any] = Depends(get_admin_user),
     dal: DataAccessLayer = Depends(get_dal),
 ):
     """
-    Clean up predictions older than the specified retention period.
-
-    This endpoint requires admin authentication.
-
-    Args:
-        days_to_keep: Number of days to keep predictions for.
-                      If None, uses the value from settings.
-
-    Returns:
-        Dict with cleanup results
+    Deletes prediction records older than the specified number of days.
+    If no period is specified, it uses the default from settings.
+    Requires admin authentication.
     """
     count = cleanup_old_predictions(days_to_keep, conn=dal.db_connection)
     return {"status": "ok", "records_removed": count, "days_kept": days_to_keep}
 
 
-@router.post("/data-retention/clean-historical", response_model=dict[str, Any])
+@router.post("/data-retention/clean-historical", response_model=dict[str, Any],
+             summary="Clean up old historical data.")
 async def clean_historical_data(
-    sales_days_to_keep: int = None,
-    stock_days_to_keep: int = None,
+    sales_days_to_keep: int = Query(None, description="The number of days of sales and price data to retain."),
+    stock_days_to_keep: int = Query(None, description="The number of days of stock data to retain."),
     admin_user: dict[str, Any] = Depends(get_admin_user),
     dal: DataAccessLayer = Depends(get_dal),
 ):
     """
-    Clean up historical sales, stock, price and stock change data older than the specified periods.
-
-    This endpoint requires admin authentication.
-
-    Args:
-        sales_days_to_keep: Number of days to keep sales and price data.
-                           If None, uses the value from settings.
-        stock_days_to_keep: Number of days to keep stock and stock change data.
-                           If None, uses the value from settings.
-
-    Returns:
-        Dict with cleanup results
+    Deletes historical sales, stock, and price data older than the specified periods.
+    Uses settings if periods are not provided. Requires admin authentication.
     """
     result = cleanup_old_historical_data(sales_days_to_keep, stock_days_to_keep, conn=dal.db_connection)
     return {
@@ -98,26 +79,18 @@ async def clean_historical_data(
     }
 
 
-@router.post("/data-retention/clean-models", response_model=dict[str, Any])
+@router.post("/data-retention/clean-models", response_model=dict[str, Any],
+             summary="Clean up old and inactive models.")
 async def clean_models(
-    models_to_keep: int = None,
-    inactive_days_to_keep: int = None,
+    models_to_keep: int = Query(None, description="The number of models to keep for each parameter set."),
+    inactive_days_to_keep: int = Query(None, description="The number of days to keep models that are not active."),
     admin_user: dict[str, Any] = Depends(get_admin_user),
     dal: DataAccessLayer = Depends(get_dal),
 ):
     """
-    Clean up old models based on retention policy.
-
-    This endpoint requires admin authentication.
-
-    Args:
-        models_to_keep: Number of models to keep per parameter set.
-                       If None, uses the value from settings.
-        inactive_days_to_keep: Number of days to keep inactive models.
-                              If None, uses the value from settings.
-
-    Returns:
-        Dict with cleanup results
+    Deletes old model files and records based on the retention policy, which includes
+    keeping a certain number of models per parameter set and removing models that have
+    been inactive for a specified period. Requires admin authentication.
     """
     removed_models = cleanup_old_models(models_to_keep, inactive_days_to_keep, conn=dal.db_connection)
     return {

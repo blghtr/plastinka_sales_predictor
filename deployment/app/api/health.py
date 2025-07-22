@@ -189,13 +189,14 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=HealthResponse)
+@router.get("", response_model=HealthResponse, summary="Perform a comprehensive health check of the API.")
 async def health_check(
     dal: DataAccessLayer = Depends(get_dal_system)
 ):
     """
-    Comprehensive health check endpoint.
-    Returns status of all system components.
+    Checks the status of all critical system components, including the API server,
+    database connection, required tables, data integrity, and the performance of the
+    active model. Returns an overall system status.
     """
     version = os.environ.get("APP_VERSION", "1.0.0")
     uptime = int(time.time() - start_time)
@@ -286,11 +287,12 @@ async def health_check(
     )
 
 
-@router.get("/system", response_model=SystemStatsResponse)
+@router.get("/system", response_model=SystemStatsResponse, summary="Get detailed system resource statistics.")
 async def system_stats(api_key: bool = Depends(get_current_api_key_validated)):
     """
-    Get detailed system statistics.
-    Returns CPU, memory, and disk usage.
+    Returns current CPU, memory, and disk usage statistics for the server,
+    as well as resource usage for the application process itself.
+    Requires API key authentication.
     """
     process = psutil.Process(os.getpid())
 
@@ -306,11 +308,12 @@ async def system_stats(api_key: bool = Depends(get_current_api_key_validated)):
     }
 
 
-@router.get("/retry-stats", response_model=RetryStatsResponse)
+@router.get("/retry-stats", response_model=RetryStatsResponse, summary="Get statistics about operation retries.")
 async def retry_statistics(api_key: bool = Depends(get_current_api_key_validated)):
     """
-    Get detailed statistics about operation retries.
-    Returns information about retry patterns and failure rates.
+    Retrieves detailed statistics on automated retry attempts for failed operations,
+    which can be useful for diagnosing transient issues.
+    Requires API key authentication.
     """
     # Get retry statistics from the monitor
     stats = get_retry_statistics()
@@ -327,10 +330,10 @@ async def retry_statistics(api_key: bool = Depends(get_current_api_key_validated
     }
 
 
-@router.post("/retry-stats/reset")
+@router.post("/retry-stats/reset", summary="Reset all retry statistics.")
 async def reset_retry_stats(api_key: bool = Depends(get_current_api_key_validated)):
     """
-    Reset all retry statistics.
+    Clears all accumulated retry statistics. Requires API key authentication.
     """
     reset_retry_statistics()
     return {"status": "ok", "message": "Retry statistics reset successfully"}

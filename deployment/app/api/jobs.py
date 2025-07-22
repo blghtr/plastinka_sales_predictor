@@ -116,29 +116,25 @@ def get_next_month(dataset_end_date) -> date:
         return date(dt.year, dt.month + 1, 1)
 
 
-@router.post("/data-upload", response_model=DataUploadResponse)
+@router.post("/data-upload", response_model=DataUploadResponse,
+             summary="Submit a job to upload and process sales and stock data.")
 async def create_data_upload_job(
     request: Request,
     background_tasks: BackgroundTasks,
-    stock_file: UploadFile = File(..., description="Excel (.xlsx, .xls) or CSV file with stock data"),
+    stock_file: UploadFile = File(..., description="An Excel or CSV file containing stock data."),
     sales_files: list[UploadFile] = File(
-        ..., description="Excel (.xlsx, .xls) or CSV files with sales data"
+        ..., description="One or more Excel or CSV files containing sales data."
     ),
     cutoff_date: str = Form(
-        "30.09.2022", description="Cutoff date for data processing (DD.MM.YYYY)"
+        "30.09.2022", description="The cutoff date for data processing in `DD.MM.YYYY` format."
     ),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
-    Submit a job to process data files.
-
-    This will:
-    1. Upload the files to a temporary location
-    2. Process them using the existing pipeline
-    3. Store processed features in the database
-
-    Returns a job ID that can be used to check the job status.
+    Accepts stock and sales data files, validates them, and queues a background job
+    to process the data and store it in the database. The `cutoff_date` determines
+    the time boundary for the data to be considered.
     """
     job_id = None
     temp_job_dir = None
@@ -348,19 +344,22 @@ async def create_data_upload_job(
         )
 
 
-@router.post("/training", response_model=TrainingResponse)
+@router.post("/training", response_model=TrainingResponse, summary="Submit a job to train a new model.")
 async def create_training_job(
     request: Request,
     background_tasks: BackgroundTasks,
-    params: TrainingParams,
+    params: TrainingParams | None = Body(None, description="An optional JSON object to specify `dataset_start_date` and `dataset_end_date` for the training data."),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
-    Submit a job to train a model using the active parameter set.
-    The prediction month is determined automatically.
+    Initiates a model training job using the currently active hyperparameter configuration.
+    The training dataset date range can be optionally specified. If not, the system
+    determines the date range automatically based on available data.
     """
     logger.info("Received request to create training job")
+    if params is None:
+        params = TrainingParams()
     dataset_start_date = params.dataset_start_date
     if dataset_start_date:
         dataset_start_date = dataset_start_date.isoformat()
@@ -452,21 +451,21 @@ async def create_training_job(
         )
 
 
-@router.post("/tuning", response_model=JobResponse)
+@router.post("/tuning", response_model=JobResponse, summary="Submit a hyperparameter tuning job.")
 async def create_tuning_job(
     request: Request,
     background_tasks: BackgroundTasks,
-    params: TuningParams,
+    params: TuningParams | None = Body(None, description="An optional JSON object to specify `mode` (`light` or `full`), `time_budget_s`, `dataset_start_date`, and `dataset_end_date`."),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
-    Submit a hyper-parameter tuning job.
-
-    Similar validation as /training, but optionally accepts `mode` (light/full).
-    Service will seed tuning with several best historical configs.
+    Starts a hyperparameter tuning process. It can be run in `light` or `full` mode.
+    The system uses historical configurations to seed the tuning process.
     """
     logger.info("Received request to create tuning job")
+    if params is None:
+        params = TuningParams()
     try:
         # Determine adjusted training end date automatically
         dataset_start_date = params.dataset_start_date
@@ -542,19 +541,17 @@ async def create_tuning_job(
             },
         ) from e
 
-@router.post("/reports", response_model=ReportResponse)
+@router.post("/reports", response_model=ReportResponse, summary="Generate a prediction report.")
 async def create_prediction_report_job(
     request: Request,
-    params: ReportParams,
+    params: ReportParams = Body(..., description="A JSON object specifying the `report_type`, `prediction_month`, and optional `filters`."),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
-    Generate and return a prediction report immediately.
-
-    This will:
-    1. Generate the report data directly.
-    2. Return the report as a CSV string in the response.
+    Creates and returns a report based on prediction results for a specified month.
+    If no month is provided, it defaults to the latest month with available predictions.
+    The report can be filtered and is returned as a CSV string.
     """
     try:
         prediction_month = params.prediction_month
@@ -609,17 +606,16 @@ async def create_prediction_report_job(
         ) from e
 
 
-@router.get("/{job_id}", response_model=JobDetails)
+@router.get("/{job_id}", response_model=JobDetails, summary="Get the status and details of a specific job.")
 async def get_job_status(
     request: Request,
-    job_id: str,
+    job_id: str = Path(..., description="The unique identifier of the job."),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
-    Get the status and details of a job.
-
-    If the job is completed, this will also include the results.
+    Retrieves the current status, progress, and other details of a job by its ID.
+    If the job is completed, the response will include the results.
     """
     try:
         job = dal.get_job(job_id)
@@ -763,17 +759,17 @@ async def get_job_status(
         )
 
 
-@router.get("", response_model=JobsList)
+@router.get("", response_model=JobsList, summary="List all jobs with optional filtering.")
 async def list_all_jobs(
     request: Request,
-    job_type: JobType | None = None,
-    status: JobStatus | None = None,
-    limit: int = Query(100, ge=1, le=1000),
+    job_type: JobType | None = Query(None, description="The type of job to filter by (e.g., `training`, `data_upload`)."),
+    status: JobStatus | None = Query(None, description="The status of the job to filter by (e.g., `pending`, `completed`, `failed`)."),
+    limit: int = Query(100, ge=1, le=1000, description="The maximum number of jobs to return."),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
-    List all jobs with optional filtering by type and status.
+    Retrieves a list of all jobs, which can be filtered by `job_type` and `status`.
     """
     try:
         jobs_data = dal.list_jobs(

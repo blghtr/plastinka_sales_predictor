@@ -49,12 +49,17 @@ logger = logging.getLogger("plastinka.api.model_params")
 
 
 # Config Endpoints
-@router.get("/configs/active", response_model=ConfigResponse)
+@router.get("/configs/active", response_model=ConfigResponse,
+             summary="Get the currently active hyperparameter configuration.")
 async def get_active_config_endpoint(
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
-    """Get the currently active config."""
+    """
+    Retrieves the full details of the parameter set that is currently marked as active.
+    This configuration is used by default for new training jobs.
+    Returns a 404 error if no configuration is currently active.
+    """
     active_config = dal.get_active_config()
     if not active_config:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
@@ -65,12 +70,17 @@ async def get_active_config_endpoint(
     return active_config
 
 
-@router.post("/configs/{config_id}/set-active")
+@router.post("/configs/{config_id}/set-active",
+             summary="Set a specific hyperparameter configuration as active.")
 async def activate_config(
-    config_id: str, api_key: bool = Depends(get_current_api_key_validated),
+    config_id: str = Path(..., description="The unique identifier (ID) of the configuration to activate."),
+    api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
-    """Set a config as active."""
+    """
+    Marks a chosen parameter set as the active one for future training jobs.
+    This deactivates any previously active configuration.
+    """
     if dal.set_config_active(config_id):
         return {"success": True, "message": f"Config {config_id} set as active"}
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
@@ -80,18 +90,24 @@ async def activate_config(
     ).model_dump())
 
 
-@router.get("/configs/best", response_model=ConfigResponse)
+@router.get("/configs/best", response_model=ConfigResponse,
+             summary="Get the best hyperparameter configuration based on a metric.")
 async def get_best_config(
-    metric_name: str = Query(None, description="Metric name to use for comparison"),
+    metric_name: str = Query(
+        None,
+        description="The name of the metric to use for comparison (e.g., \"val_MIWS_MIC_Ratio\"). If omitted, the default metric from settings will be used."
+    ),
     higher_is_better: bool = Query(
-        True, description="Whether higher values are better"
+        True, 
+        description="A boolean flag indicating the desired direction of the metric. Set to `true` if higher values are better, `false` otherwise."
     ),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
-    Get the best config based on a metric.
-    Uses the default metric from settings if none provided.
+    Finds and returns the configuration that has the best recorded performance
+    for a specific metric. If no metric is specified, it uses the default
+    metric defined in the application settings.
     """
     # Use default metric from settings if none provided
     if not metric_name:
@@ -113,16 +129,17 @@ async def get_best_config(
 # Endpoint to list and delete configs
 
 
-@router.get("/configs", response_model=list[ConfigResponse])
+@router.get("/configs", response_model=list[ConfigResponse],
+             summary="Get a list of all available hyperparameter configurations.")
 async def get_configs_endpoint(
     limit: int = Query(
-        100, ge=1, le=1000, description="Maximum number of configs to return"
+        100, ge=1, le=1000, description="The maximum number of configurations to return in the list."
     ),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
-    Get a list of all configs.
+    Retrieves a paginated list of all saved hyperparameter configurations.
     """
     configs_list = dal.get_configs(limit=limit)
     if not configs_list:
@@ -131,14 +148,16 @@ async def get_configs_endpoint(
     return configs_list
 
 
-@router.post("/configs/delete", response_model=DeleteResponse)
+@router.post("/configs/delete", response_model=DeleteResponse,
+             summary="Delete one or more hyperparameter configurations.")
 async def delete_configs(
-    request: DeleteIdsRequest, api_key: bool = Depends(get_current_api_key_validated),
+    request: DeleteIdsRequest = Body(..., description="A JSON object containing a list of configuration IDs to delete."),
+    api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
-    Delete multiple configs by their IDs.
-    Active configs cannot be deleted.
+    Deletes the specified configurations by their IDs. The active configuration
+    cannot be deleted.
     """
     if not request.ids:
         # Modified to return HTTPException directly, as DeleteResponse might not be suitable for empty request body validation error
@@ -157,12 +176,16 @@ async def delete_configs(
 
 
 # Model Endpoints
-@router.get("/models/active", response_model=ModelResponse)
+@router.get("/models/active", response_model=ModelResponse, summary="Get the currently active model.")
 async def get_active_model_endpoint(
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
-    """Get the currently active model."""
+    """
+    Retrieves the details of the model currently marked as active.
+    This model is used for generating predictions.
+    Returns a 404 error if no model is active.
+    """
     active_model = dal.get_active_model()
     if not active_model:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
@@ -173,12 +196,16 @@ async def get_active_model_endpoint(
     return active_model
 
 
-@router.post("/models/{model_id}/set-active")
+@router.post("/models/{model_id}/set-active", summary="Set a specific model as active.")
 async def activate_model(
-    model_id: str, api_key: bool = Depends(get_current_api_key_validated),
+    model_id: str = Path(..., description="The unique identifier (ID) of the model to activate."),
+    api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
-    """Set a model as active."""
+    """
+    Marks a chosen model as the active one for generating predictions.
+    This deactivates any previously active model.
+    """
     if dal.set_model_active(model_id, deactivate_others=True):
         return {"success": True, "message": f"Model {model_id} set as active"}
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
@@ -188,18 +215,23 @@ async def activate_model(
     ).model_dump())
 
 
-@router.get("/models/best", response_model=ModelResponse)
+@router.get("/models/best", response_model=ModelResponse, summary="Get the best model based on a performance metric.")
 async def get_best_model(
-    metric_name: str = Query(None, description="Metric name to use for comparison"),
+    metric_name: str = Query(
+        None,
+        description="The name of the metric to use for comparison (e.g., \"val_MIWS_MIC_Ratio\"). If omitted, the default metric from settings will be used."
+    ),
     higher_is_better: bool = Query(
-        True, description="Whether higher values are better"
+        True, 
+        description="A boolean flag indicating the desired direction of the metric. Set to `true` if higher values are better, `false` otherwise."
     ),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
-    Get the best model based on a metric.
-    Uses the default metric from settings if none provided.
+    Finds and returns the model that has the best recorded performance
+    for a specific metric from its training results. If no metric is specified,
+    it uses the default metric from the application settings.
     """
     # Use default metric from settings if none provided
     if not metric_name:
@@ -218,15 +250,15 @@ async def get_best_model(
     return best_model
 
 
-@router.get("/models/recent", response_model=list[ModelResponse])
+@router.get("/models/recent", response_model=list[ModelResponse], summary="Get a list of the most recently created models.")
 async def get_recent_models_endpoint(
     limit: int = Query(
-        5, ge=1, le=100, description="Maximum number of models to return"
+        5, ge=1, le=100, description="The maximum number of recent models to return."
     ),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
-    """Get the most recent models, ordered by creation date."""
+    """Retrieves a list of the most recent models, ordered by their creation date."""
     models = dal.get_recent_models(limit)
     if not models:
         return []
@@ -265,16 +297,16 @@ async def get_recent_models_endpoint(
 # добавляем эндпоинты для списка моделей и удаления
 
 
-@router.get("/models", response_model=list[ModelResponse])
+@router.get("/models", response_model=list[ModelResponse], summary="Get a list of all available models.")
 async def get_all_models_endpoint(
     limit: int = Query(
-        100, ge=1, le=1000, description="Maximum number of models to return"
+        100, ge=1, le=1000, description="The maximum number of models to return in the list."
     ),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
-    Get a list of all models.
+    Retrieves a paginated list of all saved models in the system.
     """
     models_list = dal.get_all_models(limit=limit)
     if not models_list:
@@ -283,14 +315,15 @@ async def get_all_models_endpoint(
     return models_list
 
 
-@router.post("/models/delete", response_model=DeleteResponse)
+@router.post("/models/delete", response_model=DeleteResponse, summary="Delete one or more models.")
 async def delete_models(
-    request: DeleteIdsRequest, api_key: bool = Depends(get_current_api_key_validated),
+    request: DeleteIdsRequest = Body(..., description="A JSON object containing a list of model IDs to delete."),
+    api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
-    Delete multiple models by their IDs and their associated files.
-    Active models cannot be deleted.
+    Deletes the specified models by their IDs, including their associated model files from storage.
+    The active model cannot be deleted.
     """
     if not request.ids:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ErrorDetailResponse(
@@ -308,13 +341,19 @@ async def delete_models(
 
 
 # --- Upload/Create Config Endpoint ---
-@router.post("/configs/upload", response_model=ConfigResponse)
+@router.post("/configs/upload", response_model=ConfigResponse, summary="Create a new hyperparameter configuration.")
 async def upload_config(
-    request: ConfigCreateRequest = Body(...),
+    request: ConfigCreateRequest = Body(
+        ..., 
+        description="A JSON object containing the configuration payload (`json_payload`) and a boolean flag (`is_active`) to set it as active."
+    ),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
-    """Upload (create) a new config."""
+    """
+    Uploads a new set of hyperparameters and saves it as a configuration.
+    Optionally, it can be set as the active configuration upon creation.
+    """
     try:
         config_id = dal.create_or_get_config(
             request.json_payload, is_active=request.is_active, source="manual_upload"
@@ -339,19 +378,21 @@ async def upload_config(
 
 
 # --- Upload/Create Model Endpoint ---
-@router.post("/models/upload", response_model=ModelResponse)
+@router.post("/models/upload", response_model=ModelResponse, summary="Upload a new model file.")
 async def upload_model(
-    model_file: UploadFile = File(..., description="Model onnx file"),
-    model_id: str = Form(..., description="Unique model identifier"),
-    job_id: str | None = Form(
-        None, description="Job ID that produced the model (optional)"
-    ),
-    is_active: bool = Form(False, description="Set as active after creation"),
-    created_at: str = Form(None, description="Creation timestamp (ISO format)"),
-    metadata: str = Form(None, description="Model metadata as JSON string"),
+    model_file: UploadFile = File(..., description="The model file to be uploaded (e.g., `model.onnx`)."),
+    model_id: str = Form(..., description="A unique identifier for the new model."),
+    job_id: str | None = Form(None, description="The optional ID of the training job that produced this model."),
+    is_active: bool = Form(False, description="If `true`, sets the model as active immediately after upload."),
+    created_at: str = Form(None, description="An optional ISO format timestamp for when the model was created. Defaults to now."),
+    metadata: str = Form(None, description="An optional JSON string containing metadata about the model."),
     api_key: bool = Depends(get_current_api_key_validated),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
+    """
+    Uploads a model file (e.g., in ONNX format) and creates a corresponding model record in the database.
+    Allows associating the model with a job, setting it as active, and embedding metadata.
+    """
     from datetime import datetime
 
     try:

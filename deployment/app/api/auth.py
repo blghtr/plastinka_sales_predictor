@@ -16,14 +16,16 @@ from ..config import get_settings
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-@router.post("/yc-token", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/yc-token", status_code=status.HTTP_204_NO_CONTENT,
+             summary="Set the Yandex Cloud OAuth token.")
 async def set_yc_token(
-    payload: YandexCloudToken,
+    payload: YandexCloudToken = Body(..., description="A JSON object containing the `token` string."),
     admin_user: dict[str, Any] = Depends(get_admin_user),
 ):
     """
-    Set the Yandex Cloud OAuth token by configuring the 'yc' CLI profile.
-    This token will be used for all subsequent DataSphere API calls.
+    Configures the Yandex Cloud CLI profile with the provided OAuth token. This token is
+    used for authenticating with the DataSphere API for running jobs.
+    Requires admin authentication.
     """
     if not payload.token:
         raise HTTPException(

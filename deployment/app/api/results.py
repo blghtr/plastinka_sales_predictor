@@ -16,12 +16,14 @@ logger = logging.getLogger("plastinka.api.results")
 router = APIRouter(prefix="/api/v1/results", tags=["results"])
 
 
-@router.get("/training", response_model=List[TrainingResultResponse])
+@router.get("/training", response_model=List[TrainingResultResponse], summary="Get a list of recent training results.")
 async def get_training_results(
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
     api_key: bool = Depends(get_current_api_key_validated),
 ):
-    """Get a list of recent training results."""
+    """
+    Retrieves a list of results from recent model training jobs, including metrics and parameters.
+    """
     try:
         results = dal.get_training_results()
         return [TrainingResultResponse(**res) for res in results]
@@ -35,13 +37,15 @@ async def get_training_results(
         )
 
 
-@router.get("/training/{result_id}", response_model=TrainingResultResponse)
+@router.get("/training/{result_id}", response_model=TrainingResultResponse, summary="Get a single training result by its ID.")
 async def get_training_result_by_id(
-    result_id: str,
+    result_id: str = Path(..., description="The unique identifier of the training result."),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
     api_key: bool = Depends(get_current_api_key_validated),
 ):
-    """Get a single training result by its ID."""
+    """
+    Retrieves the detailed results of a specific training job by its result ID.
+    """
     try:
         result = dal.get_training_results(result_id=result_id)
         if not result:
@@ -59,15 +63,18 @@ async def get_training_result_by_id(
         )
 
 
-@router.get("/tuning", response_model=List[TuningResultResponse])
+@router.get("/tuning", response_model=List[TuningResultResponse], summary="Get a list of recent hyperparameter tuning results.")
 async def get_tuning_results(
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
     api_key: bool = Depends(get_current_api_key_validated),
-    metric_name: str = Query(None, description="Metric name to use for comparison"),
-    higher_is_better: bool = Query(True, description="Whether higher values are better"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of tuning results to return"),
+    metric_name: str = Query(None, description="The metric to sort the results by."),
+    higher_is_better: bool = Query(True, description="Boolean flag indicating if higher metric values are better."),
+    limit: int = Query(100, ge=1, le=1000, description="The maximum number of tuning results to return."),
 ):
-    """Get a list of recent tuning results."""
+    """
+    Retrieves a list of results from recent hyperparameter tuning jobs,
+    which can be ordered by a specified metric.
+    """
     try:
         results = dal.get_tuning_results(metric_name=metric_name, higher_is_better=higher_is_better, limit=limit, result_id=None)
         return [TuningResultResponse(**res) for res in results]
@@ -81,13 +88,15 @@ async def get_tuning_results(
         )
 
 
-@router.get("/tuning/{result_id}", response_model=TuningResultResponse)
+@router.get("/tuning/{result_id}", response_model=TuningResultResponse, summary="Get a single tuning result by its ID.")
 async def get_tuning_result_by_id(
-    result_id: str,
+    result_id: str = Path(..., description="The unique identifier of the tuning result."),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
     api_key: bool = Depends(get_current_api_key_validated),
 ):
-    """Get a single tuning result by its ID."""
+    """
+    Retrieves the detailed results of a specific tuning job by its result ID.
+    """
     try:
         result = dal.get_tuning_results(result_id=result_id)
         if not result:
