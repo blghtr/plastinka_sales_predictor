@@ -118,12 +118,15 @@ class TestHealthCheckEndpoint:
         response = client.get("/health/")
 
         # Assert
-        assert response.status_code == 200 # Degraded status typically returns 200
+        assert response.status_code == 200  # Degraded status returns 200
         data = response.json()
-        assert data["error"]["message"] == "API is degraded."
-        assert data["error"]["code"] == "http_200"
-        assert "details" in data["error"]
-        # Note: The details are not preserved in the error wrapper, so we can't test them
+        assert data["status"] == "degraded"  # Status should be degraded in response body
+        assert "components" in data
+        assert data["components"]["config"]["status"] == "degraded"
+        assert data["components"]["database"]["status"] == "healthy"
+        assert "version" in data
+        assert "timestamp" in data
+        assert "uptime_seconds" in data
         mock_check_db.assert_called_once()
         mock_check_env.assert_called_once()
 
