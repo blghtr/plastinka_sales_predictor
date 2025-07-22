@@ -879,6 +879,11 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
     validated.loc[:, "Штрихкод"] = validated["Штрихкод"].map(
         lambda x: x.replace(" ", "").lstrip("0")
     )
+
+    validated.loc[:, "Цена, руб."] = pd.to_numeric(
+        validated["Цена, руб."], errors='coerce'
+    ).astype("int64")
+
     validated = validated.dropna(
         subset=[
             "Исполнитель",
@@ -951,7 +956,8 @@ def categorize_prices(
     df: pd.DataFrame, bins=None, q=(0.05, 0.3, 0.5, 0.75, 0.9, 0.95, 0.99)
 ) -> Sequence:
     df = df.copy()
-    prices = df["Цена, руб."].astype("int64")
+    prices = df["Цена, руб."]
+
     if bins is None:
         df["Ценовая категория"], bins = pd.qcut(prices, q=q, retbins=True)
 
@@ -999,9 +1005,14 @@ def process_data(
     all_keys = ["Дата создания", "Дата продажи", *GROUP_KEYS]
 
     # Define transform functions for different use cases
-    def count_items(group):
+    def process_stock(group):
         """Sum 'Экземпляры' field in a group for stock calculation"""
-        return pd.Series({"count": group["Экземпляры"].astype("int64").sum()})
+        return pd.Series(
+            {
+                "count": group["Экземпляры"].astype("int64").sum(),
+                "mean_price": group["Цена, руб."].astype("float64").mean(),
+            }
+        )
 
     def process_movements(group):
         """
@@ -1037,7 +1048,9 @@ def process_data(
         prices = sales.groupby(keys_no_dates).agg(mean_price=("mean_price", "mean"))
 
         # Prepare grouping keys for sold / arrived ensuring presence in dataframe
-        sold_keys = [k for k in all_keys if k != "Дата создания" and k in sales.columns]
+        sold_keys = [
+            k for k in all_keys if k != "Дата создания" and k in sales.columns
+        ]
         arrived_keys = [
             k for k in all_keys if k != "Дата продажи" and k in sales.columns
         ]
@@ -1073,18 +1086,19 @@ def process_data(
 
     # Process actual stock data
     stock_df = pd.read_excel(stock_path, dtype="str")
-    counted_df, bins = get_preprocessed_df(
-        stock_df, all_keys, transform_fn=count_items, bins=bins
+    preprocessed_stock_df, _ = get_preprocessed_df(
+        stock_df, all_keys, transform_fn=process_stock, bins=bins
     )
 
-    filtered_df = filter_by_date(counted_df, cutoff_date, cut_before=False)
-
-    # Group by non-date keys for stock counting
-    stock = filtered_df.groupby(keys_no_dates)["count"].sum().to_frame()
+    stock, prices_from_stock = _process_stock(
+        preprocessed_stock_df, 
+        keys_no_dates
+    )
 
     # Prepare for stock history
     features = defaultdict(list)
     features["stock"].append(stock)
+    features["prices"].append(prices_from_stock)
     # ------------------------------------------------------------------
     # Collect sales files (support both directory with Excel files and a
     # single file path that may point to .xlsx/.xls or .csv). This makes
@@ -1096,22 +1110,19 @@ def process_data(
     sales_path_str = str(sales_path)
     # If explicit file extension provided – treat as single file even if the
     # physical file may be absent (unit-tests rely on mocked I/O).
-    if sales_path_str.lower().endswith(".csv") or sales_path_str.lower().endswith(
-        (".xls", ".xlsx")
-    ):
-        sales_files.append(Path(sales_path))
+    if sales_path_str.lower().endswith((".csv", ".xlsx", ".xls")):
+        sales_files.append(Path(sales_path))    
     # Otherwise, if the path exists and is a file
     elif Path(sales_path).is_file():
-        sales_files.append(Path(sales_path))
-    # If the path exists and is a directory, find Excel files within it
+        raise ValueError("Sales path is an unsupported file, not a directory")
+    # If the path exists and is a directory, find supported files within it
     elif Path(sales_path).is_dir():
         sales_files.extend(Path(sales_path).glob("*.xls*"))
+        sales_files.extend(Path(sales_path).glob("*.xlsx"))
+        sales_files.extend(Path(sales_path).glob("*.csv"))
+
     else:
-        # No files found – fallback to using the directory path itself
-        # (unit-tests patch ``pd.read_csv`` and expect a single call),
-        # so we avoid reading individual Excel files which would trigger
-        # multiple ``read_excel`` calls and fail the expectation.
-        sales_files.append(Path(sales_path))
+        raise ValueError("Sales path does not lead to a valid file or directory.")
 
     # Process sales files
     file_df = pd.DataFrame()
@@ -1119,37 +1130,46 @@ def process_data(
         try:
             if str(p).lower().endswith(".csv"):
                 # Always use read_csv for CSV files (including mocked tests)
-                current_df = pd.read_csv(p, dtype="str")
+                file_df = pd.read_csv(
+                    p, 
+                    dtype="str",
+                    index_col=None
+                )
             else:
                 # Use read_excel for Excel files
-                current_df = pd.read_excel(p, dtype="str")
+                file_df = pd.read_excel(
+                    p,
+                    dtype="str",
+                    index_col=None
+                )
 
-            if not current_df.empty:
-                if file_df.empty:
-                    file_df = current_df
-                else:
-                    file_df = pd.concat([file_df, current_df], ignore_index=True)
         except Exception as e:
             print(f"Warning: Could not read file {p}: {e}")
             continue
 
-    if not file_df.empty:
-        preprocessed_df, _ = get_preprocessed_df(
-            file_df, all_keys, transform_fn=process_movements, bins=bins
-        )
+        if not file_df.empty:
+            preprocessed_df, _ = get_preprocessed_df(
+                file_df, all_keys, transform_fn=process_movements, bins=bins
+            )
 
-        stock, prices_from_stock = _process_stock(preprocessed_df, keys_no_dates)
+            stock, prices_from_stock = _process_stock(
+                preprocessed_df, 
+                keys_no_dates
+            )
 
-        sales, change, prices_from_sales = _process_sales(
-            preprocessed_df, all_keys, keys_no_dates
-        )
+            sales, change, prices_from_sales = _process_sales(
+                preprocessed_df, all_keys, keys_no_dates
+            )
 
-        prices = pd.concat([prices_from_stock, prices_from_sales], axis=1)
+            prices = pd.concat(
+                [prices_from_stock, prices_from_sales], 
+                axis=1
+            ).mean(axis=1)
 
-        features["stock"].append(stock)
-        features["prices"].append(prices)
-        features["sales"].append(sales)
-        features["change"].append(change)
+            features["stock"].append(stock)
+            features["prices"].append(prices)
+            features["sales"].append(sales)
+            features["change"].append(change)
 
     for feature in features:
         if features[feature]:
