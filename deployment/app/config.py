@@ -181,6 +181,29 @@ class APISettings(BaseSettings):
         default=[],
         description="A list of origins that should be permitted to make cross-origin requests.",
     )
+    docs_security_enabled: bool = Field(
+        default=True,
+        description="Enable security for API documentation endpoints (/docs, /redoc). Defaults to True in production, False in development.",
+    )
+
+    @field_validator("docs_security_enabled", mode="before")
+    @classmethod
+    def set_default_docs_security(cls, v: bool | None, values: dict[str, Any]) -> bool:
+        """Set default value for docs_security_enabled based on environment."""
+        if v is not None:
+            return v
+        
+        # Fallback to environment variable if not explicitly provided
+        env_val = os.getenv("API_DOCS_SECURITY_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("true", "1", "yes")
+
+        # Default based on app environment
+        app_env = values.get("env", "production")  # Default to production if env not set
+        is_dev = app_env.lower() == "development"
+        
+        logger.info(f"docs_security_enabled not set, defaulting to {not is_dev} for env: {app_env}")
+        return not is_dev
 
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_api_config
 

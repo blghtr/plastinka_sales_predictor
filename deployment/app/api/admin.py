@@ -5,7 +5,7 @@ Administrative API endpoints for system management tasks.
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 
 from ..db.data_retention import (
     cleanup_old_historical_data,

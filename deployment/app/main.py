@@ -2,7 +2,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from deployment.app.api.admin import router as admin_router
@@ -25,6 +25,9 @@ from deployment.app.logger_config import configure_logging
 
 # Import utils
 from deployment.app.utils.error_handling import configure_error_handlers
+
+# Import security dependencies
+from deployment.app.services.auth import get_docs_auth
 
 # Получаем актуальную версию пакета
 from plastinka_sales_predictor import __version__ as app_version
@@ -57,6 +60,7 @@ app = FastAPI(
     description="API for predicting vinyl record sales",
     version=app_version,
     lifespan=lifespan,
+    dependencies=[Depends(get_docs_auth)],
 )
 
 # Configure error handlers

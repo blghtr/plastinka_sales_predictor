@@ -108,3 +108,44 @@ async def get_current_api_key_validated(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-API-Key."
         )
     return True
+
+
+async def get_docs_auth(
+    bearer_token: HTTPAuthorizationCredentials | None = Security(bearer_scheme, auto_error=False),
+    api_key: str | None = Security(api_key_header_scheme, auto_error=False),
+    settings: AppSettings = Depends(get_settings),
+) -> bool:
+    """
+    Authenticate access to API documentation.
+    Supports both Bearer token (for admins) and X-API-Key (for general use).
+    """
+    if not settings.api.docs_security_enabled:
+        return True  # Security is disabled
+
+    # Check for Bearer token first
+    if bearer_token:
+        try:
+            # Reuse admin validation logic but handle exceptions locally
+            if bearer_token.scheme.lower() == "bearer" and bearer_token.credentials == settings.api.admin_api_key:
+                return True
+        except HTTPException:
+            # This will be caught and re-raised below if no other key is valid
+            pass
+
+    # Check for X-API-Key
+    if api_key:
+        try:
+            # Reuse API key validation logic
+            if await get_current_api_key_validated(api_key, settings):
+                return True
+        except HTTPException:
+            # This will be caught and re-raised below
+            pass
+
+    # If neither key is valid, raise an error
+    logger.warning("Unauthorized attempt to access API documentation.")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="You are not authorized to view the API documentation.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
