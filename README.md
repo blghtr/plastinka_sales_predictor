@@ -113,7 +113,7 @@ This project is composed of several key components, each with its own detailed d
 
 - **ML Module (`plastinka_sales_predictor/`)**: Contains the core machine learning logic, including data preparation, model implementation, metrics, and training utilities.
 - **FastAPI Application (`deployment/`)**: Provides the API endpoints for data ingestion, model training, prediction, and reporting. For detailed information on API usage, data flow, and application-specific troubleshooting, refer to the [Deployment README](deployment/README.md).
-- **Infrastructure (`deployment/infrastructure/`)**: Describes the Terraform configurations for managing cloud resources, including DataSphere projects and service accounts. For comprehensive guidance on setting up and managing the cloud infrastructure, refer to the [Infrastructure README](deployment/infrastructure/README.md).
+- **Infrastructure (`deployment/infrastructure/`)**: Describes the Terraform configurations for managing cloud resources, including DataSphere projects. For comprehensive guidance on setting up and managing the cloud infrastructure, refer to the [Infrastructure README](deployment/infrastructure/README.md).
 
 ## 📦 Installation
 
