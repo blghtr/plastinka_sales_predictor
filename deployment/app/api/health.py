@@ -254,13 +254,10 @@ async def health_check(
         overall_status = "degraded"
         http_status_code = status.HTTP_200_OK
 
-    # If the overall status is unhealthy or degraded, raise HTTPException
-    if overall_status != "healthy":
+    # If the overall status is unhealthy, raise HTTPException
+    if overall_status == "unhealthy":
         error_message = f"API is {overall_status}."
-        if overall_status == "unhealthy":
-            error_code = "service_unavailable"
-        else: # degraded
-            error_code = "service_degraded"
+        error_code = "service_unavailable"
 
         details = {k: v.model_dump() for k, v in components.items()}
 
@@ -270,15 +267,13 @@ async def health_check(
             status_code=http_status_code,
             details=details,
         )
-        # Log the error, though for health checks it might be excessive if frequently polled
-        # error.log_error(None) # No request context here
 
         raise HTTPException(
             status_code=error.status_code,
             detail=error.message
         )
 
-    # If healthy, return the regular HealthResponse
+    # For healthy or degraded status, return the regular HealthResponse
     return JSONResponse(
         status_code=http_status_code,
         content={
