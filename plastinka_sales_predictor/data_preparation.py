@@ -880,10 +880,6 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
         lambda x: x.replace(" ", "").lstrip("0")
     )
 
-    validated.loc[:, "Цена, руб."] = pd.to_numeric(
-        validated["Цена, руб."], errors='coerce'
-    ).astype("int64")
-
     validated = validated.dropna(
         subset=[
             "Исполнитель",
@@ -893,6 +889,10 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
         ]
     )
 
+    validated.loc[:, "Цена, руб."] = pd.to_numeric(
+        validated["Цена, руб."], errors='coerce'
+    ).astype("int64")
+    
     validated, bins = categorize_prices(validated, bins)
     validated = validate_date_columns(validated)
     validated = validate_categories(validated)
