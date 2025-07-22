@@ -104,18 +104,6 @@ terraform plan  # Verify - no new resources are created!
 terraform apply
 ```
 
-### How it Works?
-
-We use a **pure Data Source approach** instead of import:
-- ✅ **Simplicity** - no need for complex imports
-- ✅ **Reliability** - standard Terraform capabilities
-- ✅ **Flexibility** - can combine new and existing resources
-- ✅ **Security** - existing resources are not modified
-- ✅ **Compatibility** - works with any Terraform version
-
-### Detailed Documentation
-📖 **[Full Guide](envs/prod/IMPORT_GUIDE.md)** - detailed instructions, usage scenarios, troubleshooting.
-
 ### Resource Status Check
 ```bash
 # See which resources are existing and which are new
