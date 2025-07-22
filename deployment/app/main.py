@@ -62,6 +62,17 @@ app = FastAPI(
 # Configure error handlers
 app = configure_error_handlers(app)
 
+# Add CORS middleware
+settings = get_settings()
+if settings.api.allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.api.allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 # Include API routers
 app.include_router(jobs_router)
 app.include_router(health_router)

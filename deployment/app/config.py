@@ -177,6 +177,10 @@ class APISettings(BaseSettings):
         default="", description="API key for X-API-Key header authentication"
     )
     log_level: str = Field(default="INFO", description="Log level")
+    allowed_origins: list[str] = Field(
+        default=[],
+        description="A list of origins that should be permitted to make cross-origin requests.",
+    )
 
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_api_config
 
