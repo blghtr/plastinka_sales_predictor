@@ -83,20 +83,30 @@ class TestCategorizePricesWithStaticBins:
         # With include_lowest=True, it's hard to get NaNs unless the input is NaN.
         df = pd.DataFrame({"Цена, руб.": [np.nan]})
 
-        # Act & Assert
-        # Function cannot handle NaN values with astype("int64")
-        with pytest.raises(pd.errors.IntCastingNaNError):
-            categorize_prices(df, bins=static_price_bins)
+        # Act
+        result_df, result_bins = categorize_prices(df, bins=static_price_bins)
+
+        # Assert
+        assert "Ценовая категория" in result_df.columns
+        assert result_df["Ценовая категория"].dtype == "category"
+        # NaN values should result in NaN categories
+        assert result_df["Ценовая категория"].isna().all()
 
     def test_categorize_prices_with_null_values(self, static_price_bins):
         """Test that null (NaN) prices result in null categories."""
         # Arrange
         df = pd.DataFrame({"Цена, руб.": [100, np.nan, 300, 400, np.nan]})
 
-        # Act & Assert
-        # Function cannot handle NaN values with astype("int64")
-        with pytest.raises(pd.errors.IntCastingNaNError):
-            categorize_prices(df, bins=static_price_bins)
+        # Act
+        result_df, result_bins = categorize_prices(df, bins=static_price_bins)
+
+        # Assert
+        assert "Ценовая категория" in result_df.columns
+        assert result_df["Ценовая категория"].dtype == "category"
+        # Valid prices should be categorized, NaN values should remain NaN
+        categories = result_df["Ценовая категория"]
+        assert categories.notna().sum() == 3  # 3 valid prices
+        assert categories.isna().sum() == 2   # 2 NaN values
 
 
 class TestCategorizePricesEdgeCases:
@@ -129,8 +139,8 @@ class TestCategorizePricesEdgeCases:
         df = pd.DataFrame({"Цена, руб.": [100, "invalid", 300, "another_invalid", 500]})
 
         # Act & Assert
-        # Function cannot handle non-numeric strings with astype("int64")
-        with pytest.raises(ValueError, match="invalid literal for int"):
+        # Function cannot handle non-numeric strings with pd.cut
+        with pytest.raises(TypeError, match="'<' not supported between instances of 'int' and 'str'"):
             categorize_prices(df, bins=static_price_bins)
 
 
