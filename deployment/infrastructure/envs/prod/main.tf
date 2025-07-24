@@ -92,12 +92,13 @@ locals {
 
 resource "null_resource" "create_env_file" {
   triggers = {
-    # Запускается, если .env файл не существует
-    run_once = fileexists("${local.project_root_env_path}") ? "exists" : "create"
+    # Запускается только если файл не существует
+    file_exists = fileexists("${local.project_root_env_path}") ? "true" : "false"
+    project_id = local.project_id
+    folder_id = var.yc_folder_id
   }
 
   provisioner "local-exec" {
-    when    = create
     interpreter = ["bash", "-c"]
     command = <<-EOT
       echo "# DataSphere Configuration (REQUIRED)" > "${local.project_root_env_path}"
@@ -108,8 +109,9 @@ resource "null_resource" "create_env_file" {
       echo "# API Security (REQUIRED)" >> "${local.project_root_env_path}"
       echo "# These will be automatically generated and populated by the Python script." >> "${local.project_root_env_path}"
       echo "# Ensure Python 3.x is installed in the environment where 'terraform apply' is run." >> "${local.project_root_env_path}"
-      echo "# API_ADMIN_API_KEY=" >> "${local.project_root_env_path}"
-      echo "# API_X_API_KEY=" >> "${local.project_root_env_path}"
+      echo "# API_ADMIN_API_KEY_HASH=" >> "${local.project_root_env_path}"
+      echo "# API_X_API_KEY_HASH=" >> "${local.project_root_env_path}"
+      echo "Env file created successfully."
     EOT
   }
 }
@@ -149,9 +151,10 @@ resource "null_resource" "configure_yc_cli_profile" {
 }
 
 resource "null_resource" "generate_api_keys" {
-  # Only run when env file changes or doesn't exist
+  # Запускается всегда, когда запускается create_env_file
   triggers = {
     create_env_file_id = null_resource.create_env_file.id
+    project_id = local.project_id
   }
 
   provisioner "local-exec" {
@@ -159,13 +162,13 @@ resource "null_resource" "generate_api_keys" {
       envFilePath="${local.project_root_env_path}"
       
       # Check if API keys already exist in the file
-      if grep -q "^API_ADMIN_API_KEY=" "$envFilePath" && grep -q "^API_X_API_KEY=" "$envFilePath"; then
+      if grep -q "^API_ADMIN_API_KEY_HASH=" "$envFilePath" && grep -q "^API_X_API_KEY_HASH=" "$envFilePath"; then
           echo "API keys already exist in .env file. Skipping generation."
           exit 0
       fi
       
       echo "Generating and adding API keys to .env using Python script..."
-      python "${local.deployment_scripts_path}/generate_api_keys.py" "$envFilePath"
+      uv run "${local.deployment_scripts_path}/generate_api_keys.py" "$envFilePath"
       echo "API keys added to .env successfully."
     EOT
     interpreter = ["bash", "-c"]
