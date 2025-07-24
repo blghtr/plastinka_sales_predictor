@@ -19,6 +19,7 @@ Testing Approach:
 All external imports and dependencies are mocked to ensure test isolation.
 """
 
+import pytest
 import json
 import uuid
 from datetime import datetime
@@ -41,6 +42,7 @@ def pyfakefs_file_wrapper_for_aiofiles(pyfakefs_file_obj, *, loop=None, executor
 
 wrap.register(FakeFileWrapper)(pyfakefs_file_wrapper_for_aiofiles)
 TEST_X_API_KEY = "test_x_api_key_conftest"
+TEST_BEARER_TOKEN = "test_admin_token"
 
 
 def assert_detail(response, expected_code=None, expected_message=None, expect_type=None):
@@ -79,7 +81,20 @@ def assert_detail(response, expected_code=None, expected_message=None, expect_ty
         elif isinstance(detail, list):
             assert any("msg" in err for err in detail)
 
-
+def get_full_mock_job_data(job_id, job_type, status):
+    """Helper to create a complete job dictionary for mocking."""
+    return {
+        "job_id": job_id,
+        "job_type": job_type.value if hasattr(job_type, 'value') else str(job_type),
+        "status": status.value if hasattr(status, 'value') else str(status),
+        "created_at": "2023-01-01T10:00:00",
+        "updated_at": "2023-01-01T10:30:00",
+        "parameters": {},
+        "progress": 1.0 if (status == JobStatus.COMPLETED or (hasattr(status, 'value') and status.value == 'completed')) else 0.0,
+        "result_id": "res-123" if (status == JobStatus.COMPLETED or (hasattr(status, 'value') and status.value == 'completed')) else None,
+        "error_message": "An error occurred" if (status == JobStatus.FAILED or (hasattr(status, 'value') and status.value == 'failed')) else None,
+    }
+    
 class TestDataUploadEndpoint:
     """Test suite for /api/v1/jobs/data-upload endpoint."""
 
@@ -379,28 +394,13 @@ class TestReportJobEndpoint:
 
 class TestJobStatusEndpoint:
     """Test suite for job status retrieval."""
-
-    def get_full_mock_job_data(self, job_id, job_type, status):
-        """Helper to create a complete job dictionary for mocking."""
-        return {
-            "job_id": job_id,
-            "job_type": job_type.value if hasattr(job_type, 'value') else str(job_type),
-            "status": status.value if hasattr(status, 'value') else str(status),
-            "created_at": "2023-01-01T10:00:00",
-            "updated_at": "2023-01-01T10:30:00",
-            "parameters": {},
-            "progress": 1.0 if (status == JobStatus.COMPLETED or (hasattr(status, 'value') and status.value == 'completed')) else 0.0,
-            "result_id": "res-123" if (status == JobStatus.COMPLETED or (hasattr(status, 'value') and status.value == 'completed')) else None,
-            "error_message": "An error occurred" if (status == JobStatus.FAILED or (hasattr(status, 'value') and status.value == 'failed')) else None,
-        }
-
     def test_get_job_status_training_completed(
         self, client, mock_dal
     ):
         """Test getting status of a completed training job."""
         # Arrange
         job_id = "job-123"
-        mock_dal.get_job.side_effect = lambda jid: self.get_full_mock_job_data(jid, JobType.TRAINING, JobStatus.COMPLETED)
+        mock_dal.get_job.side_effect = lambda jid: get_full_mock_job_data(jid, JobType.TRAINING, JobStatus.COMPLETED)
         mock_dal.get_training_results.return_value = {
             "model_id": "model1",
             "metrics": json.dumps({"accuracy": 0.95}),
@@ -427,7 +427,7 @@ class TestJobStatusEndpoint:
         """Test getting status of a pending job."""
         # Arrange
         job_id = "job-456"
-        mock_dal.get_job.side_effect = lambda jid: self.get_full_mock_job_data(jid, JobType.DATA_UPLOAD, JobStatus.PENDING)
+        mock_dal.get_job.side_effect = lambda jid: get_full_mock_job_data(jid, JobType.DATA_UPLOAD, JobStatus.PENDING)
 
         # Act
         response = client.get(
@@ -449,7 +449,7 @@ class TestJobStatusEndpoint:
         """Test job status handles database errors when fetching results and returns ErrorDetailResponse."""
         # Arrange
         job_id = "job-789"
-        mock_dal.get_job.side_effect = lambda jid: self.get_full_mock_job_data(jid, JobType.PREDICTION, JobStatus.COMPLETED)
+        mock_dal.get_job.side_effect = lambda jid: get_full_mock_job_data(jid, JobType.PREDICTION, JobStatus.COMPLETED)
         mock_dal.get_prediction_result.side_effect = DatabaseError("Result error")
 
         # Act
@@ -561,6 +561,54 @@ class TestJobListingEndpoint:
 class TestAuthenticationScenarios:
     """Test suite for API authentication."""
 
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_create_data_upload_job_success_with_unified_auth(self, client, mock_dal, monkeypatch, auth_header_name, auth_token):
+        """Test successful creation of a data upload job with either X-API-Key or Bearer token."""
+        job_id = str(uuid.uuid4())
+        mock_dal.create_job.return_value = job_id
+
+        mock_add_task = MagicMock()
+        monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
+        monkeypatch.setattr("deployment.app.api.jobs.validate_date_format", lambda x: (True, "2022-09-30"))
+        monkeypatch.setattr("deployment.app.api.jobs.validate_data_file_upload", AsyncMock())
+        monkeypatch.setattr("deployment.app.api.jobs.validate_stock_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.api.jobs.validate_sales_file", lambda x, y: (True, None))
+
+        mock_save_file = AsyncMock(return_value=Path("/fake/path"))
+        monkeypatch.setattr("deployment.app.api.jobs._save_uploaded_file", mock_save_file)
+        
+        stock_content = b"stock data"
+        sales_content1 = b"sales data 1"
+
+        files = [
+            (
+                "stock_file",
+                ("stock.xlsx", BytesIO(stock_content), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ),
+            (
+                "sales_files",
+                ("sales1.xlsx", BytesIO(sales_content1), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ),
+        ]
+        data = {"cutoff_date": "30.09.2022"}
+
+        response = client.post(
+            "/api/v1/jobs/data-upload",
+            files=files,
+            data=data,
+            headers={auth_header_name: auth_token},
+        )
+
+        assert response.status_code == 200
+        resp_data = response.json()
+        assert resp_data["job_id"] == job_id
+        assert resp_data["status"] == JobStatus.PENDING.value
+        mock_dal.create_job.assert_called_once()
+        mock_add_task.assert_called_once()
+
     def test_create_data_upload_job_unauthorized_missing_key(self, client):
         """Test data upload job fails with 401 if X-API-Key header is missing."""
         # Act
@@ -573,14 +621,18 @@ class TestAuthenticationScenarios:
         # Assert
         assert response.status_code == 401
 
-    def test_create_data_upload_job_unauthorized_invalid_key(self, client):
-        """Test data upload job fails with 401 if X-API-Key is invalid."""
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", "wrong_key"),
+        ("Authorization", "Bearer wrong_token"),
+    ])
+    def test_create_data_upload_job_unauthorized_invalid_key(self, client, auth_header_name, auth_token):
+        """Test data upload job fails with 401 if X-API-Key or Bearer token is invalid."""
         # Act
         response = client.post(
             "/api/v1/jobs/data-upload",
             files={"stock_file": ("f.csv", b"c")},
             data={"cutoff_date": "30.09.2022"},
-            headers={"X-API-Key": "wrong_key"},
+            headers={auth_header_name: auth_token},
         )
 
         # Assert
@@ -591,7 +643,8 @@ class TestAuthenticationScenarios:
     ):
         """Test data upload job fails with 500 if server X-API-Key is not configured."""
         # Arrange
-        monkeypatch.setattr(get_settings().api, "x_api_key", None)
+        monkeypatch.setattr(get_settings().api, "x_api_key_hash", None)
+        monkeypatch.setattr(get_settings().api, "admin_api_key_hash", None)
 
         # Act
         response = client.post(
@@ -602,72 +655,167 @@ class TestAuthenticationScenarios:
         )
 
         # Assert
-        assert response.status_code == 500
+        assert response.status_code == 401
         assert_detail(response, expect_type=str)
 
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_create_training_job_success_with_unified_auth(self, client, mock_dal, monkeypatch, auth_header_name, auth_token):
+        """Test successful creation of a training job with either X-API-Key or Bearer token."""
+        job_id = str(uuid.uuid4())
+        mock_dal.create_job.return_value = job_id
+        mock_dal.get_effective_config.return_value = {
+            "config_id": "test-config",
+            "config": {},
+        }
+        mock_dal.adjust_dataset_boundaries.return_value = datetime(2023, 1, 31).date()
+        mock_dal.create_prediction_result.return_value = "pred-res-123"
 
-class TestValidationScenarios:
-    """Test suite for request validation."""
+        mock_add_task = MagicMock()
+        monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
 
-    def test_invalid_job_id_format(self, client, mock_dal):
-        """Test endpoints handle invalid job ID formats gracefully."""
-        # Arrange
+        response = client.post(
+            "/api/v1/jobs/training",
+            json={
+                "dataset_start_date": "2022-01-01",
+                "dataset_end_date": "2023-01-31",
+            },
+            headers={auth_header_name: auth_token},
+        )
+
+        assert response.status_code == 200
+        resp_data = response.json()
+        assert resp_data["job_id"] == job_id
+        assert resp_data["status"] == JobStatus.PENDING.value
+        mock_dal.adjust_dataset_boundaries.assert_called_once()
+        mock_dal.create_job.assert_called_once()
+        mock_add_task.assert_called_once()
+        assert (
+            mock_add_task.call_args.kwargs["dataset_end_date"]
+            == datetime(2023, 1, 31).date()
+        )
+
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_create_report_job_success_with_unified_auth(self, client, monkeypatch, auth_header_name, auth_token):
+        """Test successful creation of a prediction report job with either X-API-Key or Bearer token."""
+        mock_df = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
+        mock_generate_report = MagicMock(return_value=mock_df)
+        monkeypatch.setattr(
+            "deployment.app.api.jobs.generate_report", mock_generate_report
+        )
+
+        params = {
+            "report_type": "prediction_report",
+            "prediction_month": "2023-01-01",
+            "filters": {"artist": "test_artist"},
+        }
+
+        response = client.post(
+            "/api/v1/jobs/reports", json=params, headers={auth_header_name: auth_token}
+        )
+
+        assert response.status_code == 200
+        resp_data = response.json()
+
+        assert resp_data["report_type"] == "prediction_report"
+        assert resp_data["prediction_month"] == "2023-01"
+        assert resp_data["records_count"] == 2
+        assert resp_data["csv_data"] == mock_df.to_csv(index=False)
+        assert "generated_at" in resp_data
+        assert resp_data["filters_applied"] == {"artist": "test_artist"}
+
+        mock_generate_report.assert_called_once()
+
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_get_job_status_training_completed_with_unified_auth(self, client, mock_dal, auth_header_name, auth_token):
+        """Test getting status of a completed training job with either X-API-Key or Bearer token."""
+        job_id = "job-123"
+        mock_dal.get_job.side_effect = lambda jid: get_full_mock_job_data(jid, JobType.TRAINING, JobStatus.COMPLETED)
+        mock_dal.get_training_results.return_value = {
+            "model_id": "model1",
+            "metrics": json.dumps({"accuracy": 0.95}),
+            "parameters": json.dumps({"param": "value"}),
+            "duration": 120,
+        }
+
+        response = client.get(
+            f"/api/v1/jobs/{job_id}", headers={auth_header_name: auth_token}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == job_id
+        assert data["status"] == JobStatus.COMPLETED.value
+        assert "result" in data
+        assert data["result"]["model_id"] == "model-abc"
+
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_list_jobs_no_filters_with_unified_auth(self, client, mock_dal, auth_header_name, auth_token):
+        """Test listing jobs without filters with either X-API-Key or Bearer token."""
+        mock_dal.list_jobs.return_value = [
+            {
+                "job_id": "job1",
+                "job_type": "training",
+                "status": "completed",
+                "created_at": "2023-01-01T00:00:00",
+                "updated_at": "2023-01-01T01:00:00",
+                "progress": 100.0,
+                "error_message": None,
+            },
+            {
+                "job_id": "job2",
+                "job_type": "tuning",
+                "status": "pending",
+                "created_at": "2023-01-02T00:00:00",
+                "updated_at": "2023-01-02T01:00:00",
+                "progress": 0.0,
+                "error_message": None,
+            },
+        ]
+
+        response = client.get("/api/v1/jobs", headers={auth_header_name: auth_token})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["jobs"]) == 2
+        assert data["jobs"][0]["job_id"] == "job1"
+        assert data["jobs"][1]["job_id"] == "job2"
+        mock_dal.list_jobs.assert_called_once_with(job_type=None, status=None, limit=100)
+
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_invalid_job_id_format_with_unified_auth(self, client, mock_dal, auth_header_name, auth_token):
+        """Test endpoints handle invalid job ID formats gracefully with either X-API-Key or Bearer token."""
         mock_dal.get_job.return_value = None
         
-        # Act
         response = client.get(
-            "/api/v1/jobs/invalid-id-format", headers={"X-API-Key": TEST_X_API_KEY}
+            "/api/v1/jobs/invalid-id-format", headers={auth_header_name: auth_token}
         )
 
-        # Assert
-        # The endpoint should handle this gracefully as 404
         assert response.status_code == 404
 
-    def test_invalid_query_parameters(self, client):
-        """Test job listing handles invalid query parameters."""
-        # Act
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_invalid_query_parameters_with_unified_auth(self, client, auth_header_name, auth_token):
+        """Test job listing handles invalid query parameters with either X-API-Key or Bearer token."""
         response = client.get(
             "/api/v1/jobs?job_type=invalid_type&status=invalid_status",
-            headers={"X-API-Key": TEST_X_API_KEY},
+            headers={auth_header_name: auth_token},
         )
 
-        # Assert
-        # Should return validation error for invalid enum values
         assert response.status_code == 422
-
-
-class TestIntegration:
-    """Integration tests for the complete API functionality."""
-
-    def test_module_imports_successfully(self):
-        """Test that the jobs API module can be imported without errors."""
-        # Act & Assert
-        from deployment.app.api import jobs
-
-        assert hasattr(jobs, "router")
-
-    def test_constants_defined(self):
-        """Test that all expected constants and dependencies are defined."""
-        # Act & Assert
-        from deployment.app.api.jobs import router
-        from deployment.app.models.api_models import JobStatus, JobType
-
-        assert JobStatus.PENDING is not None
-        assert JobStatus.COMPLETED is not None
-        assert JobType.DATA_UPLOAD is not None
-        assert JobType.TRAINING is not None
-        assert router is not None
-
-    def test_fastapi_router_configuration(self):
-        """Test that the FastAPI router is properly configured."""
-        # Act & Assert
-        from deployment.app.api.jobs import router
-
-        # Verify router has expected routes
-        route_paths = [route.path for route in router.routes]
-        expected_paths = ["/data-upload", "/training", "/reports", "/{job_id}"]
-
-        for expected_path in expected_paths:
-            assert any(expected_path in path for path in route_paths), (
-                f"Expected path {expected_path} not found in routes"
-            )

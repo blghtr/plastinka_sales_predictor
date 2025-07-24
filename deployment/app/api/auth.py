@@ -5,22 +5,25 @@ Authentication related API endpoints.
 import os
 import subprocess
 from fastapi import APIRouter, Body, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import logging
 from typing import Any
 
-from ..services.auth import get_admin_user
+
 from ..models.api_models import YandexCloudToken
 from ..config import get_settings
+from ..services.auth import  get_unified_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
+
 
 @router.post("/yc-token", status_code=status.HTTP_204_NO_CONTENT,
              summary="Set the Yandex Cloud OAuth token.")
 async def set_yc_token(
     payload: YandexCloudToken = Body(..., description="A JSON object containing the `token` string."),
-    admin_user: dict[str, Any] = Depends(get_admin_user),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth), # PROTECTED by new dependency
+    settings: Any = Depends(get_settings)
 ):
     """
     Configures the Yandex Cloud CLI profile with the provided OAuth token. This token is
@@ -34,11 +37,8 @@ async def set_yc_token(
         )
     
     try:
-        # Get the profile name from settings
-        settings = get_settings()
         profile_name = settings.datasphere.yc_profile or "datasphere-prod"
         
-        # Configure yc CLI with the token for the specific profile
         subprocess.run(
             ["yc", "config", "set", "token", payload.token, "--profile", profile_name],
             capture_output=True,
@@ -46,7 +46,6 @@ async def set_yc_token(
             check=True
         )
         
-        # Also set the environment variable for immediate use by the application
         os.environ["YC_OAUTH_TOKEN"] = payload.token
         
         logger.info(f"Yandex Cloud OAuth token has been updated for profile '{profile_name}' via yc CLI and environment variable.")

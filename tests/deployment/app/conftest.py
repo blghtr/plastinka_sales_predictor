@@ -20,6 +20,8 @@ from contextlib import contextmanager
 
 import pytest
 from unittest.mock import MagicMock, PropertyMock
+from passlib.context import CryptContext
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 from deployment.app.db.database import (
     dict_factory,
@@ -70,6 +72,7 @@ from deployment.app.models.api_models import (
 import shutil
 import gc
 import time
+from types import SimpleNamespace
 
 
 def json_default_serializer(obj):
@@ -553,11 +556,11 @@ def clean_retry_events_table():
     Ensures test isolation for operations that persist to this table.
     """
     from deployment.app.db.database import get_db_connection
-    from deployment.app.config import get_settings # Needed to get the current DB path
+    from deployment.app.db.schema import init_db # Import init_db
 
-    db_path = get_settings().database_path
-    conn = get_db_connection(db_path)
+    conn = get_db_connection()
     try:
+        init_db(connection=conn) # Ensure schema is initialized for this connection
         cursor = conn.cursor()
         cursor.execute("DELETE FROM retry_events")
         conn.commit()
@@ -571,7 +574,7 @@ def clean_retry_events_table():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def set_session_db_path(session_monkeypatch):
+def set_session_db_path(session_monkeypatch, tmp_path_factory):
     """
     Session-scoped fixture to set a temporary file-based database path for AppSettings.
     Ensures all database interactions use an isolated DB for the entire test session.
@@ -579,43 +582,59 @@ def set_session_db_path(session_monkeypatch):
     import os
     import sqlite3
     import tempfile
-
-    from deployment.app.config import AppSettings, get_settings
+    from passlib.context import CryptContext
+    from deployment.app.config import (
+        AppSettings,
+        APISettings,
+        DatabaseSettings,
+        DataSphereSettings,
+        DataRetentionSettings,
+        TuningSettings,
+        get_settings,
+    )
     from deployment.app.db.schema import init_db
 
-    temp_dir = tempfile.TemporaryDirectory()
-    session_db_path = os.path.join(temp_dir.name, "session_test.db")
+    # Use a real temporary directory for the session
+    temp_dir = tmp_path_factory.mktemp("session_data")
+    session_db_path = temp_dir / "session_test.db"
+    models_dir = temp_dir / "models"
+    logs_dir = temp_dir / "logs"
+    temp_upload_dir = temp_dir / "temp_uploads"
+    
+    # Create directories
+    models_dir.mkdir()
+    logs_dir.mkdir()
+    temp_upload_dir.mkdir()
 
     # Initialize schema in this session-scoped temporary DB
-    conn = sqlite3.connect(session_db_path)
-    try:
+    with sqlite3.connect(session_db_path) as conn:
         init_db(connection=conn)
-        conn.commit()
-    finally:
-        conn.close()
 
-    # Create a mock AppSettings object
-    mock_settings = MagicMock(spec=AppSettings)
+    # --- Create a REAL, fully-populated AppSettings instance ---
+    # This avoids all the AttributeError problems from an incomplete MagicMock.
+    # We override only the paths and critical values for testing.
+    
+    # Use monkeypatch to set environment variables that AppSettings will read
+    session_monkeypatch.setenv("DATA_ROOT_DIR", str(temp_dir))
+    session_monkeypatch.setenv("DB_FILENAME", "session_test.db")
+    session_monkeypatch.setenv("API_ADMIN_API_KEY_HASH", CryptContext(schemes=["bcrypt"]).hash("test_admin_token"))
+    session_monkeypatch.setenv("API_X_API_KEY_HASH", CryptContext(schemes=["bcrypt"]).hash("test_x_api_key_conftest"))
+    session_monkeypatch.setenv("METRIC_THESH_FOR_HEALTH_CHECK", "0.5") # Add missing health check metric
 
-    # Set up the database_path as a PropertyMock so it behaves like a property
-    type(mock_settings).database_path = PropertyMock(return_value=session_db_path)
-    
-    # Add the newly required attribute for batching
-    mock_settings.sqlite_max_variables = 900 # A reasonable default for tests
-    
-    # Patch the get_settings function itself immediately
-    session_monkeypatch.setattr("deployment.app.config.get_settings", lambda: mock_settings)
-    
-    # Clear the cache for get_settings AFTER patching to ensure the new mock is used
+    # Clear the get_settings cache to force re-reading with our new env vars
     get_settings.cache_clear()
 
-    try:
-        yield
-    finally:
-        # The session_monkeypatch.undo() will restore the original get_settings function.
-        # We just need to clear its cache to ensure it re-reads its original values.
-        get_settings.cache_clear()
-        temp_dir.cleanup()
+    # The original AppSettings will now load with our temporary paths and test keys.
+    # No need to mock the class itself.
+
+    # Patch configure_logging to prevent FileNotFoundError during tests
+    session_monkeypatch.setattr("deployment.app.logger_config.configure_logging", MagicMock())
+
+    yield
+
+    # Cleanup: clear the cache again after the session
+    get_settings.cache_clear()
+
 
 
 @pytest.fixture

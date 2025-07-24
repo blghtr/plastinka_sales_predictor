@@ -1,3 +1,4 @@
+import pytest
 import json
 import uuid
 from unittest.mock import MagicMock
@@ -6,10 +7,15 @@ from deployment.app.db.database import DatabaseError
 from deployment.app.models.api_models import TrainingResultResponse, TuningResultResponse
 
 TEST_X_API_KEY = "test_x_api_key_conftest"
+TEST_BEARER_TOKEN = "test_admin_token"
 
 
 class TestResultsApi:
-    def test_get_training_results(self, client, mock_dal):
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_get_training_results(self, client, mock_dal, auth_header_name, auth_token):
         # Arrange
         mock_dal.get_training_results.return_value = [
             {
@@ -24,7 +30,7 @@ class TestResultsApi:
         ]
 
         # Act
-        response = client.get("/api/v1/results/training", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get("/api/v1/results/training", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -32,7 +38,11 @@ class TestResultsApi:
         assert len(data) == 1
         assert data[0]["result_id"] == "result-1"
 
-    def test_get_training_result_by_id(self, client, mock_dal):
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_get_training_result_by_id(self, client, mock_dal, auth_header_name, auth_token):
         # Arrange
         result_id = "1"
         mock_dal.get_training_results.return_value = {
@@ -46,25 +56,33 @@ class TestResultsApi:
         }
 
         # Act
-        response = client.get(f"/api/v1/results/training/{result_id}", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get(f"/api/v1/results/training/{result_id}", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
         data = response.json()
         assert data["result_id"] == result_id
 
-    def test_get_training_result_not_found(self, client, mock_dal):
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_get_training_result_not_found(self, client, mock_dal, auth_header_name, auth_token):
         # Arrange
         result_id = "not-found"
         mock_dal.get_training_results.return_value = None
 
         # Act
-        response = client.get(f"/api/v1/results/training/{result_id}", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get(f"/api/v1/results/training/{result_id}", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 404
 
-    def test_get_tuning_results(self, client, mock_dal):
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_get_tuning_results(self, client, mock_dal, auth_header_name, auth_token):
         # Arrange
         mock_dal.get_tuning_results.return_value = [
             {
@@ -78,7 +96,7 @@ class TestResultsApi:
         ]
 
         # Act
-        response = client.get("/api/v1/results/tuning", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get("/api/v1/results/tuning", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -86,7 +104,11 @@ class TestResultsApi:
         assert len(data) == 1
         assert data[0]["result_id"] == "tuning-res-1"
 
-    def test_get_tuning_result_by_id(self, client, mock_dal):
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_get_tuning_result_by_id(self, client, mock_dal, auth_header_name, auth_token):
         # Arrange
         result_id = "1"
         mock_dal.get_tuning_results.return_value = {
@@ -99,25 +121,33 @@ class TestResultsApi:
         }
 
         # Act
-        response = client.get(f"/api/v1/results/tuning/{result_id}", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get(f"/api/v1/results/tuning/{result_id}", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
         data = response.json()
         assert data["result_id"] == result_id
 
-    def test_get_tuning_result_not_found(self, client, mock_dal):
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_get_tuning_result_not_found(self, client, mock_dal, auth_header_name, auth_token):
         # Arrange
         result_id = "not-found"
         mock_dal.get_tuning_results.return_value = None
 
         # Act
-        response = client.get(f"/api/v1/results/tuning/{result_id}", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get(f"/api/v1/results/tuning/{result_id}", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 404
 
-    def test_get_tuning_results_with_query_params(self, client, mock_dal):
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_get_tuning_results_with_query_params(self, client, mock_dal, auth_header_name, auth_token):
         # Arrange
         mock_dal.get_tuning_results.return_value = [
             {
@@ -141,7 +171,7 @@ class TestResultsApi:
         # Act
         response = client.get(
             "/api/v1/results/tuning?metric_name=val_loss&higher_is_better=false&limit=2",
-            headers={"X-API-Key": TEST_X_API_KEY},
+            headers={auth_header_name: auth_token},
         )
 
         # Assert

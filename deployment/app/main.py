@@ -1,18 +1,26 @@
+# Apply centralised logging configuration before the rest of the app starts.
+from deployment.app.logger_config import configure_logging
 import logging
-import os
+# Configure logging
+configure_logging()
+logger = logging.getLogger(__name__)  # Use __name__ for module-specific logger
+
+# Import context manager for lifespan
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+# Import FastAPI dependencies
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-
-from deployment.app.api.admin import router as admin_router
-from deployment.app.api.health import router as health_router
-from deployment.app.api.auth import router as auth_router
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.staticfiles import StaticFiles
 
 # Import API routers
 from deployment.app.api.jobs import router as jobs_router
 from deployment.app.api.models_configs import router as models_params_router
 from deployment.app.api.results import router as results_router
+from deployment.app.api.admin import router as admin_router
+from deployment.app.api.health import router as health_router
+from deployment.app.api.auth import router as auth_router
 
 # Import configuration
 from deployment.app.config import get_settings
@@ -20,31 +28,20 @@ from deployment.app.config import get_settings
 # Import database initializer
 from deployment.app.db.schema import init_db
 
-# Apply centralised logging configuration before the rest of the app starts.
-from deployment.app.logger_config import configure_logging
-
 # Import utils
 from deployment.app.utils.error_handling import configure_error_handlers
 
 # Import security dependencies
-from deployment.app.services.auth import get_docs_auth
+from deployment.app.services.auth import get_docs_user
 
 # Получаем актуальную версию пакета
 from plastinka_sales_predictor import __version__ as app_version
 
-# This sets up a single console handler that integrates with Uvicorn / FastAPI
-# and avoids spawning extra threads or writing to dataset-specific files.
-configure_logging()
-
-# Configure logging
-logger = logging.getLogger(__name__)  # Use __name__ for module-specific logger
-
+settings = get_settings()
 
 # Lifespan context manager for application startup and shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Environment checks are performed via the health endpoint
-    settings = get_settings()
     # Initialize database
     db_initialized_successfully = init_db(db_path=settings.database_path)
     if not db_initialized_successfully:
@@ -53,21 +50,21 @@ async def lifespan(app: FastAPI):
 
     yield
 
-
 # Create FastAPI application with lifespan
 app = FastAPI(
     title="Plastinka Sales Predictor API",
     description="API for predicting vinyl record sales",
     version=app_version,
     lifespan=lifespan,
-    dependencies=[Depends(get_docs_auth)],
+    docs_url=None,  # Disable default /docs
+    redoc_url=None, # Disable default /redoc
 )
+
 
 # Configure error handlers
 app = configure_error_handlers(app)
 
 # Add CORS middleware
-settings = get_settings()
 if settings.api.allowed_origins:
     app.add_middleware(
         CORSMiddleware,
@@ -86,6 +83,20 @@ app.include_router(results_router)
 app.include_router(auth_router)
 
 
+# Custom protected docs and redoc URLs
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html(request: Request, username: str = Depends(get_docs_user)):
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - Swagger UI",
+    )
+
+@app.get("/redoc", include_in_schema=False)
+async def custom_redoc_html(request: Request, username: str = Depends(get_docs_user)):
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - ReDoc",
+    )
 # Root endpoint
 @app.get("/")
 async def root():
@@ -100,7 +111,6 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
 
-    settings = get_settings()
     uvicorn.run(
         "app.main:app",
         host=settings.api.host,

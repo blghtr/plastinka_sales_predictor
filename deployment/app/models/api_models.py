@@ -1,8 +1,11 @@
 from datetime import date, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
+import json
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from fastapi import Form
+
 
 
 class YandexCloudToken(BaseModel):
@@ -268,10 +271,10 @@ class TrainingParams(BaseModel):
     """Parameters for a training job."""
 
     dataset_start_date: date | None = Field(
-        None, description="Start date for the training dataset (YYYY-MM-DD)."
+        None, description="Start date for the training dataset (YYYY-MM-DD). Optional, defaults to None."
     )
     dataset_end_date: date | None = Field(
-        None, description="End date for the training dataset (YYYY-MM-DD)."
+        None, description="End date for the training dataset (YYYY-MM-DD). Optional, defaults to None."
     )
 
     @model_validator(mode="after")
@@ -287,19 +290,19 @@ class TuningParams(BaseModel):
 
     dataset_start_date: date | None = Field(
         None, 
-        description="Start date for the training dataset (YYYY-MM-DD)."
+        description="Start date for the training dataset (YYYY-MM-DD). Optional, defaults to None."
     )
     dataset_end_date: date | None = Field(
         None, 
-        description="End date for the training dataset (YYYY-MM-DD)."
+        description="End date for the training dataset (YYYY-MM-DD). Optional, defaults to None."
     )
-    mode: str | None = Field(
-        None, 
+    mode: str = Field(
+        "light", 
         description="Tuning mode: full or light", 
         pattern="^(light|full)$"
     )
-    time_budget_s: int | None = Field(
-        None, 
+    time_budget_s: int = Field(
+        7200, 
         description="Time budget for tuning in seconds", 
         gt=0
     )
@@ -414,6 +417,44 @@ class ModelCreateRequest(BaseModel):
     is_active: bool | None = Field(False, description="Set as active after creation")
     created_at: str | None = Field(None, description="Creation timestamp (ISO format)")
 
+
+class ModelUploadMetadata(BaseModel):
+    """Metadata for uploaded models."""
+    description: Optional[str] = Field(None, description="A brief description of the model.")
+    version: Optional[str] = Field(None, description="Version of the model.")
+    tags: Optional[list[str]] = Field(None, description="List of tags for categorization.")
+    training_metrics: Optional[dict[str, Any]] = Field(None, description="Metrics from the training run that produced this model.")
+    source_job_id: Optional[str] = Field(None, description="ID of the job that created this model.")
+
+    @classmethod
+    def as_form(
+        cls,
+        description: Optional[str] = Form(None, description="A brief description of the model."),
+        version: Optional[str] = Form(None, description="Version of the model."),
+        tags: Optional[str] = Form(None, description="Comma-separated list of tags for categorization."),
+        training_metrics: Optional[str] = Form(None, description="JSON string of metrics from the training run."),
+        source_job_id: Optional[str] = Form(None, description="ID of the job that created this model."),
+    ):
+        parsed_tags = tags.split(',') if tags else None
+        parsed_metrics = json.loads(training_metrics) if training_metrics else None
+        return cls(
+            description=description,
+            version=version,
+            tags=parsed_tags,
+            training_metrics=parsed_metrics,
+            source_job_id=source_job_id,
+        )
+
+class DataUploadFormParameters(BaseModel):
+    """Form parameters for data upload."""
+    cutoff_date: str = Field(..., description="The cutoff date for data processing in `DD.MM.YYYY` format.")
+
+    @classmethod
+    def as_form(
+        cls,
+        cutoff_date: str = Form(..., description="The cutoff date for data processing in `DD.MM.YYYY` format."),
+    ):
+        return cls(cutoff_date=cutoff_date)
 
 class ErrorDetailResponse(BaseModel):
     """Standardized error response model."""

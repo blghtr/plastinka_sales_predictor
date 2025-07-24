@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
@@ -9,7 +9,7 @@ from deployment.app.models.api_models import (
     TrainingResultResponse,
     TuningResultResponse,
 )
-from deployment.app.services.auth import get_current_api_key_validated
+from deployment.app.services.auth import  get_unified_auth
 
 logger = logging.getLogger("plastinka.api.results")
 
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/results", tags=["results"])
 @router.get("/training", response_model=List[TrainingResultResponse], summary="Get a list of recent training results.")
 async def get_training_results(
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
 ):
     """
     Retrieves a list of results from recent model training jobs, including metrics and parameters.
@@ -41,7 +41,7 @@ async def get_training_results(
 async def get_training_result_by_id(
     result_id: str = Path(..., description="The unique identifier of the training result."),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
 ):
     """
     Retrieves the detailed results of a specific training job by its result ID.
@@ -66,7 +66,7 @@ async def get_training_result_by_id(
 @router.get("/tuning", response_model=List[TuningResultResponse], summary="Get a list of recent hyperparameter tuning results.")
 async def get_tuning_results(
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     metric_name: str = Query(None, description="The metric to sort the results by."),
     higher_is_better: bool = Query(True, description="Boolean flag indicating if higher metric values are better."),
     limit: int = Query(100, ge=1, le=1000, description="The maximum number of tuning results to return."),
@@ -92,7 +92,7 @@ async def get_tuning_results(
 async def get_tuning_result_by_id(
     result_id: str = Path(..., description="The unique identifier of the tuning result."),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
 ):
     """
     Retrieves the detailed results of a specific tuning job by its result ID.

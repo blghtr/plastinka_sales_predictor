@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from deployment.app.config import get_settings
-from deployment.app.services.auth import get_current_api_key_validated
+from deployment.app.services.auth import  get_unified_auth
 from deployment.app.utils.environment import get_environment_status, ComponentHealth
 from deployment.app.utils.retry_monitor import (
     get_retry_statistics,
@@ -288,7 +288,7 @@ async def health_check(
 
 
 @router.get("/system", response_model=SystemStatsResponse, summary="Get detailed system resource statistics.")
-async def system_stats(api_key: bool = Depends(get_current_api_key_validated)):
+async def system_stats(api_key: bool = Depends(get_unified_auth)):
     """
     Returns current CPU, memory, and disk usage statistics for the server,
     as well as resource usage for the application process itself.
@@ -309,7 +309,7 @@ async def system_stats(api_key: bool = Depends(get_current_api_key_validated)):
 
 
 @router.get("/retry-stats", response_model=RetryStatsResponse, summary="Get statistics about operation retries.")
-async def retry_statistics(api_key: bool = Depends(get_current_api_key_validated)):
+async def retry_statistics(api_key: bool = Depends(get_unified_auth)):
     """
     Retrieves detailed statistics on automated retry attempts for failed operations,
     which can be useful for diagnosing transient issues.
@@ -331,7 +331,7 @@ async def retry_statistics(api_key: bool = Depends(get_current_api_key_validated
 
 
 @router.post("/retry-stats/reset", summary="Reset all retry statistics.")
-async def reset_retry_stats(api_key: bool = Depends(get_current_api_key_validated)):
+async def reset_retry_stats(api_key: bool = Depends(get_unified_auth)):
     """
     Clears all accumulated retry statistics. Requires API key authentication.
     """

@@ -1,16 +1,16 @@
 import os
 import sys
 import secrets
-
-try:
-    from passlib.context import CryptContext
-except ImportError:
-    print("Error: passlib is not installed. Please install it with 'pip install passlib[bcrypt]'")
-    sys.exit(1)
+import hashlib
+import base64
 
 def generate_key(length=32):
     """Generate a random URL-safe text string."""
     return secrets.token_urlsafe(length)
+
+def simple_hash(text):
+    """Create a simple hash using SHA-256 and base64 encoding."""
+    return base64.b64encode(hashlib.sha256(text.encode()).digest()).decode()
 
 def update_env_file(env_path, admin_key_hash, x_api_key_hash):
     """Update or create .env file with new API key hashes, preserving existing content."""
@@ -45,21 +45,18 @@ def update_env_file(env_path, admin_key_hash, x_api_key_hash):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python generate_api_keys.py <path_to_env_file>")
+        print("Usage: python generate_api_keys_simple.py <path_to_env_file>")
         sys.exit(1)
 
     env_file_path = sys.argv[1]
-
-    # Initialize password context for hashing
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
     # Generate plaintext keys
     admin_key_plain = generate_key(48)
     x_api_key_plain = generate_key(32)
 
-    # Hash the keys
-    admin_key_hashed = pwd_context.hash(admin_key_plain)
-    x_api_key_hashed = pwd_context.hash(x_api_key_plain)
+    # Hash the keys using simple hashing
+    admin_key_hashed = simple_hash(admin_key_plain)
+    x_api_key_hashed = simple_hash(x_api_key_plain)
 
     # --- IMPORTANT --- #
     # Print the plaintext keys to the console for the user to save
@@ -71,4 +68,4 @@ if __name__ == "__main__":
     print("="*80 + "\n")
 
     # Update the .env file with the HASHED keys
-    update_env_file(env_file_path, admin_key_hashed, x_api_key_hashed)
+    update_env_file(env_file_path, admin_key_hashed, x_api_key_hashed) 

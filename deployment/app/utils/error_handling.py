@@ -184,10 +184,29 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
         detail = exc.detail
         headers = getattr(exc, "headers", None)
 
+        message = "Internal server error"
+        code = f"http_{status_code}"
+        details_dict = {}
+
+        if isinstance(detail, dict):
+            # If detail is already a dictionary (from ErrorDetail.to_dict())
+            if "error" in detail and isinstance(detail["error"], dict):
+                message = detail["error"].get("message", message)
+                code = detail["error"].get("code", code)
+                details_dict = detail["error"].get("details", {})
+            else:
+                # Fallback if it's a dict but not in expected ErrorDetail format
+                message = str(detail)
+                details_dict = {"original_detail": detail}
+        else:
+            # If detail is a string
+            message = str(detail)
+
         error = ErrorDetail(
-            message=str(detail),
-            code=f"http_{status_code}",
+            message=message,
+            code=code,
             status_code=status_code,
+            details=details_dict,
             exception=exc,
         )
 

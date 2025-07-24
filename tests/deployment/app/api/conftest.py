@@ -16,6 +16,9 @@ from deployment.app.db.database import dict_factory, get_db_connection as origin
 
 from deployment.app.dependencies import get_dal, get_dal_system, get_dal_for_general_user
 from deployment.app.db.data_access_layer import DataAccessLayer, UserRoles
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Correctly resolve the project root (five levels up: api -> app -> deployment -> tests -> repo root)
 project_root = Path(__file__).resolve().parents[5]
@@ -27,6 +30,12 @@ sys.path.insert(0, str(project_root))
 def pytest_configure(config):
     if hasattr(config, '_pyfakefs_patcher'):
         config._pyfakefs_patcher.stop()
+    # Patch configure_logging to prevent FileNotFoundError during tests
+    from unittest.mock import MagicMock
+    from _pytest.monkeypatch import MonkeyPatch
+    mp = MonkeyPatch()
+    mp.setattr("deployment.app.logger_config.configure_logging", MagicMock())
+    config.add_cleanup(mp.undo)
 
 
 # --- Mocks for API dependencies ---
@@ -39,7 +48,7 @@ def mock_get_db_connection_for_api_tests(session_monkeypatch):
     def mock_db_connection(*args, **kwargs):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = dict_factory
-        init_db(connection=conn)
+        init_db(connection=conn) # Ensure schema is initialized
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.commit()
         return conn
@@ -79,7 +88,7 @@ def mock_dal():
     dal.create_model_record.return_value = None
 
     # --- get_active_model_primary_metric ---
-    dal.get_active_model_primary_metric.return_value = 0.8  # Return a healthy metric value (above 0.5 threshold)
+    dal.get_active_model_primary_metric.return_value = 0.4  # Return a healthy metric value (less than 0.5 threshold, higher_is_better=False)
 
     # --- list_jobs ---
     dal.list_jobs.return_value = [
@@ -310,34 +319,7 @@ def session_monkeypatch():
     mp.undo()
 
 
-@pytest.fixture(scope="function", autouse=True)
-def mock_settings(monkeypatch, tmp_path_factory):
-    """
-    Автоматически мокает get_settings для всех тестов API, чтобы возвращать структуру с вложенными атрибутами.
-    """
-    tmp_dir = tmp_path_factory.mktemp("mock_settings")
-    models_dir = str(tmp_dir / "models")
-    logs_dir = str(tmp_dir / "logs")
-    temp_upload_dir = str(tmp_dir / "temp_uploads")
-    os.makedirs(models_dir, exist_ok=True)
-    os.makedirs(logs_dir, exist_ok=True)
-    os.makedirs(temp_upload_dir, exist_ok=True)
-    api = SimpleNamespace(log_level="INFO", allowed_origins=["*"], x_api_key="test-key")
-    settings = SimpleNamespace(
-        api=api,
-        models_dir=models_dir,
-        logs_dir=logs_dir,
-        temp_upload_dir=temp_upload_dir,
-        database_path=str(tmp_dir / "test.db"),
-        default_metric="val_MIC",
-        default_metric_higher_is_better=True,
-        auto_select_best_configs=False,
-        auto_select_best_model=False,
-        sqlite_max_variables=900, # Added for batching fix
-        metric_thesh_for_health_check=0.5, # Added for health check mock
-    )
-    monkeypatch.setattr("deployment.app.config.get_settings", lambda: settings)
-    return settings
+
 
 
 @pytest.fixture(scope="function")
@@ -349,21 +331,18 @@ def base_client(
     mock_cleanup_old_models_fixture,
     mock_get_db_connection_for_api_tests,
     mock_dal,
-    mock_settings,  # <--- для порядка
 ):
     """
     Session-scoped FastAPI test client for maximum performance.
     This fixture is now localized to API tests to prevent conflicts.
     """
-    # CRITICAL: Set environment variables BEFORE the app or settings are imported.
-    session_monkeypatch.setenv("API_X_API_KEY", "test_x_api_key_conftest")
-    session_monkeypatch.setenv("API_ADMIN_API_KEY", "test_admin_token")
+    # CRITICAL: Set environment variables with HASHED keys BEFORE the app or settings are imported.
+    admin_raw = "test_admin_token"
+    admin_hash = CryptContext(schemes=["bcrypt"]).hash(admin_raw)
+    session_monkeypatch.setenv("API_ADMIN_API_KEY_HASH", admin_hash)
 
-    # Clear cached settings so that new environment variables are picked up
-    from deployment.app.config import get_settings
-    print("DIAG get_settings:", get_settings, "id:", id(get_settings), "module:", getattr(get_settings, "__module__", None), "type:", type(get_settings), "hasattr cache_clear:", hasattr(get_settings, "cache_clear"))
-    if hasattr(get_settings, "cache_clear"):
-        get_settings.cache_clear()
+    x_api_hash = CryptContext(schemes=["bcrypt"]).hash("test_x_api_key_conftest")
+    session_monkeypatch.setenv("API_X_API_KEY_HASH", x_api_hash)
 
     # Set the encryption key for settings for the duration of the test session
     # settings = get_settings() # This line is removed as it's no longer needed after encryption removal
@@ -374,7 +353,10 @@ def base_client(
     session_monkeypatch.setattr("deployment.app.api.admin.cleanup_old_historical_data", mock_cleanup_old_historical_data_fixture)
     session_monkeypatch.setattr("deployment.app.api.admin.cleanup_old_models", mock_cleanup_old_models_fixture)
 
+    # Patch configure_logging to prevent FileNotFoundError during tests
+    session_monkeypatch.setattr("deployment.app.logger_config.configure_logging", lambda: None)
 
+    import logging # Added to resolve NameError in main.py during tests
     from deployment.app.main import app
     from deployment.app.dependencies import get_dal as get_dal_dependency, get_dal_system as get_dal_system_dependency, get_dal_for_general_user as get_dal_for_general_user_dependency
     from deployment.app.utils.error_handling import configure_error_handlers
@@ -391,9 +373,8 @@ def base_client(
 
 
 @pytest.fixture(scope="function")
-def client(base_client, mock_settings):  # <--- для порядка
+def client(base_client):
     return base_client
-
 
 # --- Fixture to reset mocks between tests ---
 

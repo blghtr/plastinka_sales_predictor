@@ -4,6 +4,7 @@ import os
 import shutil
 from datetime import datetime, date
 from pathlib import Path as PathLibPath
+from typing import Any
 
 import aiofiles
 from fastapi import (
@@ -25,9 +26,9 @@ from fastapi.responses import JSONResponse
 from deployment.app.config import get_settings
 from deployment.app.db.database import (
     DatabaseError,
-    # Removed direct imports: create_job, get_data_upload_result, get_effective_config, get_job, get_prediction_result, get_report_result, get_training_result, list_jobs, update_job_status,
 )
 from deployment.app.models.api_models import (
+    DataUploadFormParameters,
     DataUploadResponse,
     JobDetails,
     JobResponse,
@@ -43,7 +44,7 @@ from deployment.app.models.api_models import (
     TrainingParams,
     TuningParams,
 )
-from deployment.app.services.auth import get_current_api_key_validated
+from deployment.app.services.auth import get_unified_auth
 from deployment.app.services.data_processor import process_data_files
 from deployment.app.services.datasphere_service import run_job
 from deployment.app.services.report_service import generate_report
@@ -57,13 +58,12 @@ from deployment.app.utils.validation import (
     validate_stock_file,
 )
 
-from ..dependencies import get_dal, get_dal_for_general_user # Import the DAL dependency
+from ..dependencies import get_dal, get_dal_for_general_user  # Import the DAL dependency
 from ..db.data_access_layer import DataAccessLayer # Import for type hinting
 
 logger = logging.getLogger("plastinka.api")
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
-
 
 async def _save_uploaded_file(uploaded_file: UploadFile, directory: PathLibPath) -> PathLibPath:
     """Helper function to save UploadFile asynchronously."""
@@ -127,10 +127,8 @@ async def create_data_upload_job(
     sales_files: list[UploadFile] = File(
         ..., description="One or more Excel or CSV files containing sales data."
     ),
-    cutoff_date: str = Form(
-        "30.09.2022", description="The cutoff date for data processing in `DD.MM.YYYY` format."
-    ),
-    api_key: bool = Depends(get_current_api_key_validated),
+    params: DataUploadFormParameters = Depends(DataUploadFormParameters.as_form), # Changed from cutoff_date: str = Form(...) to params: DataUploadFormParameters = Depends(...)
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
@@ -142,12 +140,7 @@ async def create_data_upload_job(
     temp_job_dir = None
     try:
         # Validate cutoff date
-        is_valid_date, parsed_date = validate_date_format(cutoff_date)
-        if not is_valid_date:
-            raise AppValidationError(
-                message="Invalid cutoff date format. Expected format: DD.MM.YYYY",
-                details={"cutoff_date": cutoff_date},
-            )
+        cutoff_date = params.cutoff_date # Access cutoff_date from the Pydantic model
 
         # Validate stock file format and size
         await validate_data_file_upload(stock_file)
@@ -351,7 +344,7 @@ async def create_training_job(
     request: Request,
     background_tasks: BackgroundTasks,
     params: TrainingParams | None = Body(None, description="An optional JSON object to specify `dataset_start_date` and `dataset_end_date` for the training data."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -458,7 +451,7 @@ async def create_tuning_job(
     request: Request,
     background_tasks: BackgroundTasks,
     params: TuningParams | None = Body(None, description="An optional JSON object to specify `mode` (`light` or `full`), `time_budget_s`, `dataset_start_date`, and `dataset_end_date`."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
@@ -547,7 +540,7 @@ async def create_tuning_job(
 async def create_prediction_report_job(
     request: Request,
     params: ReportParams = Body(..., description="A JSON object specifying the `report_type`, `prediction_month`, and optional `filters`."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
@@ -612,7 +605,7 @@ async def create_prediction_report_job(
 async def get_job_status(
     request: Request,
     job_id: str = Path(..., description="The unique identifier of the job."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
@@ -767,7 +760,7 @@ async def list_all_jobs(
     job_type: JobType | None = Query(None, description="The type of job to filter by (e.g., `training`, `data_upload`)."),
     status: JobStatus | None = Query(None, description="The status of the job to filter by (e.g., `pending`, `completed`, `failed`)."),
     limit: int = Query(100, ge=1, le=1000, description="The maximum number of jobs to return."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """

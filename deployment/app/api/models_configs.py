@@ -5,6 +5,7 @@ API endpoints for working with models and parameter sets.
 import json as jsonlib
 import logging
 import os
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -30,9 +31,10 @@ from deployment.app.models.api_models import (
     DeleteIdsRequest,
     DeleteResponse,
     ModelResponse,
-    ErrorDetailResponse
+    ErrorDetailResponse,
+    ModelUploadMetadata
 )
-from deployment.app.services.auth import get_current_api_key_validated
+from deployment.app.services.auth import  get_unified_auth
 from deployment.app.dependencies import DataAccessLayer, get_dal_for_general_user
 from deployment.app.utils.error_handling import ErrorDetail
 
@@ -53,7 +55,7 @@ logger = logging.getLogger("plastinka.api.model_params")
 @router.get("/configs/active", response_model=ConfigResponse,
              summary="Get the currently active hyperparameter configuration.")
 async def get_active_config_endpoint(
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -75,7 +77,7 @@ async def get_active_config_endpoint(
              summary="Set a specific hyperparameter configuration as active.")
 async def activate_config(
     config_id: str = Path(..., description="The unique identifier (ID) of the configuration to activate."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -102,7 +104,7 @@ async def get_best_config(
         True, 
         description="A boolean flag indicating the desired direction of the metric. Set to `true` if higher values are better, `false` otherwise."
     ),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -136,7 +138,7 @@ async def get_configs_endpoint(
     limit: int = Query(
         100, ge=1, le=1000, description="The maximum number of configurations to return in the list."
     ),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -153,7 +155,7 @@ async def get_configs_endpoint(
              summary="Delete one or more hyperparameter configurations.")
 async def delete_configs(
     request: DeleteIdsRequest = Body(..., description="A JSON object containing a list of configuration IDs to delete."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -179,7 +181,7 @@ async def delete_configs(
 # Model Endpoints
 @router.get("/models/active", response_model=ModelResponse, summary="Get the currently active model.")
 async def get_active_model_endpoint(
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -200,7 +202,7 @@ async def get_active_model_endpoint(
 @router.post("/models/{model_id}/set-active", summary="Set a specific model as active.")
 async def activate_model(
     model_id: str = Path(..., description="The unique identifier (ID) of the model to activate."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -226,7 +228,7 @@ async def get_best_model(
         True, 
         description="A boolean flag indicating the desired direction of the metric. Set to `true` if higher values are better, `false` otherwise."
     ),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -256,7 +258,7 @@ async def get_recent_models_endpoint(
     limit: int = Query(
         5, ge=1, le=100, description="The maximum number of recent models to return."
     ),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """Retrieves a list of the most recent models, ordered by their creation date."""
@@ -303,7 +305,7 @@ async def get_all_models_endpoint(
     limit: int = Query(
         100, ge=1, le=1000, description="The maximum number of models to return in the list."
     ),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -319,7 +321,7 @@ async def get_all_models_endpoint(
 @router.post("/models/delete", response_model=DeleteResponse, summary="Delete one or more models.")
 async def delete_models(
     request: DeleteIdsRequest = Body(..., description="A JSON object containing a list of model IDs to delete."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -348,7 +350,7 @@ async def upload_config(
         ..., 
         description="A JSON object containing the configuration payload (`json_payload`) and a boolean flag (`is_active`) to set it as active."
     ),
-    api_key: bool = Depends(get_current_api_key_validated),
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -386,8 +388,8 @@ async def upload_model(
     job_id: str | None = Form(None, description="The optional ID of the training job that produced this model."),
     is_active: bool = Form(False, description="If `true`, sets the model as active immediately after upload."),
     created_at: str = Form(None, description="An optional ISO format timestamp for when the model was created. Defaults to now."),
-    metadata: str = Form(None, description="An optional JSON string containing metadata about the model."),
-    api_key: bool = Depends(get_current_api_key_validated),
+    metadata: ModelUploadMetadata = Depends(ModelUploadMetadata.as_form), # Changed from str = Form(None, ...) to ModelUploadMetadata = Depends(...)
+    x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """
@@ -448,28 +450,7 @@ async def upload_model(
             content = await model_file.read()
             f.write(content)
         # --- Парсим metadata ---
-        meta_dict = None
-        if metadata:
-            try:
-                meta_dict = jsonlib.loads(metadata)
-            except Exception as e:
-                logger.error(f"Failed to parse metadata JSON: {e}")
-                if os.path.exists(save_path):
-                    try:
-                        os.remove(save_path)
-                    except Exception as cleanup_e:
-                        logger.error(
-                            f"Failed to clean up orphaned model file {save_path}: {cleanup_e}"
-                        )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=ErrorDetailResponse(
-                        message="Invalid metadata JSON",
-                        code="invalid_metadata_json",
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        details={"error": str(e)}
-                    ).model_dump()
-                ) from e
+        meta_dict = metadata.model_dump() if metadata else None # Use model_dump() to convert Pydantic model to dict
         created_at_val = created_at or datetime.now().isoformat()
         try:
             dal.create_model_record(

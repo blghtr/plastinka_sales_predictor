@@ -169,12 +169,13 @@ class APISettings(BaseSettings):
     host: str = Field(default="0.0.0.0", description="Host to run the API server on")
     port: int = Field(default=8000, description="Port to run the API server on")
     debug: bool = Field(default=False, description="Run in debug mode")
-    admin_api_key: str = Field(
+    admin_user: str = Field(default="admin", description="Username for the admin user")
+    admin_api_key_hash: str = Field(
         default="",
-        description="Admin API key for Bearer authentication (set via API_ADMIN_API_KEY).",
+        description="Hashed admin API key for Bearer authentication (set via API_ADMIN_API_KEY_HASH).",
     )
-    x_api_key: str = Field(
-        default="", description="API key for X-API-Key header authentication"
+    x_api_key_hash: str = Field(
+        default="", description="Hashed API key for X-API-Key header authentication (set via API_X_API_KEY_HASH)."
     )
     log_level: str = Field(default="INFO", description="Log level")
     allowed_origins: list[str] = Field(
@@ -249,34 +250,7 @@ class APISettings(BaseSettings):
         customize_sources=settings_customise_sources,
     )
 
-    # --- Legacy compatibility helpers ---
-    @field_validator("admin_api_key", mode="before")
-    @classmethod
-    def _fallback_to_legacy_env(cls, v):
-        """Load deprecated `API_API_KEY` if new variable not provided."""
-        if v:
-            return v
-        legacy_val = os.getenv("API_API_KEY", "")
-        if legacy_val:
-            import warnings
-
-            warnings.warn(
-                "Environment variable 'API_API_KEY' is deprecated. Use 'API_ADMIN_API_KEY' instead.",
-                DeprecationWarning,
-            )
-        return legacy_val
-
-    @property
-    def api_key(self) -> str:  # noqa: D401  # Simple property
-        """Deprecated alias for :pyattr:`admin_api_key`. Will be removed in future releases."""
-        import warnings
-
-        warnings.warn(
-            "`api_key` is deprecated; use `admin_api_key` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.admin_api_key
+    
 
 
 class DatabaseSettings(BaseSettings):

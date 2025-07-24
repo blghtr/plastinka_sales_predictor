@@ -292,8 +292,8 @@ class TestAPISettings:
         assert settings.host == "0.0.0.0"
         assert settings.port == 8000
         assert settings.debug is False
-        assert settings.admin_api_key == ""
-        assert settings.x_api_key == ""
+        assert settings.admin_api_key_hash == ""
+        assert settings.x_api_key_hash == ""
         assert settings.log_level == "INFO"
 
     @patch.dict(
@@ -303,10 +303,8 @@ class TestAPISettings:
             "API_PORT": "9000",
             "API_DEBUG": "true",
             "API_ALLOWED_ORIGINS": '["http://test1.com", "http://test2.com"]',
-            "API_API_KEY": "test-api-key",
-            "API_X_API_KEY": "test-x-api-key",
-            "API_LOG_LEVEL": "DEBUG",
-            "API_ADMIN_API_KEY": "test-api-key",
+            "API_ADMIN_API_KEY_HASH": "test-admin-hash",
+            "API_X_API_KEY_HASH": "test-x-api-hash",
         },
     )
     @patch(
@@ -321,9 +319,8 @@ class TestAPISettings:
         assert settings.host == "127.0.0.1"
         assert settings.port == 9000
         assert settings.debug is True
-        assert settings.admin_api_key == "test-api-key"
-        assert settings.x_api_key == "test-x-api-key"
-        assert settings.log_level == "DEBUG"
+        assert settings.admin_api_key_hash == "test-admin-hash"
+        assert settings.x_api_key_hash == "test-x-api-hash"
 
     @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
     @patch("deployment.app.config.load_config_file")

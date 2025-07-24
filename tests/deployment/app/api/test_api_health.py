@@ -34,9 +34,10 @@ from deployment.app.api.health import (
 )
 from deployment.app.utils.environment import ComponentHealth, get_environment_status
 from deployment.app.main import app
-from deployment.app.services.auth import get_current_api_key_validated
+from deployment.app.services.auth import  get_unified_auth
 
 TEST_X_API_KEY = "test_x_api_key_conftest"
+TEST_BEARER_TOKEN = "test_admin_token"
 
 
 class TestHealthCheckEndpoint:
@@ -152,8 +153,12 @@ class TestHealthCheckEndpoint:
 class TestSystemStatsEndpoint:
     """Test suite for /system/stats endpoint."""
 
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
     @patch("deployment.app.api.health.psutil")
-    def test_system_stats_endpoint_success(self, mock_psutil, client):
+    def test_system_stats_endpoint_success(self, mock_psutil, client, auth_header_name, auth_token):
         """Test successful retrieval of system statistics."""
         # Arrange
         mock_process = MagicMock()
@@ -167,7 +172,7 @@ class TestSystemStatsEndpoint:
         mock_psutil.Process.return_value = mock_process
 
         # Act
-        response = client.get("/health/system", headers={"X-API-Key": TEST_X_API_KEY})
+        response = client.get("/health/system", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -185,35 +190,30 @@ class TestSystemStatsEndpoint:
         mock_psutil.virtual_memory.assert_called_once()
         mock_psutil.disk_usage.assert_called_once()
 
-    def test_system_stats_unauthorized_missing_key(self, client):
-        """Test system stats endpoint fails with 401 if X-API-Key header is missing."""
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", "wrong_key"),
+        ("Authorization", "Bearer wrong_token"),
+    ])
+    def test_system_stats_unauthorized_invalid_key(self, client, auth_header_name, auth_token):
+        """Test system stats endpoint fails with 401 if X-API-Key or Bearer token is invalid."""
         # Act
-        response = client.get("/health/system")
+        response = client.get("/health/system", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 401
         data = response.json()
-        assert data["error"]["message"] == "Not authenticated: X-API-Key header is missing."
+        assert data["error"]["message"] == "Invalid or missing credentials. Provide a valid Bearer token or X-API-Key."
 
-    def test_system_stats_unauthorized_invalid_key(self, client):
-        """Test system stats endpoint fails with 401 if X-API-Key is invalid."""
-        # Act
-        response = client.get("/health/system", headers={"X-API-Key": "wrong_key"})
-
-        # Assert
-        assert response.status_code == 401
-        data = response.json()
-        assert data["error"]["message"] == "Invalid X-API-Key."
-
-    def test_system_stats_server_key_not_configured(self, client):
+    def test_system_stats_server_key_not_configured(self, client, monkeypatch):
         """Test system stats endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange - Override the dependency to simulate server key not configured
+        from deployment.app.services.auth import get_unified_auth
         def raise_server_error():
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="X-API-Key authentication is not configured on the server.",
+                detail="Authentication is not configured on the server.",
             )
-        app.dependency_overrides[get_current_api_key_validated] = raise_server_error
+        monkeypatch.setitem(app.dependency_overrides, get_unified_auth, raise_server_error)
 
         # Act
         response = client.get(
@@ -224,7 +224,7 @@ class TestSystemStatsEndpoint:
         # Assert
         assert response.status_code == 500
         data = response.json()
-        assert data["error"]["message"] == "X-API-Key authentication is not configured on the server."
+        assert data["error"]["message"] == "Authentication is not configured on the server."
         assert data["error"]["code"] == "http_500"
         
         # Cleanup
@@ -247,15 +247,19 @@ class TestRetryStatsEndpoint:
             "timestamp": datetime.now().isoformat(),
         }
 
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
     @patch("deployment.app.api.health.get_retry_statistics")
-    def test_retry_statistics_endpoint_success(self, mock_get_stats, client):
+    def test_retry_statistics_endpoint_success(self, mock_get_stats, client, auth_header_name, auth_token):
         """Test successful retrieval of retry statistics."""
         # Arrange
         mock_get_stats.return_value = self.get_mock_retry_stats_data()
 
         # Act
         response = client.get(
-            "/health/retry-stats", headers={"X-API-Key": TEST_X_API_KEY}
+            "/health/retry-stats", headers={auth_header_name: auth_token}
         )
 
         # Assert
@@ -272,35 +276,30 @@ class TestRetryStatsEndpoint:
         assert "timestamp" in data
         mock_get_stats.assert_called_once()
 
-    def test_retry_statistics_unauthorized_missing_key(self, client):
-        """Test retry stats endpoint fails with 401 if X-API-Key header is missing."""
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", "wrong_key"),
+        ("Authorization", "Bearer wrong_token"),
+    ])
+    def test_retry_statistics_unauthorized_invalid_key(self, client, auth_header_name, auth_token):
+        """Test retry stats endpoint fails with 401 if X-API-Key or Bearer token is invalid."""
         # Act
-        response = client.get("/health/retry-stats")
+        response = client.get("/health/retry-stats", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 401
         data = response.json()
-        assert data["error"]["message"] == "Not authenticated: X-API-Key header is missing."
+        assert data["error"]["message"] == "Invalid or missing credentials. Provide a valid Bearer token or X-API-Key."
 
-    def test_retry_statistics_unauthorized_invalid_key(self, client):
-        """Test retry stats endpoint fails with 401 if X-API-Key is invalid."""
-        # Act
-        response = client.get("/health/retry-stats", headers={"X-API-Key": "wrong_key"})
-
-        # Assert
-        assert response.status_code == 401
-        data = response.json()
-        assert data["error"]["message"] == "Invalid X-API-Key."
-
-    def test_retry_statistics_server_key_not_configured(self, client):
+    def test_retry_statistics_server_key_not_configured(self, client, monkeypatch):
         """Test retry stats endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
+        from deployment.app.services.auth import get_unified_auth
         def raise_server_error():
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="X-API-Key authentication is not configured on the server.",
+                detail="Authentication is not configured on the server.",
             )
-        app.dependency_overrides[get_current_api_key_validated] = raise_server_error
+        monkeypatch.setitem(app.dependency_overrides, get_unified_auth, raise_server_error)
 
         # Act
         response = client.get(
@@ -311,18 +310,22 @@ class TestRetryStatsEndpoint:
         # Assert
         assert response.status_code == 500
         data = response.json()
-        assert data["error"]["message"] == "X-API-Key authentication is not configured on the server."
+        assert data["error"]["message"] == "Authentication is not configured on the server."
         assert data["error"]["code"] == "http_500"
         
         # Cleanup
         app.dependency_overrides.clear()
 
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
     @patch("deployment.app.api.health.reset_retry_statistics")
-    def test_reset_retry_stats_endpoint_success(self, mock_reset_stats, client):
+    def test_reset_retry_stats_endpoint_success(self, mock_reset_stats, client, auth_header_name, auth_token):
         """Test successful reset of retry statistics."""
         # Act
         response = client.post(
-            "/health/retry-stats/reset", headers={"X-API-Key": TEST_X_API_KEY}
+            "/health/retry-stats/reset", headers={auth_header_name: auth_token}
         )
 
         # Assert
@@ -331,37 +334,32 @@ class TestRetryStatsEndpoint:
         assert data["message"] == "Retry statistics reset successfully"
         mock_reset_stats.assert_called_once()
 
-    def test_reset_retry_stats_unauthorized_missing_key(self, client):
-        """Test reset retry stats endpoint fails with 401 if X-API-Key header is missing."""
-        # Act
-        response = client.post("/health/retry-stats/reset")
-
-        # Assert
-        assert response.status_code == 401
-        data = response.json()
-        assert data["error"]["message"] == "Not authenticated: X-API-Key header is missing."
-
-    def test_reset_retry_stats_unauthorized_invalid_key(self, client):
-        """Test reset retry stats endpoint fails with 401 if X-API-Key is invalid."""
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", "wrong_key"),
+        ("Authorization", "Bearer wrong_token"),
+    ])
+    def test_reset_retry_stats_unauthorized_invalid_key(self, client, auth_header_name, auth_token):
+        """Test reset retry stats endpoint fails with 401 if X-API-Key or Bearer token is invalid."""
         # Act
         response = client.post(
-            "/health/retry-stats/reset", headers={"X-API-Key": "wrong_key"}
+            "/health/retry-stats/reset", headers={auth_header_name: auth_token}
         )
 
         # Assert
         assert response.status_code == 401
         data = response.json()
-        assert data["error"]["message"] == "Invalid X-API-Key."
+        assert data["error"]["message"] == "Invalid or missing credentials. Provide a valid Bearer token or X-API-Key."
 
-    def test_reset_retry_stats_server_key_not_configured(self, client):
+    def test_reset_retry_stats_server_key_not_configured(self, client, monkeypatch):
         """Test reset retry stats endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
+        from deployment.app.services.auth import get_unified_auth
         def raise_server_error():
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="X-API-Key authentication is not configured on the server.",
+                detail="Authentication is not configured on the server.",
             )
-        app.dependency_overrides[get_current_api_key_validated] = raise_server_error
+        monkeypatch.setitem(app.dependency_overrides, get_unified_auth, raise_server_error)
 
         # Act
         response = client.post(
@@ -372,22 +370,27 @@ class TestRetryStatsEndpoint:
         # Assert
         assert response.status_code == 500
         data = response.json()
-        assert data["error"]["message"] == "X-API-Key authentication is not configured on the server."
+        assert data["error"]["message"] == "Authentication is not configured on the server."
         assert data["error"]["code"] == "http_500"
         
         # Cleanup
         app.dependency_overrides.clear()
 
-    def test_retry_statistics_healthy(self, client, mock_dal, monkeypatch):
-        """Test retry stats endpoint returns 200 with stats when X-API-Key is valid."""
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_retry_statistics_healthy(self, client, mock_dal, monkeypatch, auth_header_name, auth_token):
+        """Test retry stats endpoint returns 200 with stats when X-API-Key or Bearer token is valid."""
         # Arrange
-        monkeypatch.setitem(app.dependency_overrides, get_current_api_key_validated, lambda: True)
+        from deployment.app.services.auth import get_unified_auth
+        monkeypatch.setitem(app.dependency_overrides, get_unified_auth, lambda: True)
         mock_get_stats = MagicMock(return_value=self.get_mock_retry_stats_data())
         monkeypatch.setattr("deployment.app.api.health.get_retry_statistics", mock_get_stats)
 
         # Act
         response = client.get(
-            "/health/retry-stats", headers={"X-API-Key": TEST_X_API_KEY}
+            "/health/retry-stats", headers={auth_header_name: auth_token}
         )
 
         # Assert
@@ -404,16 +407,21 @@ class TestRetryStatsEndpoint:
         assert "timestamp" in data
         mock_get_stats.assert_called_once()
 
-    def test_reset_retry_stats_success(self, client, mock_dal, monkeypatch):
-        """Test reset retry stats endpoint returns 200 with success message when X-API-Key is valid."""
+    @pytest.mark.parametrize("auth_header_name, auth_token", [
+        ("X-API-Key", TEST_X_API_KEY),
+        ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
+    ])
+    def test_reset_retry_stats_success(self, client, mock_dal, monkeypatch, auth_header_name, auth_token):
+        """Test reset retry stats endpoint returns 200 with success message when X-API-Key or Bearer token is valid."""
         # Arrange
-        monkeypatch.setitem(app.dependency_overrides, get_current_api_key_validated, lambda: True)
+        from deployment.app.services.auth import get_unified_auth
+        monkeypatch.setitem(app.dependency_overrides, get_unified_auth, lambda: True)
         mock_reset_stats = MagicMock()
         monkeypatch.setattr("deployment.app.api.health.reset_retry_statistics", mock_reset_stats)
 
         # Act
         response = client.post(
-            "/health/retry-stats/reset", headers={"X-API-Key": TEST_X_API_KEY}
+            "/health/retry-stats/reset", headers={auth_header_name: auth_token}
         )
 
         # Assert
@@ -501,8 +509,8 @@ class TestComponentHealthChecks:
         dotenv_content = """
 DATASPHERE_PROJECT_ID=project123
 DATASPHERE_FOLDER_ID=folder456
-API_X_API_KEY=api_key_789
-API_ADMIN_API_KEY=admin_key_123
+API_X_API_KEY_HASH=api_key_789_hash
+API_ADMIN_API_KEY_HASH=admin_key_123_hash
 YC_OAUTH_TOKEN=oauth_token_def
         """
         dotenv_file = tmp_path / ".env"
@@ -512,8 +520,8 @@ YC_OAUTH_TOKEN=oauth_token_def
         def dotenv_side_effect():
             os.environ['DATASPHERE_PROJECT_ID'] = 'project123'
             os.environ['DATASPHERE_FOLDER_ID'] = 'folder456'
-            os.environ['API_X_API_KEY'] = 'api_key_789'
-            os.environ['API_ADMIN_API_KEY'] = 'admin_key_123'
+            os.environ['API_X_API_KEY_HASH'] = 'api_key_789_hash'
+            os.environ['API_ADMIN_API_KEY_HASH'] = 'admin_key_123_hash'
             os.environ['YC_OAUTH_TOKEN'] = 'oauth_token_def'
             return True
 
@@ -545,8 +553,8 @@ YC_OAUTH_TOKEN=oauth_token_def
         assert len(result.details["missing_variables"]) > 0
         # Check that the key names are present in the descriptive strings
         missing_vars_text = " ".join(result.details["missing_variables"])
-        assert "API_X_API_KEY" in missing_vars_text
-        assert "API_ADMIN_API_KEY" in missing_vars_text
+        assert "API_X_API_KEY_HASH" in missing_vars_text
+        assert "API_ADMIN_API_KEY_HASH" in missing_vars_text
         assert "DATASPHERE_PROJECT_ID" in missing_vars_text
         assert "DATASPHERE_FOLDER_ID" in missing_vars_text
         assert ("YC_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text)
@@ -563,8 +571,8 @@ YC_OAUTH_TOKEN=oauth_token_def
         dotenv_content = """
 DATASPHERE_PROJECT_ID=project123
 DATASPHERE_FOLDER_ID=folder456
-API_X_API_KEY=api_key_789
-API_API_KEY=legacy_admin_key_123
+API_X_API_KEY_HASH=api_key_789_hash
+API_ADMIN_API_KEY_HASH=legacy_admin_key_123_hash
 YC_OAUTH_TOKEN=oauth_token_def
         """
         dotenv_file = tmp_path / ".env"
@@ -573,8 +581,8 @@ YC_OAUTH_TOKEN=oauth_token_def
         with patch.dict(os.environ, {
             'DATASPHERE_PROJECT_ID': 'project123',
             'DATASPHERE_FOLDER_ID': 'folder456',
-            'API_X_API_KEY': 'api_key_789',
-            'API_API_KEY': 'legacy_admin_key_123',  # Legacy key
+            'API_X_API_KEY_HASH': 'api_key_789_hash',
+            'API_ADMIN_API_KEY_HASH': 'legacy_admin_key_123_hash',  # Legacy key
             'YC_OAUTH_TOKEN': 'oauth_token_def'
         }, clear=True):
             # Act
@@ -594,8 +602,8 @@ YC_OAUTH_TOKEN=oauth_token_def
         with patch.dict(os.environ, {
             'DATASPHERE_PROJECT_ID': 'project123',
             'DATASPHERE_FOLDER_ID': 'folder456',
-            'API_X_API_KEY': 'api_key_789',
-            'API_ADMIN_API_KEY': 'admin_key_123'
+            'API_X_API_KEY_HASH': 'api_key_789_hash',
+            'API_ADMIN_API_KEY_HASH': 'admin_key_123_hash'
             # Missing DataSphere auth
         }, clear=True):
             # Act
@@ -619,8 +627,8 @@ YC_OAUTH_TOKEN=oauth_token_def
         dotenv_content = """
 DATASPHERE_PROJECT_ID=project123
 DATASPHERE_FOLDER_ID=folder456
-API_X_API_KEY=api_key_789
-API_ADMIN_API_KEY=admin_key_123
+API_X_API_KEY_HASH=api_key_789
+API_ADMIN_API_KEY_HASH=admin_key_123
 DATASPHERE_YC_PROFILE=default
         """
         dotenv_file = tmp_path / ".env"
@@ -629,8 +637,8 @@ DATASPHERE_YC_PROFILE=default
         with patch.dict(os.environ, {
             'DATASPHERE_PROJECT_ID': 'project123',
             'DATASPHERE_FOLDER_ID': 'folder456',
-            'API_X_API_KEY': 'api_key_789',
-            'API_ADMIN_API_KEY': 'admin_key_123',
+            'API_X_API_KEY_HASH': 'api_key_789_hash',
+            'API_ADMIN_API_KEY_HASH': 'admin_key_123_hash',
             'DATASPHERE_YC_PROFILE': 'default'  # YC profile auth
         }, clear=True):
             # Act

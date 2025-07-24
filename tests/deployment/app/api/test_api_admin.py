@@ -328,8 +328,8 @@ class TestAuthenticationScenarios:
             response = admin_client.post(
                 endpoint, headers={"Authorization": TEST_BEARER_TOKEN}
             )  # Missing "Bearer "
-            assert response.status_code == 403, (
-                f"Endpoint {endpoint} should require Bearer prefix"
+            assert response.status_code == 401, (
+                f"Endpoint {endpoint} should return 401 Unauthorized for missing Bearer prefix"
             )
 
     def test_endpoints_require_authorization_header(self, admin_client: TestClient):
@@ -345,8 +345,8 @@ class TestAuthenticationScenarios:
         # Act & Assert
         for endpoint in endpoints:
             response = admin_client.post(endpoint)  # No Authorization header
-            assert response.status_code == 403, (
-                f"Endpoint {endpoint} should require Authorization header"
+            assert response.status_code == 401, (
+                f"Endpoint {endpoint} should return 401 Unauthorized for missing Authorization header"
             )
 
 
