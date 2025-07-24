@@ -15,7 +15,9 @@ dependencies = [
     "setuptools>=78.0.2",
     "wheel>=0.45.1",
     "dill>=0.3.9",
-    "darts==0.36.0"
+    "darts==0.36.0",
+    "passlib[bcrypt]>=1.7.4",
+    "jwt>=1.4.0",
 ]
 
 [project.scripts]
