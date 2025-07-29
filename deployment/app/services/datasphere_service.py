@@ -3,39 +3,17 @@ import json
 import logging
 import os
 import shutil
-import sqlite3
 import tempfile
-import uuid
 import zipfile
-from datetime import datetime, date
-from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
-
 from collections import defaultdict
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from deployment.app.config import get_settings
-from deployment.app.db.database import (
-    create_model_record,
-    create_or_get_config,
-    create_training_result,
-    create_tuning_result,
-    create_prediction_result,
-    delete_models_by_ids,
-    execute_many,
-    execute_query,
-    get_all_models,
-    get_db_connection,
-    get_job,
-    get_or_create_multiindex_id,
-    get_or_create_multiindex_ids_batch,
-    get_recent_models,
-    get_top_configs,
-    insert_predictions,
-    update_job_status,
-    insert_report_features,
-)
+from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.db.feature_storage import load_features
 from deployment.app.models.api_models import JobStatus, TrainingConfig
 from deployment.app.services.job_registries.input_preparator_registry import (
@@ -45,12 +23,13 @@ from deployment.app.services.job_registries.job_type_registry import (
     JobTypeConfig,
     get_job_type_config,
 )
-from deployment.datasphere.client import DataSphereClient
-from deployment.datasphere.prepare_datasets import get_datasets
 from deployment.app.services.job_registries.result_processor_registry import (
     process_job_results_unified,
 )
 from deployment.app.utils.retry import retry_async_with_backoff
+from deployment.app.utils.validation import ValidationError
+from deployment.datasphere.client import DataSphereClient
+from deployment.datasphere.prepare_datasets import get_datasets
 
 # Initialize settings
 # settings = AppSettings()
@@ -129,11 +108,11 @@ def cleanup_project_input_link(project_root: str) -> None:
 async def _prepare_job_datasets(
     job_id: str,
     config: TrainingConfig | None,
+    dal: DataAccessLayer,
     start_date_for_dataset: str = None,
     end_date_for_dataset: str = None,
     output_dir: str = None,
     job_config: JobTypeConfig | None = None,
-    connection=None,
 ) -> None:
     """Prepares datasets required for the job."""
     logger.info(f"[{job_id}] Stage 2: Preparing datasets...")
@@ -149,10 +128,10 @@ async def _prepare_job_datasets(
             output_dir=output_dir,
             feature_types=["sales", "stock", "change"],
             datasets_to_generate=job_config.datasets_to_generate if job_config else [],
-            connection=connection,
+            connection=dal._connection,
         )
         logger.info(f"[{job_id}] Datasets prepared in {output_dir}.")
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=10,
@@ -160,7 +139,7 @@ async def _prepare_job_datasets(
         )
     except Exception as e:
         logger.error(f"[{job_id}] Failed to prepare datasets: {e}", exc_info=True)
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.FAILED.value,
             error_message=f"Failed to prepare datasets: {e}",
@@ -170,12 +149,12 @@ async def _prepare_job_datasets(
         ) from e
 
 
-async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
+async def _initialize_datasphere_client(job_id: str, dal: DataAccessLayer) -> DataSphereClient:
     """Initializes and returns the DataSphere client."""
     logger.info(f"[{job_id}] Stage 3: Initializing DataSphere client...")
     settings = get_settings()
     if not settings.datasphere or not settings.datasphere.client:
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.FAILED.value,
             error_message="DataSphere client configuration is missing.",
@@ -191,7 +170,7 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
             timeout=settings.datasphere.client_init_timeout_seconds,
         )
         logger.info(f"[{job_id}] DataSphere client initialized successfully.")
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=15,
@@ -202,7 +181,7 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
     except asyncio.TimeoutError:
         error_msg = f"DataSphere client initialization timed out after {settings.datasphere.client_init_timeout_seconds} seconds."
         logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(
             error_msg
         ) from asyncio.TimeoutError  # Keep original exception type for context
@@ -212,7 +191,7 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
         logger.error(
             f"Error importing DataSphereClient or its dependencies: {e}. Ensure all necessary packages are installed."
         )
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.FAILED.value,
             error_message=f"Client Initialization Failed due to import error: {e}",
@@ -223,14 +202,14 @@ async def _initialize_datasphere_client(job_id: str) -> DataSphereClient:
     except Exception as e:
         error_msg = f"Failed to initialize DataSphere client: {str(e)}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         # Keep original exception type if it's a custom DataSphereClientError or similar
         if "DataSphereClientError" in str(type(e)):  # Basic check
             raise
         raise RuntimeError(error_msg) from e
 
 
-async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path, job_config: JobTypeConfig) -> None:
+async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path, job_config: JobTypeConfig, dal: DataAccessLayer) -> None:
     """
     Verify that all required input files for the given job type exist.
 
@@ -246,7 +225,7 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path, job_c
     if not input_dir_path.exists() or not input_dir_path.is_dir():
         error_msg = f"Input directory '{input_dir_path}' is invalid for job {job_id}."
         logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg)
 
     # Check required files
@@ -260,11 +239,11 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path, job_c
             f"Missing required input files for job {job_id}: {', '.join(missing_required)}"
         )
         logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
 
     logger.info(f"[{job_id}] All required input files verified successfully.")
-    update_job_status(
+    dal.update_job_status(
         job_id,
         JobStatus.RUNNING.value,
         progress=20,
@@ -277,6 +256,7 @@ async def _prepare_job_inputs_unified(
     config: TrainingConfig | None,
     target_input_dir: Path,
     job_config: JobTypeConfig,
+    dal: DataAccessLayer,
 ) -> str:
     """
     Prepares the input files for a DataSphere job submission using a registered preparator.
@@ -289,15 +269,15 @@ async def _prepare_job_inputs_unified(
     # Get and run the specific preparator for the job type
     try:
         preparator = get_input_preparator(job_config.input_preparator_name)
-        await preparator(job_id, config, target_input_dir, job_config)
+        await preparator(job_id, config, target_input_dir, job_config, dal)
     except Exception as e:
         error_msg = f"Failed during input preparation with '{job_config.input_preparator_name}': {e}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg) from e
 
     logger.info(f"[{job_id}] DataSphere job submission inputs prepared.")
-    update_job_status(
+    dal.update_job_status(
         job_id,
         JobStatus.RUNNING.value,
         progress=18,
@@ -311,7 +291,7 @@ async def _prepare_job_inputs_unified(
 
 
 async def _archive_input_directory(
-    job_id: str, input_dir: str, archive_dir: str = None
+    job_id: str, input_dir: str, dal: DataAccessLayer, archive_dir: str = None
 ) -> str:
     """
     Archives the input directory into a zip file for DataSphere submission.
@@ -364,7 +344,7 @@ async def _archive_input_directory(
                     zipf.write(file_path, relative_path)
 
         logger.info(f"[{job_id}] Input directory archived to: {archive_path}")
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=23,
@@ -374,7 +354,7 @@ async def _archive_input_directory(
     except Exception as e:
         error_msg = f"Failed to archive input directory: {str(e)}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg) from e
 
 
@@ -422,7 +402,7 @@ async def _create_new_datasphere_job(
 
 
 async def _submit_datasphere_job(
-    job_id: str, client: DataSphereClient, ready_config_path: str, work_dir: str
+    job_id: str, client: DataSphereClient, ready_config_path: str, work_dir: str, dal: DataAccessLayer
 ) -> str:
     """
     Submits a new DataSphere job and returns the DS job ID.
@@ -443,7 +423,7 @@ async def _submit_datasphere_job(
     if not os.path.exists(ready_config_path):
         error_msg = f"DataSphere job config YAML not found at: {ready_config_path}"
         logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
 
     try:
@@ -454,7 +434,7 @@ async def _submit_datasphere_job(
         )
 
         # Update status
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=25,
@@ -466,7 +446,7 @@ async def _submit_datasphere_job(
         if not isinstance(e, FileNotFoundError | RuntimeError):
             error_msg = f"DataSphere job creation failed: {str(e)}"
             logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-            update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+            dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
             raise RuntimeError(error_msg) from e
         raise
 
@@ -522,6 +502,7 @@ async def _download_datasphere_job_results(
     client: DataSphereClient,
     results_dir: str,
     job_config: JobTypeConfig,
+    dal: DataAccessLayer,
 ) -> dict[str, Any]:
     """
     Downloads and processes the results from a DataSphere job in a unified way using job_config.
@@ -594,7 +575,7 @@ async def _download_datasphere_job_results(
     except asyncio.TimeoutError:
         error_msg = f"DataSphere job results download timed out after {get_settings().datasphere.client_download_timeout_seconds} seconds for DS Job ID: {ds_job_id}."
         logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg) from asyncio.TimeoutError
     except Exception as e:
         logger.error(
@@ -674,6 +655,7 @@ async def _process_datasphere_job(
     ready_config_path: str,
     work_dir: str,
     job_config: JobTypeConfig,
+    dal: DataAccessLayer,
 ) -> tuple[str, str, dict[str, Any] | None, dict[str, Any], int]:
     """
     Coordinates the DataSphere job lifecycle including submission, monitoring, and result fetching.
@@ -683,7 +665,7 @@ async def _process_datasphere_job(
 
     # Submit the job
     ds_job_id = await _submit_datasphere_job(
-        job_id, client, ready_config_path, work_dir
+        job_id, client, ready_config_path, work_dir, dal
     )
 
     completed = False
@@ -715,7 +697,7 @@ async def _process_datasphere_job(
             logger.error(
                 f"[{job_id}] Error getting status for DS Job {ds_job_id} (poll {polls}/{max_polls}): {status_exc}. Will retry."
             )
-            update_job_status(
+            dal.update_job_status(
                 job_id,
                 JobStatus.RUNNING.value,
                 status_message=f"DS Job {ds_job_id}: Error polling status ({status_exc}) - Retrying...",
@@ -726,7 +708,7 @@ async def _process_datasphere_job(
         current_progress = 25 + int(
             (polls / max_polls) * 65
         )  # Progress from 25% to 90% during polling
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=current_progress,
@@ -744,7 +726,7 @@ async def _process_datasphere_job(
 
             # Download and process results (унифицировано)
             output_files_by_role = await _download_datasphere_job_results(
-                job_id, ds_job_id, client, ds_job_specific_output_base_dir, job_config
+                job_id, ds_job_id, client, ds_job_specific_output_base_dir, job_config, dal
             )
             metrics_data = output_files_by_role.get("metrics")
 
@@ -777,7 +759,7 @@ async def _process_datasphere_job(
             )
             error_detail += f" Logs/diagnostics may be available in {logs_dir}."
 
-            update_job_status(
+            dal.update_job_status(
                 job_id, JobStatus.FAILED.value, error_message=error_detail
             )
             raise RuntimeError(error_detail)
@@ -785,7 +767,7 @@ async def _process_datasphere_job(
     if not completed:
         timeout_message = f"DS Job {ds_job_id} execution timed out after {polls} polls ({max_polls * poll_interval}s)."
         logger.error(f"[{job_id}] {timeout_message}")
-        update_job_status(
+        dal.update_job_status(
             job_id, status=JobStatus.FAILED.value, error_message=str(timeout_message)
         )
         raise TimeoutError(timeout_message)
@@ -799,7 +781,7 @@ async def _process_datasphere_job(
     )
 
 
-async def _perform_model_cleanup(job_id: str, current_model_id: str) -> None:
+async def _perform_model_cleanup(job_id: str, current_model_id: str, dal: DataAccessLayer) -> None:
     """Prunes old, non-active models based on settings."""
     try:
         num_models_to_keep = getattr(get_settings(), "max_models_to_keep", 5)
@@ -810,13 +792,13 @@ async def _perform_model_cleanup(job_id: str, current_model_id: str) -> None:
 
             # Get IDs of models to keep (most recent ones, including potentially the current one if it becomes active later)
             # Note: The current model (current_model_id) is initially inactive.
-            recent_kept_models_info = get_recent_models(limit=num_models_to_keep)
+            recent_kept_models_info = dal.get_recent_models(limit=num_models_to_keep)
             kept_model_ids = {
                 m["model_id"] for m in recent_kept_models_info
             }  # Use a set for faster lookups
 
             # Fetch all models (or a reasonable limit) to find candidates for deletion
-            all_models_info = get_all_models(limit=1000)
+            all_models_info = dal.get_all_models(limit=1000)
             models_to_delete_ids = []
 
             for model_info in all_models_info:
@@ -838,9 +820,7 @@ async def _perform_model_cleanup(job_id: str, current_model_id: str) -> None:
                 logger.info(
                     f"[{job_id}] Found {len(models_to_delete_ids)} older, non-active models to prune: {models_to_delete_ids}"
                 )
-                delete_result = delete_models_by_ids(
-                    models_to_delete_ids
-                )  # Assuming this handles file deletion too
+                delete_result = dal.delete_models_by_ids(models_to_delete_ids)
                 deleted_count = delete_result.get("deleted_count", "N/A")
                 failed_deletions = delete_result.get("failed_ids", [])
                 logger.info(
@@ -888,7 +868,7 @@ async def _cleanup_directories(job_id: str, dir_paths: list[str]) -> list[str]:
 
 
 def save_predictions_to_db(
-    predictions_path: str, job_id: str, model_id: str, direct_db_connection=None
+    predictions_path: str, job_id: str, model_id: str, dal: DataAccessLayer
 ) -> dict:
     """
     Reads prediction results from a CSV file and saves them to the database.
@@ -897,7 +877,6 @@ def save_predictions_to_db(
         predictions_path: Path to the CSV file with predictions
         job_id: The job ID that produced these predictions
         model_id: The model ID used for these predictions
-        direct_db_connection: Optional direct database connection to use
 
     Returns:
         Dictionary with result_id and predictions_count
@@ -949,7 +928,7 @@ def save_predictions_to_db(
         # Get prediction month from job parameters
         prediction_month: str | None = None
         try:
-            job_details = get_job(job_id, connection=direct_db_connection)
+            job_details = dal.get_job(job_id)
             if job_details and job_details.get("parameters"):
                 params = json.loads(job_details["parameters"])
                 prediction_month = params.get("prediction_month")
@@ -963,18 +942,14 @@ def save_predictions_to_db(
                 f"Could not calculate prediction month for job {job_id}: {e}"
             )
 
-        # Create a connection to the database
-        conn = direct_db_connection if direct_db_connection else get_db_connection()
-
         prediction_result_id = None
         try:
-            prediction_result_id = create_prediction_result(
+            prediction_result_id = dal.create_prediction_result(
                 job_id=job_id,
                 prediction_month=prediction_month,
                 model_id=model_id,
                 output_path=predictions_path,
                 summary_metrics="{}",
-                connection=conn,
             )
 
         except Exception as e:
@@ -984,25 +959,14 @@ def save_predictions_to_db(
 
         if prediction_result_id is not None:
             try:
-                insert_result = insert_predictions(
+                insert_result = dal.insert_predictions(
                     result_id=prediction_result_id,
                     model_id=model_id,
                     df=df,
-                    connection=conn,
                 )
-                # Явно возвращаем результат
                 return insert_result
             except Exception as e:
-                # Rollback on error
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
                 raise e
-            finally:
-                # Не закрываем соединение, если это внешнее соединение
-                if not direct_db_connection and conn:
-                    conn.close()
         else:
             logger.error(f"[{job_id}] No prediction result created")
             raise ValueError(f"No prediction result created for job {job_id}")
@@ -1013,26 +977,14 @@ def save_predictions_to_db(
         raise ValueError("Predictions file has invalid format") from e
     except Exception as e:
         # Do not wrap database connection errors
-        import sqlite3
-
         if isinstance(e, FileNotFoundError):
             raise
-        if isinstance(e, sqlite3.OperationalError):
-            raise
-        raise ValueError(f"Error processing predictions: {str(e)}") from e
 
+        raise ValueError(f"Error processing predictions: {str(e)}") from e
 
 # Allowed job types
 JOB_TYPE_TRAIN = "train"
 JOB_TYPE_TUNE = "tune"
-
-
-
-
-# NOTE: _process_tuning_job_results has been moved to result_processors.py
-# as part of the unified result processing architecture
-
-
 
 def _process_features_for_report(
     raw_features: dict[str, pd.DataFrame], prediction_month: datetime
@@ -1075,7 +1027,7 @@ def _process_features_for_report(
                     continue
 
                 stock = stock.join(
-                    change_pivot, 
+                    change_pivot,
                     how="outer"
                 ).fillna(0).cumsum(axis=1)
                 try:
@@ -1101,7 +1053,7 @@ def _process_features_for_report(
                 try:
                     prices_for_index = prices.loc[
                         masked_mean_sales_items.index,
-                    ].rename(columns=lambda _: month).iloc[:, 0]
+                    ].rename(columns=lambda _val, m=month: m).iloc[:, 0]
                 except KeyError:
                     logger.warning(
                         f"Price data not found for some items in month {month}"
@@ -1136,7 +1088,7 @@ def _process_features_for_report(
                 new_features["lost_sales"].append(lost_sales)
             except Exception as e:
                 logger.error(
-                    f"Error processing month {month}: {e}", 
+                    f"Error processing month {month}: {e}",
                     exc_info=True
                 )
                 continue
@@ -1208,7 +1160,7 @@ def _extract_features_for_month(
         return pd.DataFrame()
 
 
-async def calculate_and_store_report_features(prediction_month: date, connection: Optional[sqlite3.Connection] = None) -> None:
+async def calculate_and_store_report_features(prediction_month: date, dal: DataAccessLayer) -> None:
     """
     Calculates and stores report features for a given prediction month.
     """
@@ -1217,7 +1169,7 @@ async def calculate_and_store_report_features(prediction_month: date, connection
         raw_features = load_features(
             store_type="sql",
             feature_types=["sales", "change", "stock", "prices"],
-            connection=connection
+            dal=dal
         )
         if not raw_features:
             logger.warning("No raw features loaded, skipping report feature calculation.")
@@ -1243,7 +1195,7 @@ async def calculate_and_store_report_features(prediction_month: date, connection
         multiindex_tuples = list(enriched_columns.index)
 
         # Get all multi-index IDs in one batch
-        multiindex_id_map = get_or_create_multiindex_ids_batch(multiindex_tuples, connection)
+        multiindex_id_map = dal.get_or_create_multiindex_ids_batch(multiindex_tuples)
 
         # Prepare data for batch insert
         features_to_insert = []
@@ -1261,7 +1213,7 @@ async def calculate_and_store_report_features(prediction_month: date, connection
                 ))
 
         if features_to_insert:
-            insert_report_features(features_to_insert, connection=connection)
+            dal.insert_report_features(features_to_insert)
             logger.info(f"Successfully stored {len(features_to_insert)} report features for {prediction_month.strftime('%Y-%m')}.")
 
     except Exception as e:
@@ -1270,15 +1222,14 @@ async def calculate_and_store_report_features(prediction_month: date, connection
 
 # Main Orchestrator Function
 async def run_job(
-
     job_id: str,
-    training_config: dict | None = None,
+    config: dict | None = None,
     config_id: str | None = None,
     job_type: str = JOB_TYPE_TRAIN,
     dataset_start_date: str = None,
     dataset_end_date: str = None,
     additional_job_params: dict | None = None,
-    connection: Optional[sqlite3.Connection] = None, # NEW: Add connection parameter
+    dal: DataAccessLayer = None,
 ) -> dict[str, Any] | None:
     """
     Runs a DataSphere training job pipeline: setup, execution, monitoring, result processing, cleanup.
@@ -1287,6 +1238,12 @@ async def run_job(
     client: DataSphereClient | None = None
     project_input_link_path: str | None = None
     job_completed_successfully = False
+    import debugpy; debugpy.listen(5678);  print("Waiting for debugger ..."); debugpy.wait_for_client()
+    try:
+        config = TrainingConfig(**config)
+    except (ValidationError, ValueError) as e:
+        logger.error(f"Configuration is invalid: {e}", exc_info=True)
+        raise ValueError(f"Invalid configuration provided: {e}") from e
 
     try:
         with (
@@ -1313,30 +1270,26 @@ async def run_job(
                 )
 
                 # Initialize job status
-                update_job_status(
+                dal.update_job_status(
                     job_id,
                     JobStatus.PENDING.value,
                     progress=0,
                     status_message="Initializing job.",
-                    connection=connection,
                 )
-                config = None
-                if training_config:
-                    config = TrainingConfig(**training_config)
 
                 # Stage 2: Prepare Datasets
                 await _prepare_job_datasets(
                     job_id,
                     config,
+                    dal,
                     dataset_start_date,
                     dataset_end_date,
                     output_dir=str(temp_input_dir),
                     job_config=job_config,
-                    connection=connection,
                 )
 
                 # Stage 3: Initialize Client
-                client = await _initialize_datasphere_client(job_id)
+                client = await _initialize_datasphere_client(job_id, dal)
 
                 # Stage 4a: Prepare DS Job Submission Inputs
                 config_path = await _prepare_job_inputs_unified(
@@ -1344,14 +1297,15 @@ async def run_job(
                     config,
                     temp_input_dir,
                     job_config,
+                    dal,
                 )
 
                 # Stage 4a.1: Verify DataSphere job inputs
-                await _verify_datasphere_job_inputs(job_id, temp_input_dir, job_config)
+                await _verify_datasphere_job_inputs(job_id, temp_input_dir, job_config, dal)
 
                 # Stage 4b: Archive Input Directory
                 archive_path = await _archive_input_directory(
-                    job_id, temp_input_dir_str, temp_input_dir_str
+                    job_id, temp_input_dir_str, dal, temp_input_dir_str
                 )
 
                 # Stage 4c: Create Project Link
@@ -1364,12 +1318,11 @@ async def run_job(
                 logger.info(
                     f"[{job_id}] Created project input link: {project_input_link_path}"
                 )
-                update_job_status(
+                dal.update_job_status(
                     job_id,
                     JobStatus.RUNNING.value,
                     progress=24,
                     status_message="Project input link created.",
-                    connection=connection,
                 )
 
                 # Stage 5: Submit and Monitor DS Job
@@ -1386,6 +1339,7 @@ async def run_job(
                     config_path,
                     temp_input_dir_str,  # Pass temp_input_dir as work_dir for local modules
                     job_config,
+                    dal,
                 )
 
                 # Stage 6: Process Results using unified registry
@@ -1400,7 +1354,7 @@ async def run_job(
                     polls=polls,
                     poll_interval=get_settings().datasphere.poll_interval,
                     config_id=config_id,
-                    connection=connection, # Pass the external connection
+                    dal=dal, # Pass the dal
                 )
                 job_completed_successfully = True
                 logger.info(f"[{job_id}] Job pipeline completed successfully.")
@@ -1452,12 +1406,11 @@ async def run_job(
                         )
                         cancel_message += f" Error attempting to cancel DataSphere job {current_ds_job_id}: {cancel_e}."
 
-                update_job_status(
+                dal.update_job_status(
                     job_id,
                     JobStatus.FAILED.value,
                     error_message=cancel_message,
-                    status_message=cancel_message,
-                    connection=connection,
+                    status_message=cancel_message
                 )
 
             except (ValueError, RuntimeError, TimeoutError, ImportError) as e:
@@ -1466,27 +1419,25 @@ async def run_job(
                     f"[{job_id}] {error_msg}",
                     exc_info=isinstance(e, RuntimeError | ImportError),
                 )
-                job_details = get_job(job_id, connection=connection)
+                job_details = dal.get_job(job_id)
                 if job_details and job_details.get("status") != JobStatus.FAILED.value:
-                    update_job_status(
+                    dal.update_job_status(
                         job_id,
                         JobStatus.FAILED.value,
                         error_message=error_msg,
                         status_message=error_msg,
-                        connection=connection,
                     )
                 raise
             except Exception as e:
                 error_msg = f"Unexpected error in job pipeline: {str(e)}"
                 logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-                job_details = get_job(job_id, connection=connection)
+                job_details = dal.get_job(job_id)
                 if job_details and job_details.get("status") != JobStatus.FAILED.value:
-                    update_job_status(
+                    dal.update_job_status(
                         job_id,
                         JobStatus.FAILED.value,
                         error_message=error_msg,
                         status_message=error_msg,
-                        connection=connection,
                     )
                 raise
             finally:
@@ -1509,12 +1460,11 @@ async def run_job(
         # This will catch errors in creating the temporary directories themselves.
         error_msg = f"Failed to set up temporary directories for job: {str(e)}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.FAILED.value,
             error_message=error_msg,
             status_message=error_msg,
-            connection=connection,
         )
         raise
 
@@ -1525,7 +1475,7 @@ async def save_model_file_and_db(
     ds_job_id: str,
     config: TrainingConfig,
     metrics_data: dict[str, Any] | None,
-    connection: Optional[sqlite3.Connection] = None, # NEW: Add connection parameter
+    dal: DataAccessLayer,
 ) -> str:
     """
     Saves the model file to permanent storage and creates a database record.
@@ -1594,13 +1544,12 @@ async def save_model_file_and_db(
         }
 
         # Create a record in the database with the permanent path
-        create_model_record(
+        dal.create_model_record(
             model_id=model_id,
             job_id=job_id,
             model_path=str(permanent_model_path),  # Save the permanent path
             created_at=datetime.now(),
             metadata=metadata,
-            connection=connection, # NEW: Pass connection
         )
         logger.info(
             f"[{job_id}] Successfully created model record in DB for model_id: {model_id} with permanent path: {permanent_model_path}"

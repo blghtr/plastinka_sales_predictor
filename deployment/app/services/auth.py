@@ -8,10 +8,16 @@ Swagger UI integration.
 
 import logging
 import secrets
-from typing import Optional, Dict, Any
+from typing import Any
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials
+from fastapi.security import (
+    APIKeyHeader,
+    HTTPAuthorizationCredentials,
+    HTTPBasic,
+    HTTPBasicCredentials,
+    HTTPBearer,
+)
 from passlib.context import CryptContext
 
 from ..config import AppSettings, get_settings
@@ -56,19 +62,19 @@ def get_docs_user(credentials: HTTPBasicCredentials = Depends(docs_security), se
 
 
 async def get_current_api_key_validated(
-    api_key: Optional[str] = Depends(api_key_header),
+    api_key: str | None = Depends(api_key_header),
     settings: AppSettings = Depends(get_settings),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Validate API key from Authorization header using bcrypt verification.
-    
+
     Args:
         api_key: The API key from the Authorization header
         settings: Application settings containing the hashed API key
-        
+
     Returns:
         Dict containing authentication type and value
-        
+
     Raises:
         HTTPException: If authentication fails or is not configured
     """
@@ -114,19 +120,19 @@ async def get_current_api_key_validated(
 
 
 async def get_admin_token_validated(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     settings: AppSettings = Depends(get_settings),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Validate admin Bearer token using bcrypt verification.
-    
+
     Args:
         credentials: The Bearer token credentials
         settings: Application settings containing the hashed admin token
-        
+
     Returns:
         Dict containing authentication type and value
-        
+
     Raises:
         HTTPException: If authentication fails or is not configured
     """
@@ -172,10 +178,10 @@ async def get_admin_token_validated(
 
 
 async def get_unified_auth(
-    api_key: Optional[str] = Depends(api_key_header),
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    api_key: str | None = Depends(api_key_header),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     settings: AppSettings = Depends(get_settings),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Unified authentication that accepts both Bearer tokens (admin) and API keys.
     It prioritizes the Bearer token if both are provided.
@@ -211,14 +217,14 @@ async def get_unified_auth(
 
 # Convenience functions for common authentication patterns
 async def require_api_key(
-    auth_result: Dict[str, Any] = Depends(get_unified_auth)
+    auth_result: dict[str, Any] = Depends(get_unified_auth)
 ) -> str:
     """
     Dependency that requires API key authentication.
-    
+
     Returns:
         The API key value
-        
+
     Raises:
         HTTPException: If API key authentication fails
     """
@@ -226,14 +232,14 @@ async def require_api_key(
 
 
 async def require_admin_token(
-    auth_result: Dict[str, Any] = Depends(get_admin_token_validated)
+    auth_result: dict[str, Any] = Depends(get_admin_token_validated)
 ) -> str:
     """
     Dependency that requires admin token authentication.
-    
+
     Returns:
         The admin token value
-        
+
     Raises:
         HTTPException: If admin token authentication fails
     """
@@ -241,14 +247,14 @@ async def require_admin_token(
 
 
 async def require_any_auth(
-    auth_result: Dict[str, Any] = Depends(get_unified_auth)
-) -> Dict[str, Any]:
+    auth_result: dict[str, Any] = Depends(get_unified_auth)
+) -> dict[str, Any]:
     """
     Dependency that accepts either API key or admin token authentication.
-    
+
     Returns:
         Dict containing authentication type and value
-        
+
     Raises:
         HTTPException: If authentication fails
     """

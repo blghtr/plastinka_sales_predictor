@@ -1,5 +1,7 @@
 import logging
+
 import pandas as pd
+
 from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.models.api_models import ReportParams, ReportType
 

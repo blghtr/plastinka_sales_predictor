@@ -3,7 +3,7 @@ from pathlib import Path
 
 # Import our custom modules
 from deployment.app.config import get_settings
-from deployment.app.db.database import create_data_upload_result, update_job_status
+from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.db.feature_storage import save_features
 from deployment.app.models.api_models import JobStatus
 
@@ -17,6 +17,7 @@ async def process_data_files(
     sales_files_paths: list[str],
     cutoff_date: str,
     temp_dir_path: str,
+    dal: DataAccessLayer,
 ) -> None:
     """
     Process uploaded files to extract features.
@@ -27,6 +28,7 @@ async def process_data_files(
         sales_files_paths: List of paths to the saved sales files
         cutoff_date: Cutoff date for processing (DD.MM.YYYY)
         temp_dir_path: Path to the temporary directory used for this job
+        dal: DataAccessLayer instance
     """
     temp_dir = Path(temp_dir_path)
     stock_path = Path(stock_file_path)
@@ -34,7 +36,7 @@ async def process_data_files(
 
     try:
         # Update job status to running
-        update_job_status(job_id, JobStatus.RUNNING.value, progress=0)
+        dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=0)
 
         # Check if files exist
         if not stock_path.exists():
@@ -43,7 +45,7 @@ async def process_data_files(
             if not Path(p).exists():
                 raise FileNotFoundError(f"Sales file not found at {p}")
 
-        update_job_status(job_id, JobStatus.RUNNING.value, progress=20)
+        dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=20)
 
         # Process the data using the existing pipeline
         sales_dir_path = temp_dir / "sales"
@@ -54,16 +56,16 @@ async def process_data_files(
             bins=settings.price_category_interval_index,
         )
 
-        update_job_status(job_id, JobStatus.RUNNING.value, progress=80)
+        dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=80)
 
         # Save features using our SQL feature storage
         stock_filename = stock_path.name
         sales_filenames = [Path(p).name for p in sales_files_paths]
         source_files = ", ".join([stock_filename] + sales_filenames)
-        run_id = save_features(features, cutoff_date, source_files, store_type="sql")
+        run_id = save_features(features, cutoff_date, source_files, store_type="sql", dal=dal)
 
         # Create result record
-        result_id = create_data_upload_result(
+        result_id = dal.create_data_upload_result(
             job_id=job_id,
             records_processed=sum(
                 df.shape[0] for df in features.values() if hasattr(df, "shape")
@@ -73,13 +75,13 @@ async def process_data_files(
         )
 
         # Update job as completed
-        update_job_status(
+        dal.update_job_status(
             job_id, JobStatus.COMPLETED.value, progress=100, result_id=result_id
         )
 
     except Exception as e:
         # Update job as failed with error message
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=str(e))
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=str(e))
         # Re-raise for logging
         raise
     finally:
@@ -87,7 +89,3 @@ async def process_data_files(
         if temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-
-# Удаляем функцию save_uploaded_file, так как она больше не нужна
-# async def save_uploaded_file(uploaded_file: UploadFile, directory: Path) -> Path:
-#     ...
