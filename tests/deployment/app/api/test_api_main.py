@@ -1,6 +1,6 @@
-def test_root_endpoint(client):
+def test_root_endpoint(api_client):
     """Test the root endpoint returns a welcome message."""
-    response = client.get("/")
+    response = api_client.get("/")
 
     assert response.status_code == 200
     data = response.json()

@@ -3,7 +3,6 @@ import os
 import sqlite3
 import time
 from datetime import datetime
-from unittest.mock import patch
 from unittest.mock import MagicMock
 
 import pytest

@@ -6,17 +6,20 @@ including cleanup of historical predictions and management of model files.
 """
 
 import logging
-import os
 from datetime import datetime, timedelta
 
 from ..config import get_settings
-from .database import ALLOWED_METRICS, get_db_connection
-from .data_access_layer import DataAccessLayer, UserRoles # Import DataAccessLayer
+from .data_access_layer import (  # Import DataAccessLayer
+    DataAccessLayer,
+    UserContext,
+    UserRoles,
+)
+from .database import ALLOWED_METRICS
 
 logger = logging.getLogger(__name__)
 
 
-def cleanup_old_predictions(days_to_keep: int | None = None, conn=None) -> int:
+def cleanup_old_predictions(days_to_keep: int | None = None, dal: DataAccessLayer = None) -> int:
     """
     Remove prediction records older than the specified retention period.
 
@@ -28,60 +31,52 @@ def cleanup_old_predictions(days_to_keep: int | None = None, conn=None) -> int:
     Returns:
         Number of records removed
     """
+    print(f"DEBUG: cleanup_old_predictions called with days_to_keep={days_to_keep}, dal={dal}")
     if days_to_keep is None:
+        print("DEBUG: Getting days_to_keep from settings")
         days_to_keep = get_settings().data_retention.prediction_retention_days
+        print(f"DEBUG: days_to_keep = {days_to_keep}")
 
     retention_date = datetime.now() - timedelta(days=days_to_keep)
     cutoff_date_str = retention_date.strftime("%Y-%m-%d")
+    logger.info(f"Debug: Cutoff date calculated as: {cutoff_date_str}")
 
-    # Track if we created this connection or if it was passed in
-    connection_created = False
-    if conn is None:
-        # Create a temporary DAL instance for this function if no connection is provided
-        # This ensures database access goes through DAL, but also closes the connection if created here.
-        dal = DataAccessLayer(user_context=UserRoles.SYSTEM) # Assuming system role for cleanup
-        conn = dal.db_connection
-        connection_created = True
-    else:
-        # If conn is already provided (e.g., from an outer DAL context), just use it.
-        pass
+    if dal is None:
+        dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.SYSTEM]))
 
-    cursor = conn.cursor()
+    retention_date = datetime.now() - timedelta(days=days_to_keep)
+    cutoff_date_str = retention_date.strftime("%Y-%m-%d")
+    logger.info(f"Debug: Cutoff date calculated as: {cutoff_date_str}")
 
     try:
+        logger.info(f"Debug: Starting cleanup with cutoff date: {cutoff_date_str}")
         # Count records to be deleted
-        cursor.execute(
-            "SELECT COUNT(*) FROM fact_predictions WHERE prediction_date < ?",
+        count_result = dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_predictions WHERE prediction_date < ?",
             (cutoff_date_str,),
+            fetchall=False
         )
-        result = cursor.fetchone()
-        count = (
-            result[0] if isinstance(result, tuple | list) else list(result.values())[0]
-        )
+        count = count_result["count"] if count_result else 0
+        logger.info(f"Debug: Found {count} predictions older than {cutoff_date_str}")
+
         if count > 0:
-            cursor.execute(
+            dal.execute_raw_query(
                 "DELETE FROM fact_predictions WHERE prediction_date < ?",
                 (cutoff_date_str,),
             )
-            conn.commit()
             logger.info(f"Deleted {count} predictions older than {cutoff_date_str}")
         return count
 
     except Exception as e:
-        conn.rollback()
+        print(f"DEBUG: Exception caught in cleanup_old_predictions: {str(e)}")
         logger.error(f"Error cleaning up old predictions: {str(e)}")
         return 0
-
-    finally:
-        # Only close the connection if we created it
-        if connection_created:
-            conn.close()
 
 
 def cleanup_old_historical_data(
     sales_days_to_keep: int | None = None,
     stock_days_to_keep: int | None = None,
-    conn=None,
+    dal: DataAccessLayer = None,
 ) -> dict[str, int]:
     """
     Remove historical sales and stock data older than the specified retention period.
@@ -108,28 +103,29 @@ def cleanup_old_historical_data(
     sales_cutoff_str = sales_cutoff.strftime("%Y-%m-%d")
     stock_cutoff_str = stock_cutoff.strftime("%Y-%m-%d")
 
-    # Track if we created this connection or if it was passed in
-    connection_created = False
-    if conn is None:
-        # Create a temporary DAL instance for this function if no connection is provided
-        dal = DataAccessLayer(user_context=UserRoles.SYSTEM) # Assuming system role for cleanup
-        conn = dal.db_connection
-        connection_created = True
-    else:
-        pass
+    if dal is None:
+        dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.SYSTEM]))
 
-    cursor = conn.cursor()
+    # Calculate cutoff dates
+    sales_cutoff = datetime.now() - timedelta(days=sales_days_to_keep)
+    stock_cutoff = datetime.now() - timedelta(days=stock_days_to_keep)
+
+    sales_cutoff_str = sales_cutoff.strftime("%Y-%m-%d")
+    stock_cutoff_str = stock_cutoff.strftime("%Y-%m-%d")
+
     result = {"sales": 0, "stock": 0, "stock_changes": 0, "prices": 0}
 
     try:
         # Clean up sales data
-        cursor.execute(
-            "SELECT COUNT(*) FROM fact_sales WHERE data_date < ?", (sales_cutoff_str,)
+        sales_count_result = dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_sales WHERE data_date < ?",
+            (sales_cutoff_str,),
+            fetchall=False
         )
-        sales_count = cursor.fetchone()[0]
+        sales_count = sales_count_result["count"] if sales_count_result else 0
 
         if sales_count > 0:
-            cursor.execute(
+            dal.execute_raw_query(
                 "DELETE FROM fact_sales WHERE data_date < ?", (sales_cutoff_str,)
             )
             result["sales"] = sales_count
@@ -138,13 +134,15 @@ def cleanup_old_historical_data(
             )
 
         # Clean up stock data
-        cursor.execute(
-            "SELECT COUNT(*) FROM fact_stock WHERE data_date < ?", (stock_cutoff_str,)
+        stock_count_result = dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_stock WHERE data_date < ?",
+            (stock_cutoff_str,),
+            fetchall=False
         )
-        stock_count = cursor.fetchone()[0]
+        stock_count = stock_count_result["count"] if stock_count_result else 0
 
         if stock_count > 0:
-            cursor.execute(
+            dal.execute_raw_query(
                 "DELETE FROM fact_stock WHERE data_date < ?", (stock_cutoff_str,)
             )
             result["stock"] = stock_count
@@ -153,14 +151,15 @@ def cleanup_old_historical_data(
             )
 
         # Clean up stock change data
-        cursor.execute(
-            "SELECT COUNT(*) FROM fact_stock_changes WHERE data_date < ?",
+        changes_count_result = dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_stock_changes WHERE data_date < ?",
             (stock_cutoff_str,),
+            fetchall=False
         )
-        changes_count = cursor.fetchone()[0]
+        changes_count = changes_count_result["count"] if changes_count_result else 0
 
         if changes_count > 0:
-            cursor.execute(
+            dal.execute_raw_query(
                 "DELETE FROM fact_stock_changes WHERE data_date < ?",
                 (stock_cutoff_str,),
             )
@@ -170,13 +169,15 @@ def cleanup_old_historical_data(
             )
 
         # Clean up price data
-        cursor.execute(
-            "SELECT COUNT(*) FROM fact_prices WHERE data_date < ?", (sales_cutoff_str,)
+        prices_count_result = dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_prices WHERE data_date < ?",
+            (sales_cutoff_str,),
+            fetchall=False
         )
-        prices_count = cursor.fetchone()[0]
+        prices_count = prices_count_result["count"] if prices_count_result else 0
 
         if prices_count > 0:
-            cursor.execute(
+            dal.execute_raw_query(
                 "DELETE FROM fact_prices WHERE data_date < ?", (sales_cutoff_str,)
             )
             result["prices"] = prices_count
@@ -184,24 +185,17 @@ def cleanup_old_historical_data(
                 f"Deleted {prices_count} price records older than {sales_cutoff_str}"
             )
 
-        conn.commit()
         return result
 
     except Exception as e:
-        conn.rollback()
         logger.error(f"Error cleaning up historical data: {str(e)}")
         return result
-
-    finally:
-        # Only close the connection if we created it
-        if connection_created:
-            conn.close()
 
 
 def cleanup_old_models(
     models_to_keep: int | None = None,
     inactive_days_to_keep: int | None = None,
-    conn=None,
+    dal: DataAccessLayer = None,
 ) -> list[str]:
     """
     Clean up old model records and files based on retention policy.
@@ -226,24 +220,15 @@ def cleanup_old_models(
             get_settings().data_retention.inactive_model_retention_days
         )
 
-    # Track if we created this connection or if it was passed in
-    connection_created = False
-    if conn is None:
-        # Create a temporary DAL instance for this function if no connection is provided
-        dal = DataAccessLayer(user_context=UserRoles.SYSTEM) # Assuming system role for cleanup
-        conn = dal.db_connection
-        connection_created = True
-    else:
-        pass
-
-    cursor = conn.cursor()
+    if dal is None:
+        dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.SYSTEM]))
 
     deleted_model_ids = []
 
     try:
-        # 1. Get active config sets
-        cursor.execute("SELECT config_id FROM configs WHERE is_active = 1")
-        active_config_ids = [row[0] for row in cursor.fetchall()]
+        # Get all configs to check which ones are still referenced
+        configs = dal.get_configs()
+        active_config_ids = [c["config_id"] for c in configs if c["is_active"]]
 
         # 2. For each active config set, keep only top N models by metric
         settings = get_settings()
@@ -253,20 +238,13 @@ def cleanup_old_models(
         order_direction = "DESC" if higher_is_better else "ASC"
 
         if default_metric not in ALLOWED_METRICS:
-            logger.error(
-                f"Invalid default_metric '{default_metric}' provided to cleanup_old_models."
-            )
-            # Fallback to a safe default or raise an error
-            # For now, let's raise an error as this indicates a configuration issue.
             raise ValueError(
                 f"Invalid default_metric: {default_metric}. Allowed metrics are: {ALLOWED_METRICS}"
             )
 
-        json_path = f"'$.{default_metric}'"  # metric_name is validated
+        json_path = f"'$.{default_metric}'"
 
         for config_id in active_config_ids:
-            # Get models for this config set, sorted by metric
-            # The default_metric for JSON_EXTRACT and order_direction are now safely constructed.
             query = f"""
                 SELECT m.model_id, m.model_path
                 FROM models m
@@ -274,44 +252,23 @@ def cleanup_old_models(
                 WHERE tr.config_id = ?
                 ORDER BY json_extract(tr.metrics, {json_path}) {order_direction}
             """
-            cursor.execute(query, (config_id,))
+            models = dal.execute_raw_query(query, (config_id,), fetchall=True)
 
-            models = cursor.fetchall()
-
-            # If we have more models than we need to keep, delete the excess
             if len(models) > models_to_keep:
                 models_to_delete = models[models_to_keep:]
 
-                for model_id, model_path in models_to_delete:
-                    # Check if model is currently used in any predictions
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM fact_predictions WHERE model_id = ?",
+                for model in models_to_delete:
+                    model_id = model["model_id"]
+
+                    prediction_count_result = dal.execute_raw_query(
+                        "SELECT COUNT(*) as count FROM fact_predictions WHERE model_id = ?",
                         (model_id,),
+                        fetchall=False
                     )
-                    prediction_count = cursor.fetchone()[0]
+                    prediction_count = prediction_count_result["count"] if prediction_count_result else 0
 
                     if prediction_count == 0:
-                        # Safe to delete model as it's not referenced by predictions
-                        cursor.execute(
-                            "DELETE FROM models WHERE model_id = ?", (model_id,)
-                        )
-
-                        # Delete associated training results
-                        cursor.execute(
-                            "DELETE FROM training_results WHERE model_id = ?",
-                            (model_id,),
-                        )
-
-                        # Delete physical file if it exists
-                        if model_path and os.path.exists(model_path):
-                            try:
-                                os.remove(model_path)
-                                logger.info(f"Deleted model file: {model_path}")
-                            except OSError as e:
-                                logger.warning(
-                                    f"Failed to delete model file {model_path}: {str(e)}"
-                                )
-
+                        dal.delete_model_record_and_file(model_id)
                         deleted_model_ids.append(model_id)
                         logger.info(
                             f"Deleted model {model_id} (excess model for config set {config_id})"
@@ -321,82 +278,57 @@ def cleanup_old_models(
         retention_date = datetime.now() - timedelta(days=inactive_days_to_keep)
         cutoff_date_str = retention_date.strftime("%Y-%m-%d %H:%M:%S")
 
-        cursor.execute(
+        inactive_models = dal.execute_raw_query(
             """
             SELECT model_id, model_path
             FROM models
             WHERE is_active = 0 AND created_at < ?
         """,
             (cutoff_date_str,),
+            fetchall=True,
         )
 
-        inactive_models = cursor.fetchall()
-        for model_id, model_path in inactive_models:
-            # Check if model is used in any predictions
-            cursor.execute(
-                "SELECT COUNT(*) FROM fact_predictions WHERE model_id = ?", (model_id,)
+        for model in inactive_models:
+            model_id = model["model_id"]
+            prediction_count_result = dal.execute_raw_query(
+                "SELECT COUNT(*) as count FROM fact_predictions WHERE model_id = ?",
+                (model_id,),
+                fetchall=False
             )
-            prediction_count = cursor.fetchone()[0]
+            prediction_count = prediction_count_result["count"] if prediction_count_result else 0
 
             if prediction_count == 0:
-                # Safe to delete
-                cursor.execute("DELETE FROM models WHERE model_id = ?", (model_id,))
-
-                # Delete associated training results
-                cursor.execute(
-                    "DELETE FROM training_results WHERE model_id = ?", (model_id,)
-                )
-
-                # Delete physical file
-                if model_path and os.path.exists(model_path):
-                    try:
-                        os.remove(model_path)
-                        logger.info(f"Deleted model file: {model_path}")
-                    except OSError as e:
-                        logger.warning(
-                            f"Failed to delete model file {model_path}: {str(e)}"
-                        )
-
+                dal.delete_model_record_and_file(model_id)
                 deleted_model_ids.append(model_id)
                 logger.info(
-                    f"Deleted inactive model {model_id} (older than {cutoff_date_str})"
+                    f"Deleted inactive model {model_id} (older than {inactive_days_to_keep} days)"
                 )
 
-        conn.commit()
         return deleted_model_ids
 
     except Exception as e:
-        conn.rollback()
         logger.error(f"Error cleaning up old models: {str(e)}")
         return []
 
-    finally:
-        # Only close the connection if we created it
-        if connection_created:
-            conn.close()
 
-
-def run_cleanup_job() -> None:
+def run_cleanup_job(dal: DataAccessLayer = None) -> None:
     """Runs all cleanup routines: predictions, models, and historical data."""
-    from deployment.app.db.data_retention import (
-        cleanup_old_predictions,
-        cleanup_old_models,
-        cleanup_old_historical_data,
-    )
+    if dal is None:
+        dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.SYSTEM]))
     try:
-        deleted_predictions = cleanup_old_predictions()
+        deleted_predictions = cleanup_old_predictions(dal=dal)
         print(f"Deleted {deleted_predictions} old predictions.")
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Error in prediction cleanup: {e}")
     try:
-        deleted_models = cleanup_old_models()
+        deleted_models = cleanup_old_models(dal=dal)
         print(f"Deleted models: {deleted_models}")
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Error in model cleanup: {e}")
     try:
-        deleted_historical = cleanup_old_historical_data()
+        deleted_historical = cleanup_old_historical_data(dal=dal)
         print(f"Deleted historical data: {deleted_historical}")
     except Exception as e:
         import logging

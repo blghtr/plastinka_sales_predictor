@@ -2,7 +2,6 @@
 API endpoints for working with models and parameter sets.
 """
 
-import json as jsonlib
 import logging
 import os
 from typing import Any
@@ -17,26 +16,21 @@ from fastapi import (
     Path,
     Query,
     UploadFile,
+    status,
 )
-from fastapi import status
 
 from deployment.app.config import get_settings
-from deployment.app.db.database import (
-    auto_activate_best_config_if_enabled,
-    auto_activate_best_model_if_enabled,
-)
+from deployment.app.dependencies import DataAccessLayer, get_dal_for_general_user
 from deployment.app.models.api_models import (
     ConfigCreateRequest,
     ConfigResponse,
     DeleteIdsRequest,
     DeleteResponse,
-    ModelResponse,
     ErrorDetailResponse,
-    ModelUploadMetadata
+    ModelResponse,
+    ModelUploadMetadata,
 )
-from deployment.app.services.auth import  get_unified_auth
-from deployment.app.dependencies import DataAccessLayer, get_dal_for_general_user
-from deployment.app.utils.error_handling import ErrorDetail
+from deployment.app.services.auth import get_unified_auth
 
 router = APIRouter(
     prefix="/api/v1/models-configs",
@@ -101,7 +95,7 @@ async def get_best_config(
         description="The name of the metric to use for comparison (e.g., \"val_MIWS_MIC_Ratio\"). If omitted, the default metric from settings will be used."
     ),
     higher_is_better: bool = Query(
-        True, 
+        True,
         description="A boolean flag indicating the desired direction of the metric. Set to `true` if higher values are better, `false` otherwise."
     ),
     x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
@@ -172,9 +166,9 @@ async def delete_configs(
 
     result = dal.delete_configs_by_ids(request.ids)
     return DeleteResponse(
-        successful=result["successful"],
-        failed=result["failed"],
-        errors=result["errors"],
+        successful=result.get("deleted_count", 0),
+        failed=result.get("skipped_count", 0),
+        errors=[{"id": cid, "reason": "Active config or in use"} for cid in result.get("skipped_configs", [])],
     )
 
 
@@ -225,7 +219,7 @@ async def get_best_model(
         description="The name of the metric to use for comparison (e.g., \"val_MIWS_MIC_Ratio\"). If omitted, the default metric from settings will be used."
     ),
     higher_is_better: bool = Query(
-        True, 
+        True,
         description="A boolean flag indicating the desired direction of the metric. Set to `true` if higher values are better, `false` otherwise."
     ),
     x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
@@ -269,9 +263,11 @@ async def get_recent_models_endpoint(
     # Convert to response format
     result = []
     for model in models:
-        # model is a tuple of (model_id, job_id, model_path, created_at, metadata)
-        # Destructure tuple values
-        model_id, job_id, model_path, created_at, metadata_json = model
+        # model is a dict with fields: model_id, job_id, model_path, created_at, metadata, is_active
+        model_id = model["model_id"]
+        model_path = model["model_path"]
+        is_active = model.get("is_active", False)
+        metadata_json = model.get("metadata")
         import json
 
         metadata = json.loads(metadata_json) if metadata_json else {}
@@ -280,7 +276,7 @@ async def get_recent_models_endpoint(
             ModelResponse(
                 model_id=model_id,
                 model_path=model_path,
-                is_active=False,  # We don't have this info from get_recent_models
+                is_active=is_active,
                 metadata=metadata,
             )
         )
@@ -347,7 +343,7 @@ async def delete_models(
 @router.post("/configs/upload", response_model=ConfigResponse, summary="Create a new hyperparameter configuration.")
 async def upload_config(
     request: ConfigCreateRequest = Body(
-        ..., 
+        ...,
         description="A JSON object containing the configuration payload (`json_payload`) and a boolean flag (`is_active`) to set it as active."
     ),
     x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
@@ -361,7 +357,7 @@ async def upload_config(
         config_id = dal.create_or_get_config(
             request.json_payload, is_active=request.is_active, source="manual_upload"
         )
-                
+
         return ConfigResponse(
             config_id=config_id,
             config=request.json_payload,
@@ -461,7 +457,7 @@ async def upload_model(
                 metadata=meta_dict,
                 is_active=is_active,
             )
-            
+
             # Auto-activate best model if enabled in settings (unless user explicitly set this one as active)
             if not is_active:
                 try:
@@ -470,7 +466,7 @@ async def upload_model(
                         logger.info(f"Auto-activated best model after manual model upload: {model_id}")
                 except Exception as e:
                     logger.warning(f"Failed to auto-activate best model after manual upload: {e}")
-                    
+
         except Exception as db_exc:
             logger.error(
                 f"Failed to create model record for model_id={model_id}: {db_exc}"

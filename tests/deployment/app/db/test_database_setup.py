@@ -1,10 +1,6 @@
 import sqlite3
-import tempfile
-import time
-from pathlib import Path
 
 import pytest
-
 
 # @pytest.fixture
 # def temp_db():
@@ -70,7 +66,8 @@ import pytest
 
 def test_foreign_key_constraint(temp_db):
     """Test that foreign key constraints are enforced."""
-    conn = temp_db["conn"]
+    dal = temp_db["dal"]
+    conn = dal._connection
     # Connect to the database
     conn.execute("PRAGMA foreign_keys = ON")
 

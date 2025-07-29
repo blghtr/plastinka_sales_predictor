@@ -1,8 +1,7 @@
 import logging
+import os
 import sqlite3
 from pathlib import Path
-import os
-import sys
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +267,7 @@ CREATE INDEX IF NOT EXISTS idx_retry_events_time ON retry_events(timestamp);
 
 MULTIINDEX_NAMES = [
     "barcode",
-    "artist", 
+    "artist",
     "album",
     "cover_type",
     "price_category",
@@ -295,36 +294,33 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
         bool: True if successful, False otherwise
     """
     conn = None
-    conn_created = False
+    conn_created_internally = False
     original_row_factory = None
 
     try:
         if connection:
             conn = connection
         elif db_path:
-            # Parse SQLite URI scheme if present
+            # Убираем SQLite префиксы из пути
+            sqlite_prefixes = ["sqlite:///", "sqlite://", "sqlite:"]
             parsed_db_path = db_path
-            if parsed_db_path.startswith("sqlite:///"):
-                parsed_db_path = parsed_db_path[len("sqlite:///") :]
-            elif parsed_db_path.startswith("sqlite://"):
-                parsed_db_path = parsed_db_path[len("sqlite://") :]
-            elif parsed_db_path.startswith("sqlite:"):
-                parsed_db_path = parsed_db_path[len("sqlite:") :]
+            
+            for prefix in sqlite_prefixes:
+                if parsed_db_path.startswith(prefix):
+                    parsed_db_path = parsed_db_path[len(prefix):]
+                    break
 
             if not parsed_db_path:
                 raise ValueError(
                     f"Database path became empty after parsing scheme from: {db_path}"
                 )
 
-            # Ensure directory exists
             actual_file_path = Path(parsed_db_path)
             actual_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Connect to database
             conn = sqlite3.connect(db_path)
-            conn_created = True
+            conn_created_internally = True
 
-            # Set file permissions for the database file (e.g., 0o600 for owner read/write)
             try:
                 os.chmod(str(actual_file_path), 0o600)
                 logger.info(f"Set database file permissions for {actual_file_path} to 0o600.")
@@ -332,17 +328,13 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
                 logger.warning(f"Could not set database file permissions for {actual_file_path}: {e}")
 
         if conn:
-            # Store and reset row_factory for schema operations
             original_row_factory = conn.row_factory
             conn.row_factory = None
 
-            # Enable foreign keys and execute schema
             conn.execute("PRAGMA foreign_keys = ON;")
             cursor = conn.cursor()
             cursor.executescript(SCHEMA_SQL)
-
-            if conn_created:
-                conn.commit()
+            conn.commit()
 
             return True
         else:
@@ -351,117 +343,14 @@ def init_db(db_path: str = None, connection: sqlite3.Connection = None):
 
     except Exception as e:
         logger.error(f"Database initialization failed: {e}", exc_info=True)
-        if conn_created and conn:
+        if conn and conn_created_internally: # Only rollback if we created the connection
             conn.rollback()
         return False
     finally:
-        # Restore original row_factory
         if connection and original_row_factory is not None:
             connection.row_factory = original_row_factory
 
-        # Close connection if we created it
-        if conn_created and conn:
-            try:
-                conn.close()
-            except Exception as close_e:
-                logger.error(f"Error closing database connection: {close_e}")
-
-
-def migrate_add_prediction_month(
-    db_path: str = None, connection: sqlite3.Connection = None
-):
-    """
-    Migration to add prediction_month column to prediction_results table.
-    This function is idempotent - running it multiple times is safe.
-
-    Args:
-        db_path: Path to SQLite database file (optional, if connection is provided)
-        connection: Optional existing database connection. If provided, db_path is ignored.
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    conn = None
-    conn_created = False
-    original_row_factory = None
-
-    try:
-        if connection:
-            conn = connection
-        elif db_path:
-            # Parse SQLite URI scheme if present
-            parsed_db_path = db_path
-            if parsed_db_path.startswith("sqlite:///"):
-                parsed_db_path = parsed_db_path[len("sqlite:///") :]
-            elif parsed_db_path.startswith("sqlite://"):
-                parsed_db_path = parsed_db_path[len("sqlite://") :]
-            elif parsed_db_path.startswith("sqlite:"):
-                parsed_db_path = parsed_db_path[len("sqlite:") :]
-
-            if not parsed_db_path:
-                raise ValueError(
-                    f"Database path became empty after parsing scheme from: {db_path}"
-                )
-
-            # Ensure directory exists
-            actual_file_path = Path(parsed_db_path)
-            actual_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Connect to database
-            conn = sqlite3.connect(db_path)
-            conn_created = True
-
-        if conn:
-            # Store and reset row_factory for schema operations
-            original_row_factory = conn.row_factory
-            conn.row_factory = None
-
-            # Enable foreign keys
-            conn.execute("PRAGMA foreign_keys = ON;")
-            cursor = conn.cursor()
-
-            # Check if column already exists
-            cursor.execute("PRAGMA table_info(prediction_results)")
-            columns = [row[1] for row in cursor.fetchall()]
-
-            if "prediction_month" not in columns:
-                logger.info(
-                    "Adding prediction_month column to prediction_results table"
-                )
-                cursor.execute(
-                    "ALTER TABLE prediction_results ADD COLUMN prediction_month DATE"
-                )
-
-                # Add the index
-                cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_prediction_results_month ON prediction_results(prediction_month)"
-                )
-
-                if conn_created:
-                    conn.commit()
-                logger.info("Successfully added prediction_month column and index")
-            else:
-                logger.info(
-                    "prediction_month column already exists, skipping migration"
-                )
-
-            return True
-        else:
-            logger.error("No database connection established for migration")
-            return False
-
-    except Exception as e:
-        logger.error(f"Migration failed: {e}", exc_info=True)
-        if conn_created and conn:
-            conn.rollback()
-        return False
-    finally:
-        # Restore original row_factory
-        if connection and original_row_factory is not None:
-            connection.row_factory = original_row_factory
-
-        # Close connection if we created it
-        if conn_created and conn:
+        if conn and conn_created_internally: # Only close if we created the connection
             try:
                 conn.close()
             except Exception as close_e:

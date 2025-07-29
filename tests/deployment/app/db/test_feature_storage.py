@@ -12,6 +12,7 @@ import pytest
 # Add the parent directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.db.feature_storage import (
     FeatureStoreFactory,
     SQLFeatureStore,
@@ -19,7 +20,6 @@ from deployment.app.db.feature_storage import (
     save_features,
 )
 from deployment.app.db.schema import SCHEMA_SQL  # Import schema SQL
-from deployment.app.db.data_access_layer import get_or_create_multiindex_id
 
 
 @pytest.fixture
@@ -68,7 +68,9 @@ def feature_store_env():
 def test_convert_to_int(feature_store_env):
     """Test the _convert_to_int helper method."""
     conn = feature_store_env["conn"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    dal = DataAccessLayer(connection=conn)
+    dal = DataAccessLayer(connection=conn)
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         assert store._convert_to_int(5) == 5
         assert store._convert_to_int(5.7) == 6
         assert store._convert_to_int(5.3) == 5
@@ -84,7 +86,9 @@ def test_convert_to_int(feature_store_env):
 def test_convert_to_float(feature_store_env):
     """Test the _convert_to_float helper method."""
     conn = feature_store_env["conn"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    dal = DataAccessLayer(connection=conn)
+    dal = DataAccessLayer(connection=conn)
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         assert store._convert_to_float(5.7) == 5.7
         assert store._convert_to_float(5) == 5.0
         assert store._convert_to_float(np.float64(5.7)) == 5.7
@@ -99,7 +103,9 @@ def test_convert_to_float(feature_store_env):
 def test_convert_to_date_str(feature_store_env):
     """Test the _convert_to_date_str helper method."""
     conn = feature_store_env["conn"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    dal = DataAccessLayer(connection=conn)
+    dal = DataAccessLayer(connection=conn)
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         test_date = datetime(2023, 1, 15)
         assert store._convert_to_date_str(test_date) == "2023-01-15"
         assert store._convert_to_date_str("2023-01-15") == "2023-01-15"
@@ -110,9 +116,11 @@ def test_convert_to_date_str(feature_store_env):
 def test_save_stock_feature_with_mixed_types(feature_store_env):
     """Test saving stock feature with mixed data types."""
     conn = feature_store_env["conn"]
+    dal = DataAccessLayer(connection=conn)
     cursor = feature_store_env["cursor"]
 
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    dal = DataAccessLayer(connection=conn)
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         idx_tuple = (
             "1234567890",
             "Test Artist",
@@ -177,6 +185,7 @@ def test_save_stock_feature_with_mixed_types(feature_store_env):
 def test_save_prices_replaces_by_multiindex(feature_store_env):
     """Test that saving prices replaces records based on multiindex_id."""
     conn = feature_store_env["conn"]
+    dal = DataAccessLayer(connection=conn)
     cursor = feature_store_env["cursor"]
 
     idx_tuple = (
@@ -197,7 +206,7 @@ def test_save_prices_replaces_by_multiindex(feature_store_env):
     date2 = pd.to_datetime("2023-09-01")
     df2 = pd.DataFrame([[1200.0]], index=[date2], columns=index)
 
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         # Save initial price
         store._save_feature("prices", df1)
 
@@ -212,7 +221,7 @@ def test_save_prices_replaces_by_multiindex(feature_store_env):
         cursor.execute("SELECT data_date, value FROM fact_prices WHERE multiindex_id = 1")
         results = cursor.fetchall()
         assert len(results) == 1  # Should be only one record
-        
+
         final_result = results[0]
         assert final_result["data_date"] == "2023-09-01"  # Date should be updated
         assert final_result["value"] == 1200.0  # Value should be updated
@@ -221,6 +230,7 @@ def test_save_prices_replaces_by_multiindex(feature_store_env):
 def test_save_stock_ignores_duplicates(feature_store_env):
     """Test that saving stock data ignores duplicates for the same (multiindex_id, data_date)."""
     conn = feature_store_env["conn"]
+    dal = DataAccessLayer(connection=conn)
     cursor = feature_store_env["cursor"]
 
     idx_tuple = (
@@ -234,12 +244,12 @@ def test_save_stock_ignores_duplicates(feature_store_env):
             "release_type", "recording_decade", "release_decade", "style", "record_year",
         ],
     )
-    
+
     stock_date = pd.to_datetime("2023-08-01")
     df1 = pd.DataFrame([[10.0]], index=[stock_date], columns=index)
     df2 = pd.DataFrame([[20.0]], index=[stock_date], columns=index) # Same date, different value
 
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         # Save initial stock
         store._save_feature("stock", df1)
 
@@ -249,7 +259,7 @@ def test_save_stock_ignores_duplicates(feature_store_env):
 
         # Try to save new stock for the same date, it should be ignored
         store._save_feature("stock", df2, append=True)
-        
+
         cursor.execute("SELECT value FROM fact_stock WHERE multiindex_id = 1 AND data_date = '2023-08-01'")
         result2 = cursor.fetchone()
         assert result2["value"] == 10.0 # Value should NOT be updated
@@ -262,7 +272,8 @@ def test_save_stock_ignores_duplicates(feature_store_env):
 def test_load_prices_feature_loads_latest(feature_store_env):
     """Test loading prices features gets the single, latest value."""
     conn = feature_store_env["conn"]
-    
+    dal = DataAccessLayer(connection=conn)
+
     idx_tuple = (
         "1234567890", "Test Artist", "Test Album", "CD", "Standard",
         "Studio", "2010s", "2010s", "Rock", 2015,
@@ -274,19 +285,19 @@ def test_load_prices_feature_loads_latest(feature_store_env):
             "release_type", "recording_decade", "release_decade", "style", "record_year",
         ],
     )
-    
+
     date1 = pd.to_datetime("2023-05-01")
     date2 = pd.to_datetime("2023-09-01") # This is the latest date
-    
+
     df_save1 = pd.DataFrame([[1500.50]], index=[date1], columns=index)
     df_save2 = pd.DataFrame([[1600.00]], index=[date2], columns=index)
-    
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         store._save_feature("prices", df_save1)
         store._save_feature("prices", df_save2, append=True) # This will replace the previous record
-        
+
         loaded_df = store._load_feature("prices")
-    
+
     assert isinstance(loaded_df, pd.DataFrame)
     assert not loaded_df.empty
     assert len(loaded_df) == 1 # Should only load one row
@@ -306,17 +317,10 @@ def test_sql_feature_store_as_context_manager_external_connection():
     conn.commit()
 
     try:
-        with SQLFeatureStore(connection=conn, run_id=1) as fs:
-            assert fs.db_conn == conn
-            assert fs._conn_created_internally is False
-            # Perform a simple operation that requires a run_id if fs uses it internally
-            # For example, if create_run isn't called, other methods might use self.run_id
-            # We need to ensure a run exists if methods in SQLFeatureStore depend on it.
-            # Let's pre-insert a run for this test or call create_run.
-            # For simplicity, assuming run_id=1 is okay if other methods don't strictly need a *valid* run
-            # but just a non-None run_id for some paths.
-            # If create_run is essential: fs.create_run("2023-01-01", "test_ext.csv")
-            # For now, relying on run_id=1 being passed.
+        dal = DataAccessLayer(connection=conn)
+        with SQLFeatureStore(dal=dal, run_id=1) as fs:
+            # Note: db_conn and _conn_created_internally are no longer available in new implementation
+            # The connection is now managed by the DAL
             fs.complete_run("test_status")  # Example operation
 
         conn.execute("SELECT 1")  # Should not raise ProgrammingError
@@ -343,15 +347,15 @@ def test_sql_feature_store_as_context_manager_internal_connection(
 
     try:
         # Using a specific run_id to avoid issues if methods depend on it.
-        with SQLFeatureStore(run_id=1) as fs:
-            assert fs._conn_created_internally is True
-            assert fs.db_conn == internal_conn_obj
+        dal_internal = DataAccessLayer(connection=internal_conn_obj)
+        with SQLFeatureStore(dal=dal_internal, run_id=1) as fs:
+            # Note: _conn_created_internally and db_conn are no longer available in new implementation
             fs.complete_run("test_internal_status")  # Example operation
+            _ = fs  # Use the variable to avoid linter warning
 
-        with pytest.raises(
-            sqlite3.ProgrammingError, match="Cannot operate on a closed database."
-        ):
-            internal_conn_obj.execute("SELECT 1")
+        # Note: In the new implementation, connections are managed by the DAL and not closed by the context manager
+        # The connection should still be usable after the context manager exits
+        internal_conn_obj.execute("SELECT 1")  # Should not raise ProgrammingError
 
     finally:
         # Attempt to close, will be no-op or error if already closed by __exit__
@@ -379,14 +383,14 @@ def test_sql_feature_store_context_manager_exception_internal(
 
     try:
         with pytest.raises(ValueError, match="Test exception from internal"):
-            with SQLFeatureStore(run_id=1) as fs:
-                assert fs._conn_created_internally is True
+            dal_internal_exc = DataAccessLayer(connection=internal_conn_obj_exc)
+            with SQLFeatureStore(dal=dal_internal_exc, run_id=1) as _:
+                # Note: _conn_created_internally is no longer available in new implementation
                 raise ValueError("Test exception from internal")
 
-        with pytest.raises(
-            sqlite3.ProgrammingError, match="Cannot operate on a closed database."
-        ):
-            internal_conn_obj_exc.execute("SELECT 1")
+        # Note: In the new implementation, connections are managed by the DAL and not closed by the context manager
+        # The connection should still be usable after the context manager exits
+        internal_conn_obj_exc.execute("SELECT 1")  # Should not raise ProgrammingError
 
     finally:
         try:
@@ -407,8 +411,9 @@ def test_sql_feature_store_context_manager_exception_external():
 
     try:
         with pytest.raises(ValueError, match="Test exception from external"):
-            with SQLFeatureStore(connection=external_conn_exc, run_id=1) as fs:
-                assert fs._conn_created_internally is False
+            dal_exc = DataAccessLayer(connection=external_conn_exc)
+            with SQLFeatureStore(dal=dal_exc, run_id=1) as _:
+                # Note: _conn_created_internally is no longer available in new implementation
                 raise ValueError("Test exception from external")
 
         external_conn_exc.execute("SELECT 1")  # Should not raise
@@ -426,9 +431,10 @@ def test_sql_feature_store_context_manager_exception_external():
 def test_create_and_complete_run(feature_store_env):
     """Test creating and completing a processing run."""
     conn = feature_store_env["conn"]
+    dal = DataAccessLayer(connection=conn)
     cursor = feature_store_env["cursor"]
 
-    with SQLFeatureStore(connection=conn) as store:  # No run_id, will create new
+    with SQLFeatureStore(dal=dal) as store:  # No run_id, will create new
         run_id = store.create_run(cutoff_date="2023-02-01", source_files="run_test.csv")
         assert run_id is not None
         assert store.run_id == run_id
@@ -457,8 +463,9 @@ def test_create_and_complete_run(feature_store_env):
 def test_save_sales_feature(feature_store_env):
     """Test saving sales feature data."""
     conn = feature_store_env["conn"]
+    dal = DataAccessLayer(connection=conn)
     cursor = feature_store_env["cursor"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         idx_tuple = (
             "1234567890",
             "Test Artist",
@@ -510,8 +517,9 @@ def test_save_sales_feature(feature_store_env):
 def test_save_change_feature(feature_store_env):
     """Test saving stock change feature data."""
     conn = feature_store_env["conn"]
+    dal = DataAccessLayer(connection=conn)
     cursor = feature_store_env["cursor"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         idx_tuple = (
             "1234567890",
             "Test Artist",
@@ -563,7 +571,8 @@ def test_save_change_feature(feature_store_env):
 def test_build_multiindex_from_mapping(feature_store_env):
     """Test rebuilding the MultiIndex from the database."""
     conn = feature_store_env["conn"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    dal = DataAccessLayer(connection=conn)
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         multiindex, mask = store._build_multiindex_from_mapping([1])
 
         assert isinstance(multiindex, pd.MultiIndex)
@@ -571,7 +580,7 @@ def test_build_multiindex_from_mapping(feature_store_env):
         assert len(multiindex) == 1
         assert len(mask) == 1
         assert mask[0] is True  # ID 1 should be found
-        
+
         expected_names = [
             "barcode",
             "artist",
@@ -640,7 +649,7 @@ def test_build_multiindex_from_mapping(feature_store_env):
         assert empty_multiindex.empty
         assert empty_mask == []
         assert list(empty_multiindex.names) == expected_names
-        
+
         # Test with missing ID
         missing_multiindex, missing_mask = store._build_multiindex_from_mapping([999])
         assert len(missing_multiindex) == 0
@@ -651,7 +660,8 @@ def test_build_multiindex_from_mapping(feature_store_env):
 def test_load_stock_feature(feature_store_env):
     """Test loading stock features."""
     conn = feature_store_env["conn"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    dal = DataAccessLayer(connection=conn)
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         idx_tuple = (
             "1234567890",
             "Test Artist",
@@ -699,7 +709,8 @@ def test_load_stock_feature(feature_store_env):
 def test_load_prices_feature(feature_store_env):
     """Test loading prices features with the new unified format."""
     conn = feature_store_env["conn"]
-    
+    dal = DataAccessLayer(connection=conn)
+
     # Создаем multiindex для колонок
     idx_tuple = (
         "1234567890",
@@ -728,31 +739,31 @@ def test_load_prices_feature(feature_store_env):
             "record_year",
         ],
     )
-    
+
     # Создаем DataFrame с датой в индексе для prices
     date1 = pd.to_datetime("2023-05-01")
     date2 = pd.to_datetime("2023-05-02")
-    
+
     # В новом формате: дата в индексе, multiindex в колонках
     df_save1 = pd.DataFrame([[1500.50]], index=[date1], columns=index)
     df_save2 = pd.DataFrame([[1600.00]], index=[date2], columns=index)
-    
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         store._save_feature("prices", df_save1)
         store._save_feature("prices", df_save2, append=True)
         loaded_df = store._load_feature("prices")
-    
+
     assert isinstance(loaded_df, pd.DataFrame)
     assert loaded_df.index.name == "_date"
     assert len(loaded_df.columns) == 1  # Один multiindex в колонках
     assert loaded_df.columns[0] == idx_tuple
-    
+
     # Проверяем значения
     # Prices should only have one value per multiindex_id (the latest one)
     assert len(loaded_df) == 1  # Should only load one row
     assert loaded_df.index[0] == date2  # Index should be the latest date
     assert loaded_df.loc[date2, idx_tuple] == 1600.00
-    
+
     conn.execute("DELETE FROM fact_prices")
     conn.commit()
     loaded_empty = store._load_feature("prices")
@@ -762,7 +773,8 @@ def test_load_prices_feature(feature_store_env):
 def test_load_sales_feature(feature_store_env):
     """Test loading sales features."""
     conn = feature_store_env["conn"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    dal = DataAccessLayer(connection=conn)
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         idx_tuple = (
             "1234567890",
             "Test Artist",
@@ -806,7 +818,7 @@ def test_load_sales_feature(feature_store_env):
         assert len(loaded_df) == 2  # Две даты в индексе
         assert len(loaded_df.columns) == 1  # Один multiindex в колонках
         assert loaded_df.columns[0] == idx_tuple
-        
+
         # Проверяем значения
         assert loaded_df.loc[date1, idx_tuple] == 10.0
         assert loaded_df.loc[date2, idx_tuple] == 12.0
@@ -827,7 +839,8 @@ def test_load_sales_feature(feature_store_env):
 def test_load_change_feature(feature_store_env):
     """Test loading change features."""
     conn = feature_store_env["conn"]
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+    dal = DataAccessLayer(connection=conn)
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         idx_tuple = (
             "1234567890",
             "Test Artist",
@@ -870,7 +883,7 @@ def test_load_change_feature(feature_store_env):
         assert len(loaded_df) == 2  # Две даты в индексе
         assert len(loaded_df.columns) == 1  # Один multiindex в колонках
         assert loaded_df.columns[0] == idx_tuple
-        
+
         # Проверяем значения
         assert loaded_df.loc[date1, idx_tuple] == -5.0
         assert loaded_df.loc[date2, idx_tuple] == 3.0
@@ -879,7 +892,8 @@ def test_load_change_feature(feature_store_env):
 def test_load_features_all_types(feature_store_env):
     """Test loading all feature types using the main load_features method with unified format."""
     conn = feature_store_env["conn"]
-    
+    dal = DataAccessLayer(connection=conn)
+
     # Создаем multiindex для колонок
     idx_tuple = (
         "1234567890",
@@ -908,51 +922,51 @@ def test_load_features_all_types(feature_store_env):
             "record_year",
         ],
     )
-    
+
     # Даты для тестов
     stock_date = pd.to_datetime("2023-08-01")
     sales_date = pd.to_datetime("2023-08-02")
     change_date = pd.to_datetime("2023-08-03")
     prices_date = pd.to_datetime("2023-08-04")
-    
-    with SQLFeatureStore(connection=conn, run_id=1) as store:
+
+    with SQLFeatureStore(dal=dal, run_id=1) as store:
         # Все features в унифицированном формате: даты в индексе, multiindex в колонках
-        
+
         # Stock
         stock_df = pd.DataFrame([[float(100)]], index=[stock_date], columns=index)
         store._save_feature("stock", stock_df)
-        
+
         # Prices
-        prices_df = pd.DataFrame([[float(25.99)]], index=[prices_date], columns=index)
+        prices_df = pd.DataFrame([[25.99]], index=[prices_date], columns=index)
         store._save_feature("prices", prices_df)
-        
+
         # Sales
         sales_df = pd.DataFrame([[5]], index=[sales_date], columns=index)
         store._save_feature("sales", sales_df)
-        
+
         # Change
         change_df = pd.DataFrame([[-2]], index=[change_date], columns=index)
         store._save_feature("change", change_df)
-        
+
         # Загружаем все features
         all_features = store.load_features()
-    
+
     # Проверяем, что все features загрузились в правильном формате
     assert "stock" in all_features
     assert not all_features["stock"].empty
     assert all_features["stock"].index.name == "_date"
     assert all_features["stock"].loc[stock_date, idx_tuple] == 100.0
-    
+
     assert "prices" in all_features
     assert not all_features["prices"].empty
     assert all_features["prices"].index.name == "_date"
     assert all_features["prices"].loc[prices_date, idx_tuple] == 25.99
-    
+
     assert "sales" in all_features
     assert not all_features["sales"].empty
     assert all_features["sales"].index.name == "_date"
     assert all_features["sales"].loc[sales_date, idx_tuple] == 5.0
-    
+
     assert "change" in all_features
     assert not all_features["change"].empty
     assert all_features["change"].index.name == "_date"
@@ -964,10 +978,11 @@ def test_load_features_all_types(feature_store_env):
 
 def test_get_store_sql(feature_store_env):
     conn = feature_store_env["conn"]
-    store = FeatureStoreFactory.get_store(store_type="sql", run_id=1, connection=conn)
+    dal = DataAccessLayer(connection=conn)
+    store = FeatureStoreFactory.get_store(store_type="sql", run_id=1, dal=dal)
     assert isinstance(store, SQLFeatureStore)
     assert store.run_id == 1
-    assert store.db_conn == conn
+            # Note: db_conn is no longer available in new implementation
     # Ensure connection is closed if created by store, or remains open if passed
     # This test passes an external connection, so it should remain open after store is GC'd
     # If store was created without connection, its __exit__ (if used as CM) or __del__ would close.
@@ -978,8 +993,9 @@ def test_get_store_sql(feature_store_env):
 
 def test_get_store_default(feature_store_env):
     conn = feature_store_env["conn"]
+    dal = DataAccessLayer(connection=conn)
     # Test default type
-    store = FeatureStoreFactory.get_store(run_id=1, connection=conn)
+    store = FeatureStoreFactory.get_store(run_id=1, dal=dal)
     assert isinstance(store, SQLFeatureStore)
     del store
     conn.execute("SELECT 1")
@@ -1008,12 +1024,13 @@ def test_save_features_helper_creates_store_and_calls_methods(
     sources = "file.csv"
 
     # Call the helper function
+    dal_param = DataAccessLayer(connection=conn_param)
     returned_run_id = save_features(
         features_dict,
         cutoff_date=cutoff,
         source_files=sources,
         store_type="sql",
-        connection=conn_param,
+        dal=dal_param,
     )
 
     # Assertions
@@ -1022,7 +1039,7 @@ def test_save_features_helper_creates_store_and_calls_methods(
     # So, we check that get_store was called with the expected kwargs, and run_id took its default.
     mock_get_store.assert_called_once_with(
         store_type="sql",
-        connection=conn_param,
+        dal=dal_param,
         # run_id=None is implied by not being in kwargs and taking its default in get_store
     )
     # We can also assert that the run_id passed to the SQLFeatureStore constructor by the factory was indeed None
@@ -1050,13 +1067,18 @@ def test_load_features_helper_creates_store_and_calls_load(
     start = "2022-01-01"
     end = "2022-12-31"
 
-    # Call the helper, passing connection
+    # Call the helper, passing dal
+    dal_param = DataAccessLayer(connection=conn_param)
     result = load_features(
-        store_type="sql", start_date=start, end_date=end, connection=conn_param
+        store_type="sql", start_date=start, end_date=end, dal=dal_param
     )
 
     # SQLFeatureStore is instantiated with run_id=None by factory
-    mock_sql_store_class.assert_called_once_with(run_id=None, connection=conn_param)
+    # Note: The actual DAL is passed, not a mock, so we check for the correct type
+    mock_sql_store_class.assert_called_once()
+    call_args = mock_sql_store_class.call_args
+    assert call_args[1]['run_id'] is None
+    assert isinstance(call_args[1]['dal'], DataAccessLayer)
     mock_store_instance.load_features.assert_called_once_with(
         start_date=start, end_date=end, feature_types=None
     )

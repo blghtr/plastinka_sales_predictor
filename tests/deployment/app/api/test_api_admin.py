@@ -28,25 +28,24 @@ TEST_BEARER_TOKEN = "test_admin_token"
 
 
 @pytest.fixture
-def admin_client(client: TestClient, mock_dal: MagicMock):
-    """A test client with the database dependency overridden for admin endpoints."""
-    from deployment.app.dependencies import get_dal, get_dal_system
-    client.app.dependency_overrides[get_dal] = lambda: mock_dal
-    client.app.dependency_overrides[get_dal_system] = lambda: mock_dal
-
-    yield client
-    # Clean up
-    client.app.dependency_overrides.clear()
+def admin_client(api_client: TestClient):
+    """A test api_client with the database dependency overridden for admin endpoints."""
+    # The api_client fixture already has the correct DAL dependency overrides
+    yield api_client
 
 
 class TestCleanupJobEndpoint:
     """Test suite for /admin/data-retention/cleanup endpoint."""
 
     def test_trigger_cleanup_job_success(
-        self, admin_client: TestClient, mock_run_cleanup_job_fixture: MagicMock
+        self, admin_client: TestClient, monkeypatch, in_memory_db: "DataAccessLayer"
     ):
         """Test cleanup job endpoint successfully starts a background cleanup job."""
-        # Arrange & Act
+        # Arrange
+        mock_run_cleanup = MagicMock()
+        monkeypatch.setattr("deployment.app.api.admin.run_cleanup_job", mock_run_cleanup)
+
+        # Act
         with patch("fastapi.BackgroundTasks.add_task") as mock_add_task:
             response = admin_client.post(
                 "/admin/data-retention/cleanup",
@@ -56,8 +55,7 @@ class TestCleanupJobEndpoint:
             # Assert
             assert response.status_code == 200
             assert "Data retention cleanup job started" in response.json()["message"]
-            # The dependency override in conftest should inject the mock fixture
-            mock_add_task.assert_called_once_with(mock_run_cleanup_job_fixture)
+            mock_add_task.assert_called_once_with(mock_run_cleanup, in_memory_db)
 
     def test_trigger_cleanup_unauthorized(self, admin_client: TestClient):
         """Test cleanup job endpoint fails without valid Bearer token."""
@@ -79,7 +77,7 @@ class TestPredictionsCleanupEndpoint:
         self,
         mock_cleanup_old_predictions: MagicMock,
         admin_client: TestClient,
-        mock_dal: MagicMock,
+        in_memory_db: "DataAccessLayer",
     ):
         """Test predictions cleanup endpoint successfully cleans old predictions with custom days parameter."""
         # Arrange
@@ -99,7 +97,7 @@ class TestPredictionsCleanupEndpoint:
         assert result["records_removed"] == 5
         assert result["days_kept"] == 30
         mock_cleanup_old_predictions.assert_called_once_with(
-            30, conn=mock_dal.db_connection
+            30, dal=in_memory_db
         )
 
     @patch("deployment.app.api.admin.cleanup_old_predictions")
@@ -107,7 +105,7 @@ class TestPredictionsCleanupEndpoint:
         self,
         mock_cleanup_old_predictions: MagicMock,
         admin_client: TestClient,
-        mock_dal: MagicMock,
+        in_memory_db: "DataAccessLayer",
     ):
         """Test predictions cleanup endpoint with default days parameter."""
         # Arrange
@@ -126,7 +124,7 @@ class TestPredictionsCleanupEndpoint:
         assert result["records_removed"] == 3
         assert result["days_kept"] is None
         mock_cleanup_old_predictions.assert_called_once_with(
-            None, conn=mock_dal.db_connection
+            None, dal=in_memory_db
         )
 
     def test_clean_predictions_unauthorized(self, admin_client: TestClient):
@@ -149,7 +147,7 @@ class TestHistoricalDataCleanupEndpoint:
         self,
         mock_cleanup_old_historical_data: MagicMock,
         admin_client: TestClient,
-        mock_dal: MagicMock,
+        in_memory_db: "DataAccessLayer",
     ):
         """Test historical data cleanup endpoint successfully cleans old data with custom parameters."""
         # Arrange
@@ -175,7 +173,7 @@ class TestHistoricalDataCleanupEndpoint:
         assert result["sales_days_kept"] == 60
         assert result["stock_days_kept"] == 90
         mock_cleanup_old_historical_data.assert_called_once_with(
-            60, 90, conn=mock_dal.db_connection
+            60, 90, dal=in_memory_db
         )
 
     @patch("deployment.app.api.admin.cleanup_old_historical_data")
@@ -183,7 +181,7 @@ class TestHistoricalDataCleanupEndpoint:
         self,
         mock_cleanup_old_historical_data: MagicMock,
         admin_client: TestClient,
-        mock_dal: MagicMock,
+        in_memory_db: "DataAccessLayer",
     ):
         """Test historical data cleanup endpoint with default parameters."""
         # Arrange
@@ -206,7 +204,7 @@ class TestHistoricalDataCleanupEndpoint:
         assert result["status"] == "ok"
         assert result["records_removed"]["total"] == 20
         mock_cleanup_old_historical_data.assert_called_once_with(
-            None, None, conn=mock_dal.db_connection
+            None, None, dal=in_memory_db
         )
 
     def test_clean_historical_data_unauthorized(self, admin_client: TestClient):
@@ -229,7 +227,7 @@ class TestModelsCleanupEndpoint:
         self,
         mock_cleanup_old_models: MagicMock,
         admin_client: TestClient,
-        mock_dal: MagicMock,
+        in_memory_db: "DataAccessLayer",
     ):
         """Test models cleanup endpoint successfully cleans old models with custom parameters."""
         # Arrange
@@ -250,7 +248,7 @@ class TestModelsCleanupEndpoint:
         assert result["models_kept"] == 5
         assert result["inactive_days_kept"] == 30
         mock_cleanup_old_models.assert_called_once_with(
-            5, 30, conn=mock_dal.db_connection
+            5, 30, dal=in_memory_db
         )
 
     @patch("deployment.app.api.admin.cleanup_old_models")
@@ -258,7 +256,7 @@ class TestModelsCleanupEndpoint:
         self,
         mock_cleanup_old_models: MagicMock,
         admin_client: TestClient,
-        mock_dal: MagicMock,
+        in_memory_db: "DataAccessLayer",
     ):
         """Test models cleanup endpoint with default parameters."""
         # Arrange
@@ -276,7 +274,7 @@ class TestModelsCleanupEndpoint:
         assert result["status"] == "ok"
         assert result["models_removed_count"] == 2
         mock_cleanup_old_models.assert_called_once_with(
-            None, None, conn=mock_dal.db_connection
+            None, None, dal=in_memory_db
         )
 
     def test_clean_models_unauthorized(self, admin_client: TestClient):

@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import Any, List
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
@@ -9,14 +10,33 @@ from deployment.app.models.api_models import (
     TrainingResultResponse,
     TuningResultResponse,
 )
-from deployment.app.services.auth import  get_unified_auth
+from deployment.app.services.auth import get_unified_auth
 
 logger = logging.getLogger("plastinka.api.results")
 
 router = APIRouter(prefix="/api/v1/results", tags=["results"])
 
 
-@router.get("/training", response_model=List[TrainingResultResponse], summary="Get a list of recent training results.")
+def _deserialize_json_fields(result: dict[str, Any]) -> dict[str, Any]:
+    """Deserialize JSON fields from database results."""
+    if result.get("metrics") and isinstance(result["metrics"], str):
+        try:
+            result["metrics"] = json.loads(result["metrics"])
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to deserialize metrics JSON: {result['metrics']}")
+            result["metrics"] = {}
+
+    if result.get("config") and isinstance(result["config"], str):
+        try:
+            result["config"] = json.loads(result["config"])
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to deserialize config JSON: {result['config']}")
+            result["config"] = {}
+
+    return result
+
+
+@router.get("/training", response_model=list[TrainingResultResponse], summary="Get a list of recent training results.")
 async def get_training_results(
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
     x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
@@ -26,7 +46,9 @@ async def get_training_results(
     """
     try:
         results = dal.get_training_results()
-        return [TrainingResultResponse(**res) for res in results]
+        # Deserialize JSON fields before passing to Pydantic models
+        deserialized_results = [_deserialize_json_fields(res) for res in results]
+        return [TrainingResultResponse(**res) for res in deserialized_results]
     except HTTPException:
         raise
     except Exception as e:
@@ -34,7 +56,7 @@ async def get_training_results(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve training results",
-        )
+        ) from e
 
 
 @router.get("/training/{result_id}", response_model=TrainingResultResponse, summary="Get a single training result by its ID.")
@@ -52,7 +74,9 @@ async def get_training_result_by_id(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Training result not found"
             )
-        return TrainingResultResponse(**result)
+        # Deserialize JSON fields before passing to Pydantic model
+        deserialized_result = _deserialize_json_fields(result)
+        return TrainingResultResponse(**deserialized_result)
     except HTTPException:
         raise
     except Exception as e:
@@ -60,10 +84,10 @@ async def get_training_result_by_id(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve training result",
-        )
+        ) from e
 
 
-@router.get("/tuning", response_model=List[TuningResultResponse], summary="Get a list of recent hyperparameter tuning results.")
+@router.get("/tuning", response_model=list[TuningResultResponse], summary="Get a list of recent hyperparameter tuning results.")
 async def get_tuning_results(
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
     x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
@@ -77,7 +101,9 @@ async def get_tuning_results(
     """
     try:
         results = dal.get_tuning_results(metric_name=metric_name, higher_is_better=higher_is_better, limit=limit, result_id=None)
-        return [TuningResultResponse(**res) for res in results]
+        # Deserialize JSON fields before passing to Pydantic models
+        deserialized_results = [_deserialize_json_fields(res) for res in results]
+        return [TuningResultResponse(**res) for res in deserialized_results]
     except HTTPException:
         raise
     except Exception as e:
@@ -85,7 +111,7 @@ async def get_tuning_results(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve tuning results",
-        )
+        ) from e
 
 
 @router.get("/tuning/{result_id}", response_model=TuningResultResponse, summary="Get a single tuning result by its ID.")
@@ -103,7 +129,9 @@ async def get_tuning_result_by_id(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Tuning result not found"
             )
-        return TuningResultResponse(**result)
+        # Deserialize JSON fields before passing to Pydantic model
+        deserialized_result = _deserialize_json_fields(result)
+        return TuningResultResponse(**deserialized_result)
     except HTTPException:
         raise
     except Exception as e:
@@ -111,4 +139,4 @@ async def get_tuning_result_by_id(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve tuning result",
-        )
+        ) from e

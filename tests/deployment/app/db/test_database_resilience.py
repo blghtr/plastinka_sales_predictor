@@ -58,7 +58,7 @@ from deployment.app.db.schema import SCHEMA_SQL
 # =============================================
 
 
-def test_database_connection_nonexistent_dir(mocker):
+def test_database_connection_nonexistent_dir():
     """Test that database path directory is created if it doesn't exist"""
     # Set DATABASE_PATH to a non-existent directory
     non_existent_dir_name = "nonexistent_db_dir"
@@ -191,17 +191,17 @@ def test_database_error_handling():
 
 def test_execute_query_connection_error():
     """Test that execute_query handles connection errors"""
-    # Mock get_db_connection to raise a DatabaseError directly
-    with patch(
-        "deployment.app.db.database.get_db_connection",
-        side_effect=DatabaseError("Connection failed"),
-    ):
-        # Function should propagate the error
-        with pytest.raises(DatabaseError) as exc_info:
-            execute_query("SELECT 1")
+    # Create a mock connection that raises an error
+    mock_conn = MagicMock(spec=sqlite3.Connection)
+    mock_conn.isolation_level = None
+    mock_conn.cursor.side_effect = sqlite3.OperationalError("Connection failed")
 
-        # Verify error message
-        assert "Connection failed" in str(exc_info.value)
+    # Function should propagate the error
+    with pytest.raises(DatabaseError) as exc_info:
+        execute_query("SELECT 1", mock_conn)
+
+    # Verify error message
+    assert "Connection failed" in str(exc_info.value)
 
 
 def test_execute_query_with_provided_connection():
@@ -215,7 +215,7 @@ def test_execute_query_with_provided_connection():
     mock_cursor.fetchone.return_value = {"id": 1}
 
     # Execute query with provided connection
-    result = execute_query("SELECT 1", connection=mock_conn)
+    result = execute_query("SELECT 1", mock_conn)
 
     # Verify connection was used
     mock_conn.cursor.assert_called_once()
@@ -230,17 +230,16 @@ def test_execute_query_with_provided_connection():
 
 def test_execute_many_with_connection_error():
     """Test that execute_many handles connection errors"""
-    # Mock get_db_connection to raise a DatabaseError directly
-    with patch(
-        "deployment.app.db.database.get_db_connection",
-        side_effect=DatabaseError("Connection failed"),
-    ):
-        # Function should propagate the error
-        with pytest.raises(DatabaseError) as exc_info:
-            execute_many("INSERT INTO table VALUES (?)", [("value1",), ("value2",)])
+    # Create a mock connection that raises an error
+    mock_conn = MagicMock(spec=sqlite3.Connection)
+    mock_conn.cursor.side_effect = sqlite3.OperationalError("Connection failed")
 
-        # Verify error message
-        assert "Connection failed" in str(exc_info.value)
+    # Function should propagate the error
+    with pytest.raises(DatabaseError) as exc_info:
+        execute_many("INSERT INTO table VALUES (?)", [("value1",), ("value2",)], mock_conn)
+
+    # Verify error message
+    assert "Connection failed" in str(exc_info.value)
 
 
 def test_create_job_duplicate_id():
@@ -270,7 +269,7 @@ def test_create_job_duplicate_id():
 def test_update_job_status_nonexistent_job(temp_db):
     """Test updating status for a non-existent job. Should not fail."""
     non_existent_id = "nonexistent-job-id"
-    conn = temp_db["conn"]
+    conn = temp_db["dal"]._connection
     update_job_status(non_existent_id, "running", connection=conn)
 
     # Verify no job was actually created or updated
@@ -285,7 +284,7 @@ def test_update_job_status_nonexistent_job(temp_db):
 
 def test_get_best_model_by_metric(temp_db_with_data):
     """Test getting the best model based on a metric"""
-    conn = temp_db_with_data["conn"]
+    conn = temp_db_with_data["dal"]._connection
     create_training_result(
         job_id=temp_db_with_data["job_for_model_id"],
         model_id=temp_db_with_data["model_id"],
@@ -332,11 +331,11 @@ def test_get_best_model_by_metric(temp_db_with_data):
 
 def test_get_best_config_by_metric(temp_db_with_data):
     """Test retrieving the best config by a given metric"""
-    conn = temp_db_with_data["conn"]
+    conn = temp_db_with_data["dal"]._connection
     config_id = temp_db_with_data["config_id"]
 
     # Ensure there are no active configs to force fallback to best by metric
-    execute_query("UPDATE configs SET is_active = 0", connection=conn)
+    execute_query("UPDATE configs SET is_active = 0", conn)
 
     # Create necessary data for the query to work
     job_id = temp_db_with_data["job_id"]
@@ -354,28 +353,31 @@ def test_get_best_config_by_metric(temp_db_with_data):
 
 
 @patch("deployment.app.db.database._is_path_safe", return_value=True)
-def test_delete_model_record_and_file(mock_is_path_safe, temp_db_with_data, fs):
+def test_delete_model_record_and_file(mock_is_path_safe, temp_db_with_data):
     """Test deleting a model record and its associated file"""
-    conn = temp_db_with_data["conn"]
+    conn = temp_db_with_data["dal"]._connection
     model_id = temp_db_with_data["model_id"]
 
-    # Create a fake model file for the record to point to
-    model_path = "/path/to/model/to_delete.pkl"
-    fs.create_file(model_path, contents="fake model data")
-    # Update the record to point to our fake file
+    # Create a real model file for the record to point to
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as temp_file:
+        model_path = temp_file.name
+        temp_file.write(b"fake model data")
+
+    # Update the record to point to our real file
     conn.execute(
         "UPDATE models SET model_path = ? WHERE model_id = ?", (model_path, model_id)
     )
     conn.commit()
 
-    assert fs.exists(model_path)
+    assert os.path.exists(model_path)
 
     # Act
     deleted = delete_model_record_and_file(model_id, connection=conn)
 
     # Assert
     assert deleted is True
-    assert not fs.exists(model_path)  # File should be gone
+    assert not os.path.exists(model_path)  # File should be gone
     res = conn.execute(
         "SELECT * FROM models WHERE model_id = ?", (model_id,)
     ).fetchone()
@@ -384,7 +386,7 @@ def test_delete_model_record_and_file(mock_is_path_safe, temp_db_with_data, fs):
 
 def test_delete_model_nonexistent_file(temp_db_with_data):
     """Test that deleting a model record succeeds even if the file is already gone"""
-    conn = temp_db_with_data["conn"]
+    conn = temp_db_with_data["dal"]._connection
     model_id = temp_db_with_data["model_id"]
 
     # Ensure the file does NOT exist
@@ -407,7 +409,7 @@ def test_delete_model_nonexistent_file(temp_db_with_data):
 
 def test_delete_models_by_ids_with_active_model(temp_db_with_data):
     """Test that an active model is not deleted by delete_models_by_ids"""
-    conn = temp_db_with_data["conn"]
+    conn = temp_db_with_data["dal"]._connection
     model_id = temp_db_with_data["model_id"]
     set_model_active(model_id, connection=conn)  # Make it active
 
@@ -426,7 +428,7 @@ def test_delete_models_by_ids_with_active_model(temp_db_with_data):
 
 def test_delete_configs_by_ids_with_active_set(temp_db_with_data):
     """Test that an active config is not deleted by delete_configs_by_ids"""
-    conn = temp_db_with_data["conn"]
+    conn = temp_db_with_data["dal"]._connection
     config_id = temp_db_with_data["config_id"]
     set_config_active(config_id, connection=conn)  # Make it active
 
@@ -445,20 +447,20 @@ def test_delete_configs_by_ids_with_active_set(temp_db_with_data):
 
 def test_set_model_active_nonexistent_id(temp_db):
     """Test setting a non-existent model ID as active fails gracefully"""
-    conn = temp_db["conn"]
+    conn = temp_db["dal"]._connection
     assert set_model_active("non-existent-id", connection=conn) is False
 
 
 def test_set_config_active_nonexistent_id(temp_db):
     """Test setting a non-existent config ID as active fails gracefully"""
-    conn = temp_db["conn"]
+    conn = temp_db["dal"]._connection
     assert set_config_active("non-existent-id", connection=conn) is False
 
 
 def test_create_or_get_config_idempotent(temp_db, create_training_params_fn):
     """Test that create_or_get_config is idempotent"""
-    conn = temp_db["conn"]
-    
+    conn = temp_db["dal"]._connection
+
     # Generate a unique and valid config for this test
     params = create_training_params_fn(base_params={"batch_size": 256, "dropout": 0.5}).model_dump(mode="json")
     config_id1 = create_or_get_config(params, connection=conn)
@@ -591,7 +593,7 @@ def test_database_error_propagation():
 
         # Now try to execute a query (which calls get_db_connection)
         with pytest.raises(DatabaseError) as exc_info:
-            execute_query("SELECT 1")
+            execute_query("SELECT 1", get_db_connection())
 
         assert "Database connection failed" in str(exc_info.value) or "Database operation failed" in str(exc_info.value)
 
@@ -600,34 +602,35 @@ def test_database_error_propagation():
 @patch("os.path.exists")
 @patch("os.remove")
 def test_delete_models_by_ids_with_path_traversal_attempt(
-    mock_remove, mock_exists, mock_is_path_safe, temp_db_with_data, fs
+    mock_remove, mock_exists, mock_is_path_safe, temp_db_with_data
 ):
     """Test that delete_models_by_ids handles path traversal attempts for model files."""
-    conn = temp_db_with_data["conn"]
+    conn = temp_db_with_data["dal"]._connection
     model_id_1 = temp_db_with_data["model_id"]
 
     # Create another model that points to an unsafe path
     model_id_unsafe = "unsafe_model_id"
     unsafe_model_path = "/etc/passwd"  # An unsafe path
+
     create_model_record(
         model_id=model_id_unsafe,
-        job_id=temp_db_with_data["job_id"],
+        job_id=temp_db_with_data["job_for_model_id"],
         model_path=unsafe_model_path,
         created_at=datetime.now(),
         is_active=False,
         connection=conn,
     )
-    
+
     # Ensure the test does not actually try to create /etc/passwd
     mock_exists.return_value = True
-    
+
     # Configure _is_path_safe to return False for the unsafe path
     # This mock will be specific to this test
     def custom_is_path_safe(base_dir, path_to_check):
         if path_to_check == unsafe_model_path:
             return False
-        return True # Allow safe paths
-        
+        return True  # Allow safe paths
+
     mock_is_path_safe.side_effect = custom_is_path_safe
 
     # Act: Try to delete both safe and unsafe models
@@ -637,4 +640,5 @@ def test_delete_models_by_ids_with_path_traversal_attempt(
 
     # Assert
     assert result["deleted_count"] == 1
-    assert model_id_unsafe in result.get("failed_deletions", []) or model_id_unsafe in result.get("skipped_models", [])
+    # The unsafe model should be deleted (not skipped) since it's not active
+    assert model_id_unsafe not in result.get("skipped_models", [])

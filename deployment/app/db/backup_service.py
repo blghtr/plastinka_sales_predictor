@@ -98,10 +98,10 @@ def run_database_backup_job() -> None:
         return
 
     logger.info("Starting database backup job.")
-    
+
     # Create backup
     backup_path = create_database_backup()
-    
+
     # Clean old backups
     if backup_path: # Only clean if backup was successfully created
         deleted_count = len(clean_old_database_backups())
@@ -109,4 +109,4 @@ def run_database_backup_job() -> None:
     else:
         logger.warning("Skipping cleanup of old backups because primary backup failed.")
 
-    logger.info("Database backup job completed.") 
+    logger.info("Database backup job completed.")

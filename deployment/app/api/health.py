@@ -4,31 +4,27 @@ Health and monitoring endpoints.
 
 import logging
 import os
-import sqlite3
 import time
 from datetime import datetime
 from typing import Any
 
 import psutil
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from deployment.app.config import get_settings
-from deployment.app.services.auth import  get_unified_auth
-from deployment.app.utils.environment import get_environment_status, ComponentHealth
+from deployment.app.models.api_models import ErrorDetailResponse
+from deployment.app.services.auth import get_unified_auth
+from deployment.app.utils.environment import ComponentHealth, get_environment_status
+from deployment.app.utils.error_handling import ErrorDetail
 from deployment.app.utils.retry_monitor import (
     get_retry_statistics,
     reset_retry_statistics,
 )
 
-import calendar
-from datetime import timedelta
-
-from ..dependencies import get_dal_system
 from ..db.data_access_layer import DataAccessLayer
-from deployment.app.models.api_models import ErrorDetailResponse
-from deployment.app.utils.error_handling import ErrorDetail
+from ..dependencies import get_dal_system
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +138,7 @@ def check_database(dal: DataAccessLayer) -> ComponentHealth:
         # Construct the query to check for these tables efficiently using batching
         query_template = "SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
         tables_found_rows = dal.execute_query_with_batching(
-            query_template, required_tables, connection=None
+            query_template, required_tables
         )
         tables_found = [row["name"] for row in tables_found_rows] if tables_found_rows else []
 

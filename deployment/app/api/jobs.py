@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import shutil
-from datetime import datetime, date
+from datetime import date, datetime
 from pathlib import Path as PathLibPath
 from typing import Any
 
@@ -13,15 +13,15 @@ from fastapi import (
     Body,
     Depends,
     File,
-    Form,
     HTTPException,
     Path,
     Query,
     Request,
     UploadFile,
+)
+from fastapi import (
     status as fastapi_status,
 )
-from fastapi.responses import JSONResponse
 
 from deployment.app.config import get_settings
 from deployment.app.db.database import (
@@ -35,31 +35,27 @@ from deployment.app.models.api_models import (
     JobsList,
     JobStatus,
     JobType,
-    PredictionParams,
-    PredictionResponse,
     ReportParams,
     ReportResponse,
-    TrainingResponse,
-    ErrorDetailResponse,
     TrainingParams,
+    TrainingResponse,
     TuningParams,
 )
 from deployment.app.services.auth import get_unified_auth
 from deployment.app.services.data_processor import process_data_files
 from deployment.app.services.datasphere_service import run_job
 from deployment.app.services.report_service import generate_report
-from deployment.app.utils.error_handling import ErrorDetail, AppValidationError
+from deployment.app.utils.error_handling import AppValidationError, ErrorDetail
 from deployment.app.utils.file_validation import validate_data_file_upload
 from deployment.app.utils.validation import (
-    ValidationError,
-    validate_date_format,
-    validate_historical_date_range,
     validate_sales_file,
     validate_stock_file,
 )
 
-from ..dependencies import get_dal, get_dal_for_general_user  # Import the DAL dependency
-from ..db.data_access_layer import DataAccessLayer # Import for type hinting
+from ..db.data_access_layer import DataAccessLayer  # Import for type hinting
+from ..dependencies import (  # Import the DAL dependency
+    get_dal_for_general_user,
+)
 
 logger = logging.getLogger("plastinka.api")
 
@@ -211,6 +207,7 @@ async def create_data_upload_job(
             sales_files_paths=saved_sales_paths,
             cutoff_date=cutoff_date,
             temp_dir_path=str(temp_job_dir),  # Передаем путь для очистки
+            dal=dal, # Передаем dal
         )
 
         logger.info(
@@ -229,7 +226,7 @@ async def create_data_upload_job(
         raise HTTPException(
             status_code=error.status_code,
             detail=error.to_response_model().model_dump(),
-        )
+        ) from e
     except DatabaseError as e:
         error = ErrorDetail(
             message="Failed to create data upload job due to database error",
@@ -241,7 +238,7 @@ async def create_data_upload_job(
         raise HTTPException(
             status_code=error.status_code,
             detail=error.to_response_model().model_dump(),
-        )
+        ) from e
     except FileExistsError as e:
         # temp_job_dir and job_id are guaranteed to be set if error is from temp_job_dir.mkdir()
         detailed_error_reason = (
@@ -307,7 +304,7 @@ async def create_data_upload_job(
         raise HTTPException(
             status_code=error.status_code,
             detail=error.to_response_model().model_dump()
-        )
+        ) from e
     except Exception as e:
         logger.error(
             f"Unexpected error in data-upload for job {job_id or 'unknown'}: {str(e)}",
@@ -336,7 +333,7 @@ async def create_data_upload_job(
         raise HTTPException(
             status_code=error.status_code,
             detail=error.to_response_model().model_dump()
-        )
+        ) from e
 
 
 @router.post("/training", response_model=TrainingResponse, summary="Submit a job to train a new model.")
@@ -356,11 +353,7 @@ async def create_training_job(
     if params is None:
         params = TrainingParams()
     dataset_start_date = params.dataset_start_date
-    if dataset_start_date:
-        dataset_start_date = dataset_start_date.isoformat()
     dataset_end_date = params.dataset_end_date
-    if dataset_end_date:
-        dataset_end_date = dataset_end_date.isoformat()
 
     try:
         # 1. Determine adjusted training end date automatically
@@ -373,7 +366,7 @@ async def create_training_job(
         )
 
         # 2. Get the effective configuration
-        config = dal.get_effective_config(get_settings(), logger=logger)
+        config = dal.get_effective_config(get_settings(), logger)
         if config is None:
             raise HTTPException(
                 status_code=fastapi_status.HTTP_400_BAD_REQUEST,
@@ -399,10 +392,11 @@ async def create_training_job(
         background_tasks.add_task(
             run_job,
             job_id=job_id,
-            training_config=config["config"],
+            config=config["config"],
             config_id=config["config_id"],
             dataset_start_date=params.dataset_start_date,
             dataset_end_date=dataset_end_date,  # Use the adjusted date
+            dal=dal, # Pass the dal
         )
         logger.info(f"Background task added for job ID: {job_id}")
 
@@ -443,19 +437,19 @@ async def create_training_job(
         raise HTTPException(
             status_code=error.status_code,
             detail=error.to_response_model().model_dump(),
-        )
+        ) from e
 
 
 @router.post("/tuning", response_model=JobResponse, summary="Submit a hyperparameter tuning job.")
 async def create_tuning_job(
     request: Request,
     background_tasks: BackgroundTasks,
-    params: TuningParams | None = Body(None, description="An optional JSON object to specify `mode` (`light` or `full`), `time_budget_s`, `dataset_start_date`, and `dataset_end_date`."),
+    params: TuningParams | None = Body(None, description="An optional JSON object to specify `mode` (`lite` or `full`), `time_budget_s`, `dataset_start_date`, and `dataset_end_date`."),
     x_api_key_valid: dict[str, Any] = Depends(get_unified_auth),
     dal: DataAccessLayer = Depends(get_dal_for_general_user), # Inject DAL
 ):
     """
-    Starts a hyperparameter tuning process. It can be run in `light` or `full` mode.
+    Starts a hyperparameter tuning process. It can be run in `lite` or `full` mode.
     The system uses historical configurations to seed the tuning process.
     """
     logger.info("Received request to create tuning job")
@@ -475,7 +469,7 @@ async def create_tuning_job(
             f"Determined adjusted dataset_end_date: {dataset_end_date.isoformat() if dataset_end_date else 'None'}"
         )
 
-        config = dal.get_effective_config(get_settings(), logger=logger)
+        config = dal.get_effective_config(get_settings(), logger)
         if config is None:
             raise HTTPException(
                 status_code=fastapi_status.HTTP_400_BAD_REQUEST,
@@ -495,8 +489,6 @@ async def create_tuning_job(
             job_params["dataset_start_date"] = dataset_start_date
         if dataset_end_date:
             job_params["dataset_end_date"] = dataset_end_date
-        if time_budget_s is not None:
-            job_params["time_budget_s"] = time_budget_s
 
         # 3. Создание задания в БД
         job_id = dal.create_job(JobType.TUNING, parameters=job_params)
@@ -508,16 +500,21 @@ async def create_tuning_job(
             additional_params["mode"] = mode
         if time_budget_s is not None:
             additional_params["time_budget_s"] = time_budget_s
+        elif mode and mode == "full":
+            additional_params["time_budget_s"] = 7200
+        else:
+            additional_params["time_budget_s"] = 3600
 
         background_tasks.add_task(
             run_job,
             job_id=job_id,
-            training_config=config["config"],
+            config=config["config"],
             config_id=config["config_id"],
             job_type="tune",
             dataset_start_date=dataset_start_date,
             dataset_end_date=dataset_end_date,
             additional_job_params=additional_params,
+            dal=dal, # Pass DAL to background task
         )
 
         return JobResponse(job_id=job_id, status=JobStatus.PENDING)
@@ -655,11 +652,28 @@ async def get_job_status(
             elif job["job_type"] == JobType.TRAINING.value:
                 training_result = dal.get_training_results(result_id=job["result_id"])
                 if training_result:
+                    # Handle JSON deserialization for metrics
+                    metrics = training_result.get("metrics", None)
+                    if isinstance(metrics, str):
+                        try:
+                            metrics = json.loads(metrics)
+                        except json.JSONDecodeError:
+                            metrics = {}
+
+                    # Get parameters from the job record
+                    parameters = {}
+                    if job.get("parameters", None):
+                        try:
+                            parameters = json.loads(job["parameters"])
+                        except json.JSONDecodeError:
+                            parameters = {}
+
                     result = {
                         "model_id": training_result["model_id"],
-                        "metrics": training_result["metrics"],
-                        "parameters": training_result["parameters"],
-                        "duration": training_result["duration"],
+                        "metrics": metrics,
+                        "parameters": parameters,  # Use parameters from job record
+                        "config_id": training_result.get("config_id"),
+                        "duration": training_result.get("duration"),
                     }
 
             elif job["job_type"] == JobType.PREDICTION.value:
@@ -709,7 +723,7 @@ async def get_job_status(
         raise HTTPException(
             status_code=error.status_code,
             detail=error.to_response_model().model_dump(),
-        )
+        ) from e
     except DatabaseError as e:
         error = ErrorDetail(
             message=f"Failed to retrieve job {job_id}",
@@ -722,7 +736,7 @@ async def get_job_status(
         raise HTTPException(
             status_code=error.status_code,
             detail=error.to_response_model().model_dump(),
-        )
+        ) from e
     except ValueError as e:
         error = ErrorDetail(
             message=f"Invalid input data: {str(e)}",
@@ -734,7 +748,7 @@ async def get_job_status(
         raise HTTPException(
             status_code=error.status_code,
             detail=error.to_response_model().model_dump(),
-        )
+        ) from e
     except Exception as e:
         logger.error(
             f"Unexpected error in get_job_status for job {job_id}: {str(e)}",

@@ -32,6 +32,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from deployment.app.db.data_access_layer import DataAccessLayer, UserContext, UserRoles
+
 # Import the modules under test
 from deployment.app.db.database import (
     create_model_record,
@@ -267,14 +269,11 @@ class TestDataRetention:
     """Test suite for data retention and cleanup operations."""
 
     @patch("deployment.app.db.data_retention.get_settings")
-    @patch("deployment.app.db.data_retention.datetime")
     @patch("deployment.app.db.data_retention.DataAccessLayer")
-    def test_cleanup_old_predictions_success(self, mock_dal_class, mock_datetime, mock_get_settings, domain_db):
+    def test_cleanup_old_predictions_success(self, mock_dal_class, mock_get_settings, domain_db):
         """Test cleaning up old predictions."""
-        # Фиксируем now()
-        fixed_now = datetime(2023, 1, 1)
-        mock_datetime.now.return_value = fixed_now
-        mock_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        # Use real current date for the test
+        now = datetime.now()
         # Мокаем настройки
         mock_retention = MagicMock()
         mock_retention.prediction_retention_days = 30
@@ -283,13 +282,14 @@ class TestDataRetention:
         mock_settings_object.data_retention = mock_retention
         mock_get_settings.return_value = mock_settings_object
         conn = domain_db["conn"]
-        mock_dal = MagicMock()
-        mock_dal.db_connection = conn
-        mock_dal_class.return_value = mock_dal
+        # Create a real DAL instance for the test
+        dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.SYSTEM]), connection=conn)
+        # Mock the DAL class to return our real DAL instance
+        mock_dal_class.return_value = dal
+
         # Disable foreign keys for this test
         conn.execute("PRAGMA foreign_keys = OFF")
         # Create models first for foreign key constraints
-        now = fixed_now
         models = ["model1", "model2", "model3", "model4"]
         for model_id in models:
             create_model_record(
@@ -317,10 +317,15 @@ class TestDataRetention:
             created_at TIMESTAMP NOT NULL
         )""")
         # Old predictions (older than 30 days)
+        old_date_1 = (now - timedelta(days=45)).strftime("%Y-%m-%d")
+        old_date_2 = (now - timedelta(days=40)).strftime("%Y-%m-%d")
+        print(f"Debug: Creating old prediction 1 with date: {old_date_1}")
+        print(f"Debug: Creating old prediction 2 with date: {old_date_2}")
+
         old_predictions = [
             (
                 1,
-                (now - timedelta(days=45)).strftime("%Y-%m-%d"),
+                old_date_1,
                 "result1",
                 "model1",
                 10.0,
@@ -332,7 +337,7 @@ class TestDataRetention:
             ),
             (
                 2,
-                (now - timedelta(days=40)).strftime("%Y-%m-%d"),
+                old_date_2,
                 "result2",
                 "model2",
                 12.0,
@@ -378,11 +383,35 @@ class TestDataRetention:
             all_predictions,
         )
         conn.commit()
+
+        # Test that the DAL can see the data
+        test_result = dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_predictions")
+        print(f"DEBUG: DAL test query result after data insertion: {test_result}")
+
+        # Test direct connection query
+        direct_result = conn.execute("SELECT COUNT(*) as count FROM fact_predictions").fetchone()
+        print(f"DEBUG: Direct connection query result: {direct_result}")
+
+        # Check if DAL connection is the same as test connection
+        print(f"DEBUG: DAL connection: {dal._connection}")
+        print(f"DEBUG: Test connection: {conn}")
+        print(f"DEBUG: Connections are the same: {dal._connection is conn}")
+
         # Run cleanup
-        deleted_count = cleanup_old_predictions(conn=conn)
+        deleted_count = cleanup_old_predictions(dal=dal)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) as count FROM fact_predictions")
         final_count = cursor.fetchone()["count"]
+
+        # Debug: Check what cutoff date was used
+        cursor.execute("SELECT prediction_date FROM fact_predictions ORDER BY prediction_date")
+        dates = cursor.fetchall()
+        print(f"Debug: All prediction dates: {[d['prediction_date'] for d in dates]}")
+        print(f"Debug: Current date: {datetime.now().strftime('%Y-%m-%d')}")
+        print(f"Debug: Cutoff date (30 days ago): {(datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')}")
+        print(f"Debug: Deleted count: {deleted_count}")
+        print(f"Debug: Final count: {final_count}")
+
         assert deleted_count == 2  # 2 old predictions should be deleted
         assert final_count == 2  # 2 recent predictions should remain
 

@@ -7,7 +7,7 @@ from deployment.app.db.database import (  # Added DatabaseError import
     dict_factory,
     execute_query,
 )
-from deployment.app.db.schema import SCHEMA_SQL, init_db  # Import init_db
+from deployment.app.db.schema import init_db  # Import init_db
 
 # Use a dedicated in-memory database for these tests to avoid interference
 TEST_DB_PATH = ":memory:"
@@ -52,6 +52,7 @@ def test_foreign_key_enforcement_on_insert_jobs_history(db_conn):
     with pytest.raises(DatabaseError) as excinfo:
         execute_query(
             "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES (?, ?, ?, ?, ?)",
+            db_conn,
             (
                 "non_existent_job_id",
                 "running",
@@ -59,7 +60,6 @@ def test_foreign_key_enforcement_on_insert_jobs_history(db_conn):
                 "Processing...",
                 "2023-01-01T12:00:00",
             ),
-            connection=db_conn,
         )
     assert "foreign key constraint failed" in str(excinfo.value.original_error).lower()
 
@@ -72,22 +72,22 @@ def test_foreign_key_enforcement_on_insert_training_results_model(db_conn):
     job_id = "test_job_fk_model"
     execute_query(
         "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        db_conn,
         (job_id, "training", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
-        connection=db_conn,
     )
 
     config_id = "test_config_fk_model"
     execute_query(
         "INSERT INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
+        db_conn,
         (config_id, "{}", "2023-01-01T00:00:00"),
-        connection=db_conn,
     )
 
     with pytest.raises(DatabaseError) as excinfo:
         execute_query(
             "INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics, duration) VALUES (?, ?, ?, ?, ?, ?)",
+            db_conn,
             ("tr_res_1", job_id, "non_existent_model_id", config_id, "{}", 100),
-            connection=db_conn,
         )
     assert (
         "foreign key constraint failed" in str(excinfo.value.original_error).lower()
@@ -102,22 +102,22 @@ def test_foreign_key_enforcement_on_insert_training_results_config(db_conn):
     job_id = "test_job_fk_config"
     execute_query(
         "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        db_conn,
         (job_id, "training", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
-        connection=db_conn,
     )
 
     model_id = "test_model_fk_config"
     execute_query(
         "INSERT INTO models (model_id, job_id, model_path, created_at) VALUES (?, ?, ?, ?)",
+        db_conn,
         (model_id, job_id, "/path/to/model", "2023-01-01T00:00:00"),
-        connection=db_conn,
     )
 
     with pytest.raises(DatabaseError) as excinfo:
         execute_query(
             "INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics, duration) VALUES (?, ?, ?, ?, ?, ?)",
+            db_conn,
             ("tr_res_2", job_id, model_id, "non_existent_config_id", "{}", 100),
-            connection=db_conn,
         )
     assert "foreign key constraint failed" in str(excinfo.value.original_error).lower()
 
@@ -135,32 +135,32 @@ def test_foreign_key_cascade_delete_jobs(db_conn):
     # Create a job
     execute_query(
         "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        db_conn,
         (job_id, "test_type", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
-        connection=db_conn,
     )
 
     # Create a history entry for this job
     execute_query(
         "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES (?, ?, ?, ?, ?)",
+        db_conn,
         (job_id, "running", 50.0, "Processing...", "2023-01-01T12:00:00"),
-        connection=db_conn,
     )
 
     # Attempt to delete the job
     with pytest.raises(DatabaseError) as excinfo:
         execute_query(
-            "DELETE FROM jobs WHERE job_id = ?", (job_id,), connection=db_conn
+            "DELETE FROM jobs WHERE job_id = ?", db_conn, (job_id,)
         )
     assert "foreign key constraint failed" in str(excinfo.value.original_error).lower()
 
     # Verify job and history entry still exist
     job_entry = execute_query(
-        "SELECT * FROM jobs WHERE job_id = ?", (job_id,), connection=db_conn
+        "SELECT * FROM jobs WHERE job_id = ?", db_conn, (job_id,)
     )
     history_entry = execute_query(
         "SELECT * FROM job_status_history WHERE job_id = ?",
+        db_conn,
         (job_id,),
-        connection=db_conn,
         fetchall=True,
     )
 
@@ -175,21 +175,21 @@ def test_successful_insert_with_valid_foreign_keys(db_conn):
     job_id = "valid_job_id"
     execute_query(
         "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        db_conn,
         (job_id, "test_type", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
-        connection=db_conn,
     )
 
     # This should succeed
     execute_query(
         "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES (?, ?, ?, ?, ?)",
+        db_conn,
         (job_id, "completed", 100.0, "Done", "2023-01-01T13:00:00"),
-        connection=db_conn,
     )
 
     history_entry = execute_query(
         "SELECT * FROM job_status_history WHERE job_id = ?",
+        db_conn,
         (job_id,),
-        connection=db_conn,
         fetchall=True,
     )
     assert len(history_entry) == 1

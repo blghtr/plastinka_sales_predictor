@@ -19,22 +19,21 @@ All external imports and dependencies are mocked to ensure test isolation.
 """
 
 import os
-import sqlite3
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
-from fastapi import status
+from fastapi import HTTPException, status
 
 from deployment.app.api.health import (
     HealthResponse,
     RetryStatsResponse,
     SystemStatsResponse,
 )
-from deployment.app.utils.environment import ComponentHealth, get_environment_status
+from deployment.app.dependencies import get_dal_system
 from deployment.app.main import app
-from deployment.app.services.auth import  get_unified_auth
+from deployment.app.services.auth import get_unified_auth
+from deployment.app.utils.environment import ComponentHealth, get_environment_status
 
 TEST_X_API_KEY = "test_x_api_key_conftest"
 TEST_BEARER_TOKEN = "test_admin_token"
@@ -45,7 +44,8 @@ class TestHealthCheckEndpoint:
 
     @patch("deployment.app.api.health.check_database")
     @patch("deployment.app.api.health.get_environment_status")
-    def test_health_check_endpoint_healthy(self, mock_check_env, mock_check_db, client):
+    @patch("deployment.app.api.health.get_settings")
+    def test_health_check_endpoint_healthy(self, mock_settings, mock_check_env, mock_check_db, api_client):
         """Test /health endpoint returns healthy status when all components are healthy."""
         # Arrange
         mock_check_db.return_value = ComponentHealth(
@@ -55,29 +55,39 @@ class TestHealthCheckEndpoint:
             status="healthy", details={"mock_type": "healthy"}
         )
 
-        # Act
-        response = client.get("/health/")
+        # Mock settings to return a valid threshold
+        mock_settings_instance = MagicMock()
+        mock_settings_instance.metric_thesh_for_health_check = 0.5
+        mock_settings_instance.default_metric_higher_is_better = True
+        mock_settings.return_value = mock_settings_instance
 
-        # Assert
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
-        assert "api" in data["components"]
-        assert "database" in data["components"]
-        assert "config" in data["components"]
-        assert data["components"]["api"]["status"] == "healthy"
-        assert data["components"]["database"]["status"] == "healthy"
-        assert data["components"]["config"]["status"] == "healthy"
-        assert "version" in data
-        assert "timestamp" in data
-        assert "uptime_seconds" in data
-        mock_check_db.assert_called_once()
-        mock_check_env.assert_called_once()
+        # Mock the DAL to return a valid active model metric
+        with patch.object(api_client.app.dependency_overrides[get_dal_system](), 'get_active_model_primary_metric', return_value=0.8):
+            # Act
+            response = api_client.get("/health/")
+
+            # Assert
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "healthy"
+            assert "api" in data["components"]
+            assert "database" in data["components"]
+            assert "config" in data["components"]
+            assert "active_model_metric" in data["components"]
+            assert data["components"]["api"]["status"] == "healthy"
+            assert data["components"]["database"]["status"] == "healthy"
+            assert data["components"]["config"]["status"] == "healthy"
+            assert data["components"]["active_model_metric"]["status"] == "healthy"
+            assert "version" in data
+            assert "timestamp" in data
+            assert "uptime_seconds" in data
+            mock_check_db.assert_called_once()
+            mock_check_env.assert_called_once()
 
     @patch("deployment.app.api.health.check_database")
     @patch("deployment.app.api.health.get_environment_status")
     def test_health_check_endpoint_unhealthy_db(
-        self, mock_check_env, mock_check_db, client
+        self, mock_check_env, mock_check_db, api_client
     ):
         """Test /health endpoint returns unhealthy status when database is unhealthy and returns ErrorDetailResponse."""
         # Arrange
@@ -89,7 +99,7 @@ class TestHealthCheckEndpoint:
         )
 
         # Act
-        response = client.get("/health/")
+        response = api_client.get("/health/")
 
         # Assert
         assert response.status_code == 503
@@ -104,7 +114,7 @@ class TestHealthCheckEndpoint:
     @patch("deployment.app.api.health.check_database")
     @patch("deployment.app.api.health.get_environment_status")
     def test_health_check_endpoint_degraded_env(
-        self, mock_check_env, mock_check_db, client
+        self, mock_check_env, mock_check_db, api_client
     ):
         """Test /health endpoint returns degraded status when environment is degraded."""
         # Arrange
@@ -116,7 +126,7 @@ class TestHealthCheckEndpoint:
         )
 
         # Act
-        response = client.get("/health/")
+        response = api_client.get("/health/")
 
         # Assert
         assert response.status_code == 200  # Degraded status returns 200
@@ -133,7 +143,7 @@ class TestHealthCheckEndpoint:
 
     @patch("deployment.app.api.health.check_database")
     @patch("deployment.app.api.health.get_environment_status")
-    def test_health_check_endpoint_unhealthy_missing_months(self, mock_check_env, mock_check_db, client):
+    def test_health_check_endpoint_unhealthy_missing_months(self, mock_check_env, mock_check_db, api_client):
         """Test /health endpoint returns unhealthy and details[missing_months] if months are missing and returns ErrorDetailResponse."""
         mock_check_db.return_value = ComponentHealth(
             status="unhealthy", details={"missing_months": {"fact_sales": ["2024-02-01"]}}
@@ -141,7 +151,7 @@ class TestHealthCheckEndpoint:
         mock_check_env.return_value = ComponentHealth(
             status="healthy", details={}
         )
-        response = client.get("/health/")
+        response = api_client.get("/health/")
         assert response.status_code == 503
         data = response.json()
         assert data["error"]["message"] == "API is unhealthy."
@@ -158,7 +168,7 @@ class TestSystemStatsEndpoint:
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
     @patch("deployment.app.api.health.psutil")
-    def test_system_stats_endpoint_success(self, mock_psutil, client, auth_header_name, auth_token):
+    def test_system_stats_endpoint_success(self, mock_psutil, api_client, auth_header_name, auth_token):
         """Test successful retrieval of system statistics."""
         # Arrange
         mock_process = MagicMock()
@@ -172,7 +182,7 @@ class TestSystemStatsEndpoint:
         mock_psutil.Process.return_value = mock_process
 
         # Act
-        response = client.get("/health/system", headers={auth_header_name: auth_token})
+        response = api_client.get("/health/system", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -194,20 +204,19 @@ class TestSystemStatsEndpoint:
         ("X-API-Key", "wrong_key"),
         ("Authorization", "Bearer wrong_token"),
     ])
-    def test_system_stats_unauthorized_invalid_key(self, client, auth_header_name, auth_token):
+    def test_system_stats_unauthorized_invalid_key(self, api_client, auth_header_name, auth_token):
         """Test system stats endpoint fails with 401 if X-API-Key or Bearer token is invalid."""
         # Act
-        response = client.get("/health/system", headers={auth_header_name: auth_token})
+        response = api_client.get("/health/system", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 401
         data = response.json()
         assert data["error"]["message"] == "Invalid or missing credentials. Provide a valid Bearer token or X-API-Key."
 
-    def test_system_stats_server_key_not_configured(self, client, monkeypatch):
+    def test_system_stats_server_key_not_configured(self, api_client, monkeypatch):
         """Test system stats endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange - Override the dependency to simulate server key not configured
-        from deployment.app.services.auth import get_unified_auth
         def raise_server_error():
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -216,7 +225,7 @@ class TestSystemStatsEndpoint:
         monkeypatch.setitem(app.dependency_overrides, get_unified_auth, raise_server_error)
 
         # Act
-        response = client.get(
+        response = api_client.get(
             "/health/system",
             headers={"X-API-Key": TEST_X_API_KEY},
         )
@@ -226,7 +235,7 @@ class TestSystemStatsEndpoint:
         data = response.json()
         assert data["error"]["message"] == "Authentication is not configured on the server."
         assert data["error"]["code"] == "http_500"
-        
+
         # Cleanup
         app.dependency_overrides.clear()
 
@@ -252,13 +261,13 @@ class TestRetryStatsEndpoint:
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
     @patch("deployment.app.api.health.get_retry_statistics")
-    def test_retry_statistics_endpoint_success(self, mock_get_stats, client, auth_header_name, auth_token):
+    def test_retry_statistics_endpoint_success(self, mock_get_stats, api_client, auth_header_name, auth_token):
         """Test successful retrieval of retry statistics."""
         # Arrange
         mock_get_stats.return_value = self.get_mock_retry_stats_data()
 
         # Act
-        response = client.get(
+        response = api_client.get(
             "/health/retry-stats", headers={auth_header_name: auth_token}
         )
 
@@ -280,17 +289,17 @@ class TestRetryStatsEndpoint:
         ("X-API-Key", "wrong_key"),
         ("Authorization", "Bearer wrong_token"),
     ])
-    def test_retry_statistics_unauthorized_invalid_key(self, client, auth_header_name, auth_token):
+    def test_retry_statistics_unauthorized_invalid_key(self, api_client, auth_header_name, auth_token):
         """Test retry stats endpoint fails with 401 if X-API-Key or Bearer token is invalid."""
         # Act
-        response = client.get("/health/retry-stats", headers={auth_header_name: auth_token})
+        response = api_client.get("/health/retry-stats", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 401
         data = response.json()
         assert data["error"]["message"] == "Invalid or missing credentials. Provide a valid Bearer token or X-API-Key."
 
-    def test_retry_statistics_server_key_not_configured(self, client, monkeypatch):
+    def test_retry_statistics_server_key_not_configured(self, api_client, monkeypatch):
         """Test retry stats endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
         from deployment.app.services.auth import get_unified_auth
@@ -302,7 +311,7 @@ class TestRetryStatsEndpoint:
         monkeypatch.setitem(app.dependency_overrides, get_unified_auth, raise_server_error)
 
         # Act
-        response = client.get(
+        response = api_client.get(
             "/health/retry-stats",
             headers={"X-API-Key": TEST_X_API_KEY},
         )
@@ -312,7 +321,7 @@ class TestRetryStatsEndpoint:
         data = response.json()
         assert data["error"]["message"] == "Authentication is not configured on the server."
         assert data["error"]["code"] == "http_500"
-        
+
         # Cleanup
         app.dependency_overrides.clear()
 
@@ -321,10 +330,10 @@ class TestRetryStatsEndpoint:
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
     @patch("deployment.app.api.health.reset_retry_statistics")
-    def test_reset_retry_stats_endpoint_success(self, mock_reset_stats, client, auth_header_name, auth_token):
+    def test_reset_retry_stats_endpoint_success(self, mock_reset_stats, api_client, auth_header_name, auth_token):
         """Test successful reset of retry statistics."""
         # Act
-        response = client.post(
+        response = api_client.post(
             "/health/retry-stats/reset", headers={auth_header_name: auth_token}
         )
 
@@ -338,10 +347,10 @@ class TestRetryStatsEndpoint:
         ("X-API-Key", "wrong_key"),
         ("Authorization", "Bearer wrong_token"),
     ])
-    def test_reset_retry_stats_unauthorized_invalid_key(self, client, auth_header_name, auth_token):
+    def test_reset_retry_stats_unauthorized_invalid_key(self, api_client, auth_header_name, auth_token):
         """Test reset retry stats endpoint fails with 401 if X-API-Key or Bearer token is invalid."""
         # Act
-        response = client.post(
+        response = api_client.post(
             "/health/retry-stats/reset", headers={auth_header_name: auth_token}
         )
 
@@ -350,7 +359,7 @@ class TestRetryStatsEndpoint:
         data = response.json()
         assert data["error"]["message"] == "Invalid or missing credentials. Provide a valid Bearer token or X-API-Key."
 
-    def test_reset_retry_stats_server_key_not_configured(self, client, monkeypatch):
+    def test_reset_retry_stats_server_key_not_configured(self, api_client, monkeypatch):
         """Test reset retry stats endpoint fails with 500 if server X-API-Key is not configured."""
         # Arrange
         from deployment.app.services.auth import get_unified_auth
@@ -362,7 +371,7 @@ class TestRetryStatsEndpoint:
         monkeypatch.setitem(app.dependency_overrides, get_unified_auth, raise_server_error)
 
         # Act
-        response = client.post(
+        response = api_client.post(
             "/health/retry-stats/reset",
             headers={"X-API-Key": TEST_X_API_KEY},
         )
@@ -372,7 +381,7 @@ class TestRetryStatsEndpoint:
         data = response.json()
         assert data["error"]["message"] == "Authentication is not configured on the server."
         assert data["error"]["code"] == "http_500"
-        
+
         # Cleanup
         app.dependency_overrides.clear()
 
@@ -380,7 +389,7 @@ class TestRetryStatsEndpoint:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_retry_statistics_healthy(self, client, mock_dal, monkeypatch, auth_header_name, auth_token):
+    def test_retry_statistics_healthy(self, api_client, in_memory_db, monkeypatch, auth_header_name, auth_token):
         """Test retry stats endpoint returns 200 with stats when X-API-Key or Bearer token is valid."""
         # Arrange
         from deployment.app.services.auth import get_unified_auth
@@ -389,7 +398,7 @@ class TestRetryStatsEndpoint:
         monkeypatch.setattr("deployment.app.api.health.get_retry_statistics", mock_get_stats)
 
         # Act
-        response = client.get(
+        response = api_client.get(
             "/health/retry-stats", headers={auth_header_name: auth_token}
         )
 
@@ -411,7 +420,7 @@ class TestRetryStatsEndpoint:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_reset_retry_stats_success(self, client, mock_dal, monkeypatch, auth_header_name, auth_token):
+    def test_reset_retry_stats_success(self, api_client, in_memory_db, monkeypatch, auth_header_name, auth_token):
         """Test reset retry stats endpoint returns 200 with success message when X-API-Key or Bearer token is valid."""
         # Arrange
         from deployment.app.services.auth import get_unified_auth
@@ -420,7 +429,7 @@ class TestRetryStatsEndpoint:
         monkeypatch.setattr("deployment.app.api.health.reset_retry_statistics", mock_reset_stats)
 
         # Act
-        response = client.post(
+        response = api_client.post(
             "/health/retry-stats/reset", headers={auth_header_name: auth_token}
         )
 
@@ -436,19 +445,30 @@ class TestRetryStatsEndpoint:
 class TestComponentHealthChecks:
     """Test suite for individual component health check functions."""
 
-    def test_check_database_healthy(self, mock_dal):
+    def test_check_database_healthy(self, in_memory_db, monkeypatch):
         """Test check_database returns healthy when connection and tables are ok."""
         from deployment.app.api.health import check_database
 
-        result = check_database(mock_dal)
+        # Mock execute_query_with_batching to return all required tables
+        required_tables = [
+            "jobs", "models", "configs", "training_results", "prediction_results",
+            "job_status_history", "dim_multiindex_mapping", "fact_sales", "fact_stock",
+            "fact_prices", "fact_stock_changes", "fact_predictions",
+            "processing_runs", "data_upload_results", "report_results"
+        ]
+        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(return_value=[{"name": table} for table in required_tables]))
+        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(return_value=[{'data_date': '2024-01-01'}])) # Mock for check_monotonic_months
+
+        result = check_database(in_memory_db)
 
         assert result.status == "healthy"
-        mock_dal.execute_raw_query.assert_called()
+        in_memory_db.execute_query_with_batching.assert_called_once()
+        in_memory_db.execute_raw_query.assert_called()
 
-    def test_check_database_degraded_missing_tables(self, mock_dal):
+    def test_check_database_degraded_missing_tables(self, in_memory_db, monkeypatch):
         """Test check_database returns degraded if tables are missing."""
         # Arrange
-        def side_effect_for_missing_tables(query, params=(), fetchall=False, connection=None):
+        def side_effect_for_missing_tables(query, params=(), fetchall=False):
             if query == "SELECT 1":
                 return [{"1": 1}]
             if "SELECT name FROM sqlite_master" in query:
@@ -459,45 +479,45 @@ class TestComponentHealthChecks:
                 return []
             return []
 
-        mock_dal.execute_raw_query.side_effect = side_effect_for_missing_tables
-        
+        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=side_effect_for_missing_tables))
+
         # Mock execute_query_with_batching to return the same result for table checks
         def batching_side_effect(query_template, ids, **kwargs):
             if "sqlite_master" in query_template.lower():
                 # Return only "jobs" table from the requested tables
                 return [{"name": "jobs"}] if "jobs" in ids else []
             return []
-        
-        mock_dal.execute_query_with_batching.side_effect = batching_side_effect
+
+        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
 
         # Act
         from deployment.app.api.health import check_database
 
-        result = check_database(mock_dal)
+        result = check_database(in_memory_db)
 
         # Assert
         assert result.status == "degraded"
         assert "missing_tables" in result.details
         assert "jobs" not in result.details["missing_tables"]
         assert "models" in result.details["missing_tables"]
-        mock_dal.execute_raw_query.assert_called()
+        in_memory_db.execute_raw_query.assert_called()
 
-    def test_check_database_unhealthy_connection_error(self, mock_dal):
+    def test_check_database_unhealthy_connection_error(self, in_memory_db, monkeypatch):
         """Test check_database returns unhealthy on connection error."""
         # Arrange
         from deployment.app.db.database import DatabaseError
-        mock_dal.execute_raw_query.side_effect = DatabaseError("Connection failed")
+        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=DatabaseError("Connection failed")))
 
         # Act
         from deployment.app.api.health import check_database
 
-        result = check_database(mock_dal)
+        result = check_database(in_memory_db)
 
         # Assert
         assert result.status == "unhealthy"
         assert "error" in result.details
         assert "Connection failed" in result.details["error"]
-        mock_dal.execute_raw_query.assert_called_once()
+        in_memory_db.execute_raw_query.assert_called_once()
 
     @patch('deployment.app.utils.environment.load_dotenv')
     @patch('deployment.app.utils.environment.check_yc_token_health')
@@ -505,7 +525,7 @@ class TestComponentHealthChecks:
         """Test get_environment_status returns healthy when vars are in .env file."""
         # Arrange
         mock_check_token.return_value = ComponentHealth(status="healthy")
-        
+
         dotenv_content = """
 DATASPHERE_PROJECT_ID=project123
 DATASPHERE_FOLDER_ID=folder456
@@ -566,7 +586,7 @@ YC_OAUTH_TOKEN=oauth_token_def
         # Arrange: Mock load_dotenv to prevent loading real .env file
         mock_load_dotenv.return_value = None
         mock_check_token.return_value = ComponentHealth(status="healthy")
-        
+
         # Arrange
         dotenv_content = """
 DATASPHERE_PROJECT_ID=project123
@@ -597,7 +617,7 @@ YC_OAUTH_TOKEN=oauth_token_def
         """Test get_environment_status returns degraded when DataSphere auth is missing."""
         # Arrange: Mock load_dotenv to prevent loading real .env file
         mock_load_dotenv.return_value = None
-        
+
         # Arrange: Only patch environment, do not create .env file
         with patch.dict(os.environ, {
             'DATASPHERE_PROJECT_ID': 'project123',
@@ -648,11 +668,11 @@ DATASPHERE_YC_PROFILE=default
         assert result.status == "healthy"
         assert result.details == {}
 
-    def test_check_database_unhealthy_missing_tables(self, mock_dal):
+    def test_check_database_unhealthy_missing_tables(self, in_memory_db, monkeypatch):
         """Test check_database returns unhealthy if required tables are missing."""
         # Arrange
         # Simulate that the query for tables returns only one table.
-        def side_effect_for_missing_tables(query, params=(), fetchall=False, connection=None):
+        def side_effect_for_missing_tables(query, params=(), fetchall=False):
             if query == "SELECT 1":
                 return [{"1": 1}]
             if "SELECT name FROM sqlite_master" in query:
@@ -663,33 +683,33 @@ DATASPHERE_YC_PROFILE=default
                 return []
             return []
 
-        mock_dal.execute_raw_query.side_effect = side_effect_for_missing_tables
-        
+        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=side_effect_for_missing_tables))
+
         # Mock execute_query_with_batching to return the same result for table checks
         def batching_side_effect(query_template, ids, **kwargs):
             if "sqlite_master" in query_template.lower():
                 # Return only "jobs" table from the requested tables
                 return [{"name": "jobs"}] if "jobs" in ids else []
             return []
-        
-        mock_dal.execute_query_with_batching.side_effect = batching_side_effect
+
+        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
 
         # Act
         from deployment.app.api.health import check_database
 
-        result = check_database(mock_dal)
+        result = check_database(in_memory_db)
 
         # Assert
         assert result.status == "degraded"
         assert "missing_tables" in result.details
         assert "jobs" not in result.details["missing_tables"]
         assert "models" in result.details["missing_tables"]
-        mock_dal.execute_raw_query.assert_called()
+        in_memory_db.execute_raw_query.assert_called()
 
-    def test_check_database_unhealthy_missing_months(self, mock_dal):
+    def test_check_database_unhealthy_missing_months(self, in_memory_db, monkeypatch):
         """Test check_database returns unhealthy if there are missing months in fact_sales or fact_stock_changes."""
 
-        def side_effect_for_missing_months(query, params=(), fetchall=False, connection=None):
+        def side_effect_for_missing_months(query, params=(), fetchall=False):
             if query == "SELECT 1":
                 return [{"1": 1}]
             if "SELECT name FROM sqlite_master" in query:
@@ -702,7 +722,7 @@ DATASPHERE_YC_PROFILE=default
                 return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
             return []
 
-        mock_dal.execute_raw_query.side_effect = side_effect_for_missing_months
+        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=side_effect_for_missing_months))
 
         # Mock execute_query_with_batching to return all tables as existing
         def batching_side_effect(query_template, ids, **kwargs):
@@ -710,20 +730,20 @@ DATASPHERE_YC_PROFILE=default
                 # Return all requested tables as existing
                 return [{"name": table} for table in ids]
             return []
-        
-        mock_dal.execute_query_with_batching.side_effect = batching_side_effect
+
+        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
 
         from deployment.app.api.health import check_database
-        result = check_database(mock_dal)
+        result = check_database(in_memory_db)
         assert result.status == "unhealthy"
         assert "missing_months_sales" in result.details
         assert result.details["missing_months_sales"] == ["2024-02-01"] # check_monotonic_months returns this format
         assert "missing_months_stock_changes" not in result.details
 
-    def test_check_database_healthy_no_missing_months(self, mock_dal):
+    def test_check_database_healthy_no_missing_months(self, in_memory_db, monkeypatch):
         """Test check_database returns healthy if all months are present in both tables."""
 
-        def side_effect_for_healthy(query, params=(), fetchall=False, connection=None):
+        def side_effect_for_healthy(query, params=(), fetchall=False):
             if query == "SELECT 1":
                 return [{"1": 1}]
             if "SELECT name FROM sqlite_master" in query:
@@ -734,7 +754,7 @@ DATASPHERE_YC_PROFILE=default
                 return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
             return []
 
-        mock_dal.execute_raw_query.side_effect = side_effect_for_healthy
+        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=side_effect_for_healthy))
 
         # Mock execute_query_with_batching to return all tables as existing
         def batching_side_effect(query_template, ids, **kwargs):
@@ -742,11 +762,11 @@ DATASPHERE_YC_PROFILE=default
                 # Return all requested tables as existing
                 return [{"name": table} for table in ids]
             return []
-        
-        mock_dal.execute_query_with_batching.side_effect = batching_side_effect
+
+        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
 
         from deployment.app.api.health import check_database
-        result = check_database(mock_dal)
+        result = check_database(in_memory_db)
         assert result.status == "healthy"
 
 

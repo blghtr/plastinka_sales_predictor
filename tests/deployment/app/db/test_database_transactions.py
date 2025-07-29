@@ -11,7 +11,6 @@ in the database module, ensuring that:
 5. Complex transaction chains maintain data integrity
 """
 
-import os
 import sqlite3
 import threading
 from datetime import datetime
@@ -95,8 +94,8 @@ def test_execute_query_transaction(isolated_db_session):
     # Test commit behavior
     execute_query(
         "INSERT INTO test_transactions (value) VALUES (?)",
+        conn,
         ("test_value",),
-        connection=conn,
     )
 
     # Verify data was committed
@@ -113,8 +112,8 @@ def test_execute_query_transaction(isolated_db_session):
         # This should fail (missing a required parameter)
         execute_query(
             "INSERT INTO test_transactions (id, value) VALUES (?, ?)",
+            conn,
             (2,),  # Missing a parameter
-            connection=conn,
         )
     except DatabaseError:
         pass  # Expected error
@@ -248,7 +247,7 @@ def test_nested_transactions(isolated_db_session):
 def test_create_job_transaction_safety(isolated_db_session):
     """Test that create_job function operates safely within transactions"""
     db_path = isolated_db_session["db_path"]
-    
+
     # Test case: Create job inside a successful transaction
     with get_db_connection(db_path) as conn_success:
         job_id_success = create_job(
@@ -288,7 +287,7 @@ def test_create_job_transaction_safety(isolated_db_session):
 def test_update_job_transaction_safety(isolated_db_session):
     """Test update_job_status within transactions"""
     db_path = isolated_db_session["db_path"]
-    
+
     # Initial job creation
     with get_db_connection(db_path) as conn:
         job_id = create_job("initial_job", connection=conn)
@@ -326,7 +325,7 @@ def test_update_job_transaction_safety(isolated_db_session):
 def test_complex_transaction_chain(isolated_db_session):
     """Test a complex chain of database operations within a transaction"""
     db_path = isolated_db_session["db_path"]
-    
+
     job_id_1, job_id_2 = None, None
     try:
         with get_db_connection(db_path) as conn:
@@ -376,6 +375,7 @@ def test_concurrent_reads(isolated_db_session):
         for i in range(10):
             execute_query(
                 "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                conn,
                 (
                     f"read_test_{i}",
                     "test",
@@ -383,7 +383,6 @@ def test_concurrent_reads(isolated_db_session):
                     datetime.now().isoformat(),
                     datetime.now().isoformat(),
                 ),
-                connection=conn,
             )
 
     # Verify jobs were created
