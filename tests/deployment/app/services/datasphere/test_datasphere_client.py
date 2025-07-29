@@ -60,7 +60,7 @@ def test_auth_method_yc_profile(monkeypatch):
     mock_client_class = MagicMock()
     monkeypatch.setattr("deployment.datasphere.client.DatasphereClient", mock_client_class)
     mock_client_class.return_value = MagicMock()
-    
+
     DataSphereClient(
         project_id=TEST_PROJECT_ID,
         folder_id=TEST_FOLDER_ID,
@@ -68,10 +68,10 @@ def test_auth_method_yc_profile(monkeypatch):
         yc_profile="datasphere-prod",
         auth_method="yc_profile"
     )
-    
+
     # Проверяем, что OAuth токен игнорируется, используется только YC профиль
     mock_client_class.assert_called_once_with(
-        oauth_token=None, 
+        oauth_token=None,
         yc_profile="datasphere-prod"
     )
 
@@ -81,7 +81,7 @@ def test_auth_method_oauth_token(monkeypatch):
     mock_client_class = MagicMock()
     monkeypatch.setattr("deployment.datasphere.client.DatasphereClient", mock_client_class)
     mock_client_class.return_value = MagicMock()
-    
+
     DataSphereClient(
         project_id=TEST_PROJECT_ID,
         folder_id=TEST_FOLDER_ID,
@@ -89,10 +89,10 @@ def test_auth_method_oauth_token(monkeypatch):
         yc_profile="should-be-ignored",
         auth_method="oauth_token"
     )
-    
+
     # Проверяем, что YC профиль игнорируется, используется только OAuth
     mock_client_class.assert_called_once_with(
-        oauth_token="test-oauth-token", 
+        oauth_token="test-oauth-token",
         yc_profile=None
     )
 
@@ -101,7 +101,7 @@ def test_auth_method_auto_prefers_yc_profile():
     """Test auto authentication method prefers YC profile when available."""
     with patch("deployment.datasphere.client.DatasphereClient") as mock_client_class:
         mock_client_class.return_value = MagicMock()
-        
+
         DataSphereClient(
             project_id=TEST_PROJECT_ID,
             folder_id=TEST_FOLDER_ID,
@@ -109,10 +109,10 @@ def test_auth_method_auto_prefers_yc_profile():
             yc_profile="datasphere-prod",
             auth_method="auto"
         )
-        
+
         # При auto режиме приоритет у YC профиля
         mock_client_class.assert_called_once_with(
-            oauth_token=None, 
+            oauth_token=None,
             yc_profile="datasphere-prod"
         )
 
@@ -121,7 +121,7 @@ def test_auth_method_auto_fallback_to_oauth():
     """Test auto authentication method falls back to OAuth when no YC profile."""
     with patch("deployment.datasphere.client.DatasphereClient") as mock_client_class:
         mock_client_class.return_value = MagicMock()
-        
+
         DataSphereClient(
             project_id=TEST_PROJECT_ID,
             folder_id=TEST_FOLDER_ID,
@@ -129,10 +129,10 @@ def test_auth_method_auto_fallback_to_oauth():
             yc_profile=None,
             auth_method="auto"
         )
-        
+
         # При отсутствии YC профиля используется OAuth
         mock_client_class.assert_called_once_with(
-            oauth_token="test-oauth-token", 
+            oauth_token="test-oauth-token",
             yc_profile=None
         )
 
@@ -141,7 +141,7 @@ def test_auth_method_auto_delegates_to_sdk():
     """Test auto authentication method delegates to SDK when both methods available."""
     with patch("deployment.datasphere.client.DatasphereClient") as mock_client_class:
         mock_client_class.return_value = MagicMock()
-        
+
         DataSphereClient(
             project_id=TEST_PROJECT_ID,
             folder_id=TEST_FOLDER_ID,
@@ -149,10 +149,10 @@ def test_auth_method_auto_delegates_to_sdk():
             yc_profile=None,
             auth_method="auto"
         )
-        
+
         # При отсутствии обоих методов делегируем SDK
         mock_client_class.assert_called_once_with(
-            oauth_token=None, 
+            oauth_token=None,
             yc_profile=None
         )
 
@@ -161,7 +161,7 @@ def test_auth_method_default_is_auto():
     """Test that default auth_method is auto."""
     with patch("deployment.datasphere.client.DatasphereClient") as mock_client_class:
         mock_client_class.return_value = MagicMock()
-        
+
         DataSphereClient(
             project_id=TEST_PROJECT_ID,
             folder_id=TEST_FOLDER_ID,
@@ -169,10 +169,10 @@ def test_auth_method_default_is_auto():
             yc_profile="test-profile"
             # auth_method не указан, должен быть "auto"
         )
-        
+
         # При auto режиме приоритет у YC профиля
         mock_client_class.assert_called_once_with(
-            oauth_token=None, 
+            oauth_token=None,
             yc_profile="test-profile"
         )
 

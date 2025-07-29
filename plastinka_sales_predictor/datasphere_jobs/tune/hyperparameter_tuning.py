@@ -1,31 +1,32 @@
-from copy import deepcopy
-from warnings import filterwarnings
-from ray import tune
-from ray.train import RunConfig, CheckpointConfig
-from ray.tune import CLIReporter
-from ray.tune.schedulers.hb_bohb import HyperBandForBOHB
-from ray.tune.search.bohb import TuneBOHB
-from ray.tune.tuner import Tuner
-from pathlib import Path
 import json
-from typing import Any
-import ray
-from plastinka_sales_predictor import (
-    PlastinkaTrainingTSDataset,
-    train_fn,
-    trial_name_creator,
-    configure_logger,
-    flatten_config,
-    load_fixed_params
-)
 import os
 import sys
 import tempfile
 import time
 import zipfile
+from copy import deepcopy
+from typing import Any
+from warnings import filterwarnings
+
 import click
 import numpy as np
 import pandas as pd
+
+import ray
+from plastinka_sales_predictor import (
+    PlastinkaTrainingTSDataset,
+    configure_logger,
+    flatten_config,
+    load_fixed_params,
+    train_fn,
+    trial_name_creator,
+)
+from plastinka_sales_predictor.tuning_utils import merge_configs
+from ray import tune
+from ray.train import CheckpointConfig, RunConfig
+from ray.tune.schedulers.hb_bohb import HyperBandForBOHB
+from ray.tune.search.bohb import TuneBOHB
+from ray.tune.tuner import Tuner
 
 filterwarnings('ignore')
 
@@ -80,14 +81,14 @@ weights_config = {
     "sigma_right": tune.uniform(0.8, 3.0),
     }
 
-tunable_params = {
+_tunable_params = {
     "model_config": model_config,
     "optimizer_config": optimizer_config,
     "lr_shed_config": lr_shed_config,
     "train_ds_config": train_ds_config,
     "swa_config": swa_config,
     "weights_config": weights_config,
-    "lags": tune.randint(3, 7),
+    "lags": tune.randint(3, 13),
     }
 
 _fixed_params = {
@@ -120,6 +121,177 @@ def create_output_archive(temp_output_dir: str, output: str, files: list[str]):
     logger.info(f"Output archive created: {output}")
 
 
+# ---------------------------------------------------------------------------
+# Helper utilities (local to this script)
+# ---------------------------------------------------------------------------
+
+def load_initial_configs(config_path: str, tunable_params: dict, mode: str) -> list[dict]:
+    """Load and process initial configurations from JSON file.
+
+    Args:
+        config_path: Path to the initial configs JSON file
+        tunable_params: Dictionary of tunable parameters to filter against
+        mode: Tuning mode ('lite' or 'full')
+
+    Returns:
+        List of flattened configuration dictionaries
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        json.JSONDecodeError: If JSON is malformed
+        Exception: For other processing errors
+    """
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw_configs = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Initial configs file not found: {config_path}")
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(f"Invalid JSON in {config_path}: {e}")
+
+    processed_configs = []
+
+    for raw_config in raw_configs:
+        try:
+            processed_config = _process_single_initial_config(
+                raw_config, tunable_params, mode
+            )
+            if processed_config:
+                processed_configs.append(processed_config)
+        except Exception as e:
+            logger.warning(f"Failed to process initial config: {e}")
+            continue
+
+    return processed_configs
+
+
+def _process_single_initial_config(raw_config: dict, tunable_params: dict, mode: str) -> dict:
+    """Process a single initial configuration.
+
+    Args:
+        raw_config: Raw configuration dictionary
+        tunable_params: Dictionary of tunable parameters
+        mode: Tuning mode ('lite' or 'full')
+
+    Returns:
+        Flattened configuration dictionary
+    """
+    # Create a deep copy to avoid modifying the original
+    config = deepcopy(raw_config)
+
+    # Handle backward compatibility
+    config = _apply_backward_compatibility_fixes(config)
+
+    # Filter out keys that aren't in tunable_params
+    config = _filter_config_keys(config, tunable_params)
+
+    # Apply mode-specific changes
+    config = _apply_mode_specific_changes(config, mode)
+
+    # Flatten the configuration
+    return flatten_config(config)
+
+
+def _apply_backward_compatibility_fixes(config: dict) -> dict:
+    """Apply backward compatibility fixes to configuration.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Updated configuration dictionary
+    """
+    # Handle old format where config was nested under 'config' key
+    if 'config' in config:
+        config = config['config']
+
+    # Handle old format where model config was named 'nn_model_config'
+    if "nn_model_config" in config:
+        config["model_config"] = config.pop("nn_model_config")
+
+    return config
+
+
+def _filter_config_keys(config: dict, tunable_params: dict) -> dict:
+    """Filter configuration to only include tunable parameters.
+
+    Args:
+        config: Configuration dictionary
+        tunable_params: Dictionary of tunable parameters
+
+    Returns:
+        Filtered configuration dictionary
+    """
+    keys_to_remove = [k for k in config.keys() if k not in tunable_params]
+    for key in keys_to_remove:
+        config.pop(key)
+
+    return config
+
+
+def _apply_mode_specific_changes(config: dict, mode: str) -> dict:
+    """Apply mode-specific changes to configuration.
+
+    Args:
+        config: Configuration dictionary
+        mode: Tuning mode ('lite' or 'full')
+
+    Returns:
+        Updated configuration dictionary
+    """
+    if mode == "lite":
+        # Remove model_config entirely in lite mode
+        config.pop("model_config", None)
+    else:
+        # Remove n_epochs from model_config in full mode
+        if "model_config" in config and "n_epochs" in config["model_config"]:
+            config["model_config"].pop("n_epochs")
+
+    return config
+
+
+def _convert_jsonable(value):
+    """Convert numpy dtypes to native python for JSON serialization."""
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def unflatten_config(flat_cfg: dict[str, Any], prefix: str = "config/") -> dict:
+    """Recreate nested config structure from flattened keys.
+
+    Example:
+        {
+            "config/model_config/num_layers": 3,
+            "config/optimizer_config/lr": 0.001,
+        }
+        -> {"model_config": {"num_layers": 3}, "optimizer_config": {"lr": 0.001}}
+
+    Args:
+        flat_cfg: Dictionary with flattened keys (slash-separated).
+        prefix:   Leading prefix to strip (default "config/").
+
+    Returns:
+        Nested configuration dictionary.
+    """
+    nested: dict = {}
+    for full_key, value in flat_cfg.items():
+        if not full_key.startswith(prefix):
+            continue
+
+        # Skip NaNs (can appear for missing params)
+        if pd.isna(value):
+            continue
+
+        key_path = full_key[len(prefix):].split("/")  # strip prefix and split
+        current = nested
+        for part in key_path[:-1]:
+            current = current.setdefault(part, {})
+        current[key_path[-1]] = _convert_jsonable(value)
+
+    return nested
+
+
 @click.command()
 @click.option(
     "--input",
@@ -131,7 +303,6 @@ def create_output_archive(temp_output_dir: str, output: str, files: list[str]):
 @click.option("--output", default="output.zip", help="Name of output archive")
 def main(input_dir, output):
     """Run hyperparameter tuning inside DataSphere job."""
-
     logger.info("Starting tuning job ...")
     input_dir_real = validate_input_directory(input_dir)
 
@@ -140,7 +311,7 @@ def main(input_dir, output):
     tuning_cfg = {}
     if os.path.exists(tuning_settings_path):
         try:
-            with open(tuning_settings_path, "r", encoding="utf-8") as f:
+            with open(tuning_settings_path, encoding="utf-8") as f:
                 tuning_cfg = json.load(f)
             logger.info(f"Loaded tuning settings from {tuning_settings_path}")
         except Exception as e:
@@ -148,18 +319,18 @@ def main(input_dir, output):
     else:
         logger.warning("tuning_settings.json not found, using default settings")
 
-    # Determine tuning mode from JSON (default 'light')
-    mode = tuning_cfg.get("mode", "light")
+    # Determine tuning mode from JSON (default 'lite')
+    mode = tuning_cfg.get("mode", "lite")
 
     # Extract configuration values with fallbacks
     num_samples = tuning_cfg.get(
-        "num_samples_light" if mode == "light" else "num_samples_full",
-        50 if mode == "light" else 200,
+        "num_samples_lite" if mode == "lite" else "num_samples_full",
+        50 if mode == "lite" else 200,
     )
     resources = tuning_cfg.get("resources", {"cpu": 32})
     max_concurrent = tuning_cfg.get("max_concurrent", 16)
     best_configs_to_save = tuning_cfg.get("best_configs_to_save", 5)
-    
+
     # Optional overall time budget for the entire tuning run
     time_budget_s = tuning_cfg.get("time_budget_s", 3600)
 
@@ -171,57 +342,41 @@ def main(input_dir, output):
     # Load fixed parameters from active_config if present
     fixed_params_path = os.path.join(input_dir_real, "config.json")
     fixed_params = load_fixed_params(
-        fixed_params_path, tunable_params
+        fixed_params_path
     )
-    fixed_params.update(_fixed_params)
+    fixed_params = _apply_backward_compatibility_fixes(fixed_params)
+    fixed_params = merge_configs(_fixed_params, fixed_params)  # override with hardcoded params for now
+
     # Load initial configs if present
     initial_configs: list[dict] = []
     init_cfg_path = os.path.join(input_dir_real, INITIAL_CONFIGS_FILE)
+
     if os.path.exists(init_cfg_path):
         try:
-            with open(init_cfg_path, "r", encoding="utf-8") as f:
-                raw_cfgs = json.load(f)
-            for raw_cfg in raw_cfgs:
-                cfg = deepcopy(raw_cfg)
-
-                if "nn_model_config" in cfg:
-                    cfg["model_config"] = cfg.pop("nn_model_config")
-                keys = list(cfg.keys())
-
-                for k in keys:
-                    if k not in tunable_params:
-                        _ = cfg.pop(k)
-                if mode == "light":
-                    _ = cfg.pop("model_config")
-                else:
-                    _ = cfg["model_config"].pop("n_epochs")
-
-                try:
-                    initial_configs.append(flatten_config(cfg))
-                except Exception as fe:
-                    logger.warning(f"Failed to flatten initial config: {fe}")
-            
+            initial_configs = load_initial_configs(
+                init_cfg_path,
+                _tunable_params,
+                mode
+            )
             logger.info(f"Loaded {len(initial_configs)} initial configs from {init_cfg_path}")
         except Exception as e:
             logger.warning(f"Failed to read initial_configs.json: {e}")
+            initial_configs = []
 
-    if mode == "light":
-        _ = tunable_params.pop("model_config")
+    tunable_params = _apply_mode_specific_changes(_tunable_params, mode)
 
     # dataset paths
     train_path = os.path.join(input_dir_real, "train.dill")
-    val_path = os.path.join(input_dir_real, "val.dill")
 
-    if not os.path.exists(train_path) or not os.path.exists(val_path):
-        logger.error("train.dill or val.dill not found in input dir")
+    if not os.path.exists(train_path):
+        logger.error("train.dill not found in input dir")
         sys.exit(1)
 
     ds = PlastinkaTrainingTSDataset.from_dill(train_path)
-    val_ds = PlastinkaTrainingTSDataset.from_dill(val_path)
 
     # re-create train_with_parameters with new ds
     train_with_parameters = tune.with_parameters(
-        train_fn, fixed_config=fixed_params, ds=ds, val_ds=val_ds
+        train_fn, fixed_config=fixed_params, ds=ds
     )
     train_with_parameters = tune.with_resources(
         train_with_parameters,
@@ -270,7 +425,6 @@ def main(input_dir, output):
     if "val_MIWS_MIC_Ratio" not in df.columns:
         logger.error("Metric val_MIWS_MIC_Ratio not present in results dataframe")
         sys.exit(1)
-
     df_sorted = df.sort_values("val_MIWS_MIC_Ratio").head(best_configs_to_save)
 
     # Collect validation metric columns only
@@ -283,8 +437,9 @@ def main(input_dir, output):
     for _, row in df_sorted.iterrows():
         flat_cfg = {c: row[c] for c in df_sorted.columns if c.startswith("config/")}
         nested_cfg = unflatten_config(flat_cfg)
+        if mode == 'lite':
+            nested_cfg = merge_configs(fixed_params, nested_cfg)
         best_configs.append(nested_cfg)
-
         metric_values = {col: _convert_jsonable(row[col]) for col in metric_cols}
         metrics_list.append(metric_values)
 
@@ -301,52 +456,6 @@ def main(input_dir, output):
         create_output_archive(temp_out, output_abs, [best_cfg_path, metrics_path])
 
     logger.info("Tuning job finished in %s seconds", _duration)
-
-
-# ---------------------------------------------------------------------------
-# Helper utilities (local to this script)
-# ---------------------------------------------------------------------------
-
-def _convert_jsonable(value):
-    """Convert numpy dtypes to native python for JSON serialization."""
-    if isinstance(value, (np.generic,)):
-        return value.item()
-    return value
-
-
-def unflatten_config(flat_cfg: dict[str, Any], prefix: str = "config/") -> dict:
-    """Recreate nested config structure from flattened keys.
-
-    Example:
-        {
-            "config/model_config/num_layers": 3,
-            "config/optimizer_config/lr": 0.001,
-        }
-        -> {"model_config": {"num_layers": 3}, "optimizer_config": {"lr": 0.001}}
-
-    Args:
-        flat_cfg: Dictionary with flattened keys (slash-separated).
-        prefix:   Leading prefix to strip (default "config/").
-
-    Returns:
-        Nested configuration dictionary.
-    """
-    nested: dict = {}
-    for full_key, value in flat_cfg.items():
-        if not full_key.startswith(prefix):
-            continue
-
-        # Skip NaNs (can appear for missing params)
-        if pd.isna(value):
-            continue
-
-        key_path = full_key[len(prefix):].split("/")  # strip prefix and split
-        current = nested
-        for part in key_path[:-1]:
-            current = current.setdefault(part, {})
-        current[key_path[-1]] = _convert_jsonable(value)
-
-    return nested
 
 
 if __name__ == "__main__":

@@ -17,8 +17,8 @@ from typing_extensions import Any
 
 from plastinka_sales_predictor import (
     DEFAULT_METRICS,
-    PlastinkaTrainingTSDataset,
     PlastinkaBaseTSDataset,
+    PlastinkaTrainingTSDataset,
     WQuantileRegression,
     configure_logger,
 )
@@ -38,7 +38,38 @@ logger = configure_logger(
 THIS_DIR = Path(__file__).parent
 
 
-def prepare_for_training(
+def split_dataset(
+        ds: "PlastinkaBaseTSDataset",
+        input_chunk_length: int,
+) -> tuple[
+    "PlastinkaBaseTSDataset",
+    "PlastinkaBaseTSDataset",
+]:
+    L = ds.L
+    length = input_chunk_length + 1
+    if length >= L:
+        raise ValueError(f"Input chunk length {input_chunk_length} is too long for dataset length {L}")
+
+    train_end = max(length, L - length)
+    val_start = max(0, L - length)
+
+    train_ds, val_ds = None, None
+    train_ds = ds.setup_dataset(
+        input_chunk_length=input_chunk_length,
+        output_chunk_length=1,
+        window=(0, train_end),
+        copy=True
+    )
+    val_ds = ds.setup_dataset(
+        input_chunk_length=input_chunk_length,
+        output_chunk_length=1,
+        window=(val_start, L),
+        copy=True
+    )
+    return train_ds, val_ds
+
+
+def apply_config(
     config: dict[str, Any],
     ds: "PlastinkaBaseTSDataset",
     val_ds: Optional["PlastinkaBaseTSDataset"] = None,
@@ -57,63 +88,77 @@ def prepare_for_training(
     logger.info("Preparing for training")
     config = deepcopy(config)
 
+    #  Unpack config
     try:
-        lags = config["lags"]
-        config["model_config"]["input_chunk_length"] = lags
+        lags = int(config.get("lags"))
+        optimizer_config = config.get("optimizer_config", {})
+        ds_config = config.get("train_ds_config", {})
+        swa_config = config.get("swa_config", {})
+        lr_shed_config = config.get("lr_shed_config", {})
+        weights_config = config.get("weights_config", {})
+        quantiles = config.get("quantiles", None)
+        model_config = config.get("model_config", {})
+        model_config["input_chunk_length"] = lags
+    except ValueError:
+        msg = "Lags should be an integer or a convertible to integer"
+        logger.error(msg, exc_info=True)
+        raise ValueError(msg)
+    except KeyError:
+        msg = "Required keys are missing in config"
+        logger.error(msg, exc_info=True)
+        raise KeyError(msg)
 
-        model_id = config.setdefault("model_id", str(uuid.uuid4()))
-        model_config = config["model_config"]
-        optimizer_config = config["optimizer_config"]
-        ds_config = config["train_ds_config"]
-        swa_config = config["swa_config"]
-
-        lr_shed_config = config["lr_shed_config"]
+    model_id = config.setdefault("model_id", str(uuid.uuid4()))
+    try:
+        #  Set default values for lr_shed_config
         _ = lr_shed_config.setdefault("interval", "step")
         lr_scheduler_name = lr_shed_config.pop(
             "class_name", "CosineAnnealingWarmRestarts"
         )
+        #  Import lr_scheduler
         lr_shed_module = importlib.import_module("torch.optim.lr_scheduler")
         lr_scheduler_cls = getattr(lr_shed_module, lr_scheduler_name)
 
-        weights_config = config["weights_config"]
-        quantiles = config.pop("quantiles", None)
-        ds.setup_dataset(
-            input_chunk_length=lags,
-            output_chunk_length=1,
-            span=ds_config["span"],
-            weights_alpha=ds_config["alpha"],
-            copy=False,
-        )
+        #  Setup train dataset
+        try:
+            span, alpha = ds_config.get("span"), ds_config.get("alpha")
+            ds.setup_dataset(
+                input_chunk_length=lags,
+                output_chunk_length=1,
+                span=span,
+                weights_alpha=alpha,
+                copy=False,
+            )
+
+            #  Setup validation dataset
+            if val_ds is not None:
+                val_ds.setup_dataset(
+                    input_chunk_length=lags,
+                    output_chunk_length=1,
+                    span=span,
+                    weights_alpha=alpha,
+                    copy=False,
+                )
+
+        except KeyError:
+            msg = "Required keys are missing in train_ds_config; using default values."
+            logger.warning(msg, exc_info=True)
+
 
         if callbacks is None:
             callbacks = []
 
-        callbacks.extend(
-            [
-                LearningRateMonitor(logging_interval="step"),
-                StochasticWeightAveraging(**swa_config),
-            ]
-        )
+        callbacks.append(LearningRateMonitor(logging_interval="step"))
+        if swa_config:
+            callbacks.append(StochasticWeightAveraging(**swa_config))
 
         if val_ds is not None:
-            val_ds.setup_dataset(
-                input_chunk_length=lags,
-                output_chunk_length=1,
-                span=ds_config["span"],
-                weights_alpha=ds_config["alpha"],
-                copy=False,
-            )
-
-            callbacks.extend(
-                [
-                    EarlyStopping(
-                        monitor="val_loss",
-                        patience=15,
-                        min_delta=0.001,
-                        mode="min",
-                    ),
-                ]
-            )
+            callbacks.append(EarlyStopping(
+                monitor="val_loss",
+                patience=15,
+                min_delta=0.001,
+                mode="min",
+            ))
 
         likelihood = WQuantileRegression(
             quantiles=quantiles,

@@ -8,8 +8,8 @@
 - Изоляция между тестами обеспечивается явным cleanup и использованием временных директорий/БД.
 - Все моки сбрасываются между тестами.
 """
+
 import pytest
-import os
 
 from deployment.app.models.api_models import (
     LRSchedulerConfig,
@@ -18,6 +18,7 @@ from deployment.app.models.api_models import (
     TrainingConfig,
     TrainingDatasetConfig,
 )
+
 
 # Common test data fixtures
 @pytest.fixture(scope="session", autouse=True)

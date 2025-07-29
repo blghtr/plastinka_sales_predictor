@@ -544,7 +544,7 @@ class DataRetentionSettings(BaseSettings):
 class TuningSettings(BaseSettings):
     """Hyperparameter tuning specific settings."""
 
-    num_samples_light: int = Field(50, description="Samples for lite mode")
+    num_samples_lite: int = Field(50, description="Samples for lite mode")
     num_samples_full: int = Field(200, description="Samples for full mode")
     max_concurrent: int = Field(16, description="Max concurrent Ray trials")
     resources: dict[str, int] = Field({"cpu": 32}, description="Resource allocation per trial")

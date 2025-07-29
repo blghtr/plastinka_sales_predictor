@@ -62,12 +62,12 @@ class TestCategorizePricesWithStaticBins:
         assert "Ценовая категория" in result_df.columns
         assert result_df["Ценовая категория"].dtype == "category"
         assert len(result_df) == 10
-        
+
         # Check that most prices are categorized (negative values may be NaN)
         categories = result_df["Ценовая категория"]
         # Allow some NaN values for edge cases like negative numbers
         assert categories.notna().sum() >= 9, "Most valid prices should be categorized"
-        
+
         # Check that we have different categories for different price ranges
         unique_categories = categories.dropna().unique()
         assert len(unique_categories) > 1, "Should have multiple price categories"

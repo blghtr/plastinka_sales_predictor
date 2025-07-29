@@ -11,12 +11,16 @@ import pandas as pd
 
 # plastinka_sales_predictor imports are now at the top level
 from plastinka_sales_predictor import (
+    apply_config,
     configure_logger,
     extract_early_stopping_callback,
-    prepare_for_training,
+    split_dataset,
 )
 from plastinka_sales_predictor import train_model as _train_model
-from plastinka_sales_predictor.data_preparation import PlastinkaTrainingTSDataset, PlastinkaInferenceTSDataset
+from plastinka_sales_predictor.data_preparation import (
+    PlastinkaInferenceTSDataset,
+    PlastinkaTrainingTSDataset,
+)
 
 DEFAULT_CONFIG_PATH = "config/model_config.json"
 DEFAULT_MODEL_OUTPUT_REF = "model.onnx"
@@ -48,9 +52,7 @@ def train_model(
     # Handle both test and production configuration formats
     if "nn_model_config" in config:
         config["model_config"] = config.pop("nn_model_config")
-    # If model_config already exists, use it as is (for tests)
 
-    # Instantiate the model
     config["model_config"]["n_epochs"] = 200  # hardcoded for now
     metrics_dict = {}
 
@@ -60,7 +62,7 @@ def train_model(
 
         # First training run - with validation dataset
         model = _train_model(
-            *prepare_for_training(config, train_dataset, val_dataset),
+            *apply_config(config, train_dataset, val_dataset),
             model_name=f"{DEFAULT_MODEL_NAME}__n_epochs_search",
         )
 
@@ -93,7 +95,7 @@ def train_model(
         logger.info("Train model on full dataset")
         # Second training run - with full training dataset
         model = _train_model(
-            *prepare_for_training(config, full_train_ds),
+            *apply_config(config, full_train_ds),
             model_name=f"{DEFAULT_MODEL_NAME}__full_train",
         )
 
@@ -378,26 +380,24 @@ def load_configuration(input_path: str) -> tuple:
         sys.exit(1)
 
 
-def load_datasets(input_dir: str) -> tuple:
+def load_datasets(input_dir: str) -> tuple[PlastinkaTrainingTSDataset, PlastinkaInferenceTSDataset]:
     """
-    Load and validate training, validation, and inference datasets.
+    Load and validate training and inference datasets.
 
     Args:
-        input_dir: Directory containing train.dill, val.dill, and inference.dill files
+        input_dir: Directory containing train.dill and inference.dill files
 
     Returns:
-        Tuple of (train_dataset, val_dataset, inference_dataset)
+        Tuple of (train_dataset, inference_dataset)
 
     Raises:
         SystemExit: If dataset loading fails
     """
     train_dill_path = os.path.join(input_dir, "train.dill")
-    val_dill_path = os.path.join(input_dir, "val.dill")
     inference_dill_path = os.path.join(input_dir, "inference.dill")
 
     # Validate dataset files exist
     validate_dataset_file(train_dill_path, "train")
-    validate_dataset_file(val_dill_path, "validation")
     validate_dataset_file(inference_dill_path, "inference")
 
     try:
@@ -405,34 +405,29 @@ def load_datasets(input_dir: str) -> tuple:
         train_dataset = PlastinkaTrainingTSDataset.from_dill(train_dill_path)
         logger.info("Train dataset loaded successfully.")
 
-        logger.info(f"Loading val_dataset from {val_dill_path}...")
-        val_dataset = PlastinkaTrainingTSDataset.from_dill(val_dill_path)
-        logger.info("Validation dataset loaded successfully.")
-
         logger.info(f"Loading inference_dataset from {inference_dill_path}...")
         inference_dataset = PlastinkaInferenceTSDataset.from_dill(inference_dill_path)
         logger.info("Inference dataset loaded successfully.")
 
         # Validate loaded dataset objects
-        if train_dataset is None or val_dataset is None or inference_dataset is None:
+        if train_dataset is None or inference_dataset is None:
             logger.error("Failed to load datasets. One or more dataset objects are None.")
             sys.exit(1)
 
         logger.info("All datasets validated successfully.")
-        return train_dataset, val_dataset, inference_dataset
+        return train_dataset, inference_dataset
 
     except Exception as e:
         logger.error(f"Error loading datasets: {e}", exc_info=True)
         sys.exit(1)
 
 
-def run_training(train_dataset, val_dataset, config: dict) -> tuple:
+def run_training(train_dataset, config: dict) -> tuple:
     """
     Execute model training and return model with metrics.
 
     Args:
         train_dataset: Training dataset
-        val_dataset: Validation dataset
         config: Configuration dictionary
 
     Returns:
@@ -444,14 +439,19 @@ def run_training(train_dataset, val_dataset, config: dict) -> tuple:
     try:
         logger.info("Starting model training phase...")
         start_time = time.monotonic()
-        model, training_metrics = train_model(train_dataset, val_dataset, config)
+
+        train_split, val_split = split_dataset(train_dataset, config["lags"])
+
+        model, training_metrics = train_model(train_split, val_split, config)
         end_time = time.monotonic()
         training_duration_seconds = end_time - start_time
         logger.info(
             f"Model training phase completed in {training_duration_seconds:.2f} seconds."
         )
         logger.info(
-            f"Obtained metrics from training process: validation metrics: {len(training_metrics.get('validation', {}))} items, training metrics: {len(training_metrics.get('training', {}))} items"
+            "Obtained metrics from training process:"
+            f"validation metrics: {len([k for k in training_metrics.keys() if k.startswith('val_')])} items,"
+            f"training metrics: {len([k for k in training_metrics.keys() if k.startswith('train_')])} items"
         )
 
         if not model:
@@ -465,14 +465,13 @@ def run_training(train_dataset, val_dataset, config: dict) -> tuple:
         sys.exit(1)
 
 
-def run_prediction(model, inference_dataset, config: dict):
+def run_prediction(model, inference_dataset):
     """
     Execute prediction using trained model.
 
     Args:
         model: Trained model
         inference_dataset: Inference dataset for prediction
-        config: Configuration dictionary
 
     Returns:
         Predictions dataframe
@@ -481,9 +480,6 @@ def run_prediction(model, inference_dataset, config: dict):
         SystemExit: If prediction fails
     """
     try:
-        # Validate configuration parameters
-        validate_config_parameters(config)
-
         predictions = predict_sales(model, inference_dataset)
         logger.info("Predictions generated successfully.")
 
@@ -493,9 +489,6 @@ def run_prediction(model, inference_dataset, config: dict):
 
         return predictions
 
-    except KeyError as e:
-        logger.error(f"Configuration missing required parameter: {e}")
-        sys.exit(1)
     except Exception as e:
         logger.error(f"Pipeline failed during prediction: {e}", exc_info=True)
         sys.exit(1)
@@ -673,17 +666,19 @@ def main(input_dir, output):
 
         # 1. Load configuration (and get actual input directory)
         config, actual_input_dir = load_configuration(input_dir)
+        validate_config_parameters(config)
 
         # 2. Load datasets
-        train_dataset, val_dataset, inference_dataset = load_datasets(actual_input_dir)
+        train_dataset, inference_dataset = load_datasets(actual_input_dir)
+        inference_dataset = apply_config(config, inference_dataset)[0]
 
         # 3. Train model
         model, training_metrics, training_duration_seconds = run_training(
-            train_dataset, val_dataset, config
+            train_dataset, config
         )
 
         # 4. Generate predictions using inference dataset
-        predictions = run_prediction(model, inference_dataset, config)
+        predictions = run_prediction(model, inference_dataset)
 
         # 5. Prepare final metrics
         training_metrics["training_duration_seconds"] = training_duration_seconds

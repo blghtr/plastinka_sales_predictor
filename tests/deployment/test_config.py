@@ -442,7 +442,7 @@ class TestDataSphereSettings:
         assert settings.download_diagnostics_on_success is True
 
     def test_datasphere_settings_client_property(self):
-        """Test DataSphereSettings client property returns correct dictionary."""
+        """Test DataSphereSettings api_client property returns correct dictionary."""
         # Arrange
         settings = DataSphereSettings(
             project_id="test-project",
@@ -452,7 +452,7 @@ class TestDataSphereSettings:
         )
 
         # Act
-        client_config = settings.client
+        client_config = settings.api_client
 
         # Assert
         # auth_method can be determined dynamically; accept 'auto', 'oauth_token', or 'yc_profile'

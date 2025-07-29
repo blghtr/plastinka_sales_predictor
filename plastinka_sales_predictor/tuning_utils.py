@@ -1,6 +1,5 @@
 import json
 import os
-from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
 from warnings import filterwarnings
@@ -17,11 +16,10 @@ import ray
 from plastinka_sales_predictor import (
     DEFAULT_METRICS,
     DartsCheckpointCallback,
+    apply_config,
     configure_logger,
     get_model,
-    prepare_for_training,
-    PlastinkaBaseTSDataset,
-    PlastinkaTrainingTSDataset,
+    split_dataset,
 )
 
 filterwarnings("ignore")
@@ -30,66 +28,64 @@ filterwarnings("ignore")
 logger = configure_logger(child_logger_name="tune")
 
 
-def load_fixed_params(json_path=None, tunable_params=None):
+def load_fixed_params(json_path=None):
     """
-    Load fixed parameters from a JSON file and return tunable and fixed parameters.
-
+    Load base config from a JSON file.
     Args:
         json_path: Path to the JSON file with fixed parameters
 
     Returns:
-        tuple: (tunable_params, fixed_params)
+        dict: base_config with only fixed params based on tunable params
     """
-
-    assert json_path or tunable_params, (
-        "Either json_path or tunable_params must be provided."
-    )
-    if tunable_params is None:
-        tunable_params = {}
-
     fixed = {}
     if json_path is not None:
         with open(json_path) as f:
             fixed = json.load(f)
-
-    fixed_params = defaultdict(dict)
-    for key in [ 
-        "optimizer_config",
-        "lr_shed_config",
-        "train_ds_config",
-        "swa_config",
-        "weights_config",
-        "lags",
-    ]:
-        if key in fixed:
-            fixed_part = None
-            if key in tunable_params:
-                if isinstance(fixed[key], dict):
-                    fixed_part = {
-                        k: v
-                        for k, v in fixed[key].items()
-                        if k not in tunable_params[key]
-                    }
-                if fixed_part:
-                    fixed_params[key] = fixed_part
-            else:
-                fixed_params[key] = fixed[key]
-
-    return fixed_params
+    else:
+        logger.warning("No JSON file provided, using empty config")
+    return fixed
 
 
-def merge_with_fixed_params(tunable_params, fixed_params):
+def merge_configs(update_config, base_config, keys=None):
     """
-    Merge tunable configuration with fixed parameters.
-    Tunable parameters take precedence over fixed ones.
+    Merge update_config with base_config.
+    update_config takes precedence over base_config.
     """
-    merged = fixed_params
-    for key, value in tunable_params.items():
-        if key in merged and isinstance(merged[key], dict):
-            merged[key].update(value)
+    base_config = deepcopy(base_config)
+    base_keys = set(base_config.keys())
+    update_keys = set(update_config.keys())
+    if keys is None:
+        keys = base_keys | update_keys
+        logger.debug("No keys provided, using all keys from base_config and update_config")
+
+    if not isinstance(keys, set):
+        try:
+            keys = set(keys)
+        except TypeError:
+            raise TypeError(f"Keys must be hashable, got {type(keys)}")
+
+    if len(keys & base_keys) == 0:
+        logger.debug("No keys in base_config, returning full update_config")
+        return update_config
+
+    keys = list(keys & update_keys)
+    if len(keys) == 0:
+        logger.warning("Nothing to merge, returning base_config")
+        return base_config
+
+    for key in keys:
+        if (
+            isinstance(update_config[key], dict)
+            and isinstance(base_config.get(key, {}), dict)
+        ):
+            base_config[key] = merge_configs(
+                update_config[key],
+                base_config.get(key, {})
+            )
         else:
-            merged[key] = value
-    return merged
+            base_config[key] = update_config[key]
+
+    return base_config
 
 
 def train_model(config, ds, val_ds, random_state=42, model_name="TiDE"):
@@ -190,7 +186,7 @@ def train_model(config, ds, val_ds, random_state=42, model_name="TiDE"):
         model_config,
         likelihood,
         _,
-    ) = prepare_for_training(config=config, ds=ds, val_ds=val_ds)
+    ) = apply_config(config=config, ds=ds, val_ds=val_ds)
     checkpoint = ray.train.get_checkpoint()
     if checkpoint:
         with checkpoint.as_directory() as checkpoint_dir:
@@ -200,7 +196,7 @@ def train_model(config, ds, val_ds, random_state=42, model_name="TiDE"):
                 print(f"✓ Resumed training from epoch {model.epochs_trained}")
 
     else:
-        model_config["nr_epochs_val_period"] = 1
+        model_config["nr_epochs_val_period"] = 5
         model = get_model(
             optimizer_config=optimizer_config,
             callbacks=callbacks,
@@ -220,32 +216,19 @@ def train_model(config, ds, val_ds, random_state=42, model_name="TiDE"):
     return model
 
 
-def train_fn(config, fixed_config, ds, val_ds=None):
+def train_fn(config, fixed_config, ds):
     """Ray Tune trainable wrapper.
 
     If *val_ds* provided, use it directly; otherwise split *ds* into
     train/val windows (legacy behaviour).
     """
 
-    config = merge_with_fixed_params(config, fixed_config)
-    
-    if val_ds is None:
-        L = ds.L
-        lags = config["lags"]
-        length = lags + 1
-
-        temp_train = ds.setup_dataset(
-            input_chunk_length=lags, output_chunk_length=1, window=(0, L - 1), copy=True
-        )
-        temp_val = ds.setup_dataset(
-            input_chunk_length=lags, output_chunk_length=1, window=(L - length, L), copy=True
-        )
-
-        assert temp_train.L < ds.L and temp_val.end < ds._n_time_steps
-        train_model(config, temp_train, temp_val)
+    config = merge_configs(config, fixed_config)
+    train_ds, val_ds = split_dataset(ds, config["lags"])
+    if train_ds is not None and val_ds is not None:
+        train_model(config, train_ds, val_ds)
     else:
-        # Use provided datasets directly
-        train_model(config, ds, val_ds)
+        raise ValueError("train_ds or val_ds is None")
 
 
 def trial_name_creator(trial):

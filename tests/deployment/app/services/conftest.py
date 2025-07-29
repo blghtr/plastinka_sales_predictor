@@ -11,15 +11,14 @@ To: This new architecture that supports PyTorch, DataSphere SDK, and ML framewor
 """
 
 import os
+import sqlite3
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
-import sqlite3
-import sys
-from functools import lru_cache
-import json
 
 import pytest
 
+from deployment.app.db.database import dict_factory
+from deployment.app.db.schema import init_db
 from deployment.app.models.api_models import (
     LRSchedulerConfig,
     ModelConfig,
@@ -27,8 +26,6 @@ from deployment.app.models.api_models import (
     TrainingConfig,
     TrainingDatasetConfig,
 )
-from deployment.app.db.schema import init_db
-from deployment.app.db.database import dict_factory
 
 # Global mocks registry for session optimization without scope mismatch
 _GLOBAL_MOCKS_REGISTRY = {}
@@ -113,7 +110,7 @@ def session_monkeypatch():
 
 
 @pytest.fixture
-def mock_datasphere_env(temp_workspace, monkeypatch, mocked_db):
+def mock_datasphere_env(temp_workspace, monkeypatch, in_memory_db):
     """
     Replacement for mock_service_env without session-scoped pyfakefs.
 
@@ -144,7 +141,7 @@ def mock_datasphere_env(temp_workspace, monkeypatch, mocked_db):
     mock_settings.datasphere_job_train_dir = os.path.join(temp_workspace["job_dir"], "train")
     mock_settings.datasphere_job_tune_dir = os.path.join(temp_workspace["job_dir"], "tune")
 
-    # DataSphere client settings
+    # DataSphere api_client settings
     mock_settings.datasphere = MagicMock()
     mock_settings.datasphere.project_id = "test-project-id-new-arch"
     mock_settings.datasphere.folder_id = "test-folder-id-new-arch"
@@ -155,7 +152,7 @@ def mock_datasphere_env(temp_workspace, monkeypatch, mocked_db):
     mock_settings.datasphere.client_download_timeout_seconds = 600
     mock_settings.datasphere.client_init_timeout_seconds = 60
     mock_settings.datasphere.client_cancel_timeout_seconds = 60
-    mock_settings.datasphere.client = {
+    mock_settings.datasphere.api_client = {
         "project_id": "test-project",
         "folder_id": "test-folder",
         "oauth_token": "test-token",
@@ -173,8 +170,6 @@ def mock_datasphere_env(temp_workspace, monkeypatch, mocked_db):
     # --- Patch get_settings function ---
     monkeypatch.setattr("deployment.app.config.get_settings", lambda: mock_settings)
     # CRITICAL: Also patch get_settings within the database module itself
-    from deployment.app.config import get_settings as original_config_get_settings
-    from deployment.app.db.database import get_settings as original_database_get_settings
 
     # Now, apply our mock to the imports
     monkeypatch.setattr(
@@ -183,7 +178,7 @@ def mock_datasphere_env(temp_workspace, monkeypatch, mocked_db):
     monkeypatch.setattr("deployment.app.config.get_settings", lambda: mock_settings)
     monkeypatch.setattr("deployment.app.db.database.get_settings", lambda: mock_settings)
 
-    # --- DataSphere Client Mock ---
+    # --- DataSphere api_client Mock ---
     mock_client = MagicMock()
     mock_client.submit_job.return_value = "ds-job-default-new-arch"
     mock_client.get_job_status.return_value = "COMPLETED"
@@ -199,12 +194,10 @@ def mock_datasphere_env(temp_workspace, monkeypatch, mocked_db):
             f.write("barcode,pred\n123456789012,10")
 
     mock_client.download_job_results.side_effect = default_download_side_effect
-    mocks["client"] = mock_client
+    mocks["api_client"] = mock_client
 
     # NEW: Patch DataSphereClient where it's used in datasphere_service.py
     monkeypatch.setattr("deployment.app.services.datasphere_service.DataSphereClient", MagicMock(return_value=mock_client))
-    monkeypatch.setattr("deployment.app.services.datasphere_service.create_model_record", mocked_db["create_model"])
-    monkeypatch.setattr("deployment.app.services.datasphere_service.get_job", mocked_db["get_job"])
 
     # --- Database Mocks ---
     # Create a single, persistent in-memory database connection for the test
@@ -225,16 +218,17 @@ def mock_datasphere_env(temp_workspace, monkeypatch, mocked_db):
     # The actual database interactions will be handled by the real database functions
     # after the initial connection is provided by our mock_get_db_connection.
 
-    # Keep these mocks as they might be called directly in some tests or by the DAL itself for specific behaviors.
-    # Ensure the mocks that are also in mocked_db *actually* use the mocked_db's implementation
-    import inspect
-    from deployment.app.db import database as db_module
-    
-    for func_name, func_obj in mocked_db.items():
-        if func_name != "conn":  # We handle 'conn' specially, it's the actual sqlite3.Connection object
-            # Check if the attribute exists in the database module before setting it
-            if hasattr(db_module, func_name) or func_name == "get_job":  # Always set get_job
-                monkeypatch.setattr(f"deployment.app.db.database.{func_name}", func_obj)
+    # Create a DataAccessLayer instance for the tests
+    from deployment.app.db.data_access_layer import (
+        DataAccessLayer,
+        UserContext,
+        UserRoles,
+    )
+
+    dal = DataAccessLayer(
+        user_context=UserContext(roles=[UserRoles.SYSTEM]),
+        connection=persistent_db_conn
+    )
 
     # Always provide a MagicMock for save_predictions_to_db for test compatibility
     mocks["save_predictions_to_db"] = MagicMock()
@@ -247,14 +241,11 @@ def mock_datasphere_env(temp_workspace, monkeypatch, mocked_db):
     monkeypatch.setattr("deployment.app.services.datasphere_service.save_model_file_and_db", mocks["save_model_file_and_db"])
 
     # Mock the update_job_status in datasphere_service to use our mocked db
-    if "update_job_status" in mocked_db:
-        monkeypatch.setattr("deployment.app.services.datasphere_service.update_job_status", mocked_db["update_job_status"])
-    else:
-        # Create a default mock if not available
-        update_job_status_mock = AsyncMock()
-        monkeypatch.setattr("deployment.app.services.datasphere_service.update_job_status", update_job_status_mock)
+    # Note: update_job_status is not available in datasphere_service module
+    # The function is called through the DAL, so we don't need to patch it here
 
     mocks["mocked_db_conn"] = persistent_db_conn # Expose for direct use in run_job calls
+    mocks["mocked_dal"] = dal # Expose the DAL object for direct use
     yield mocks
 
     # --- Teardown for persistent_db_conn ---
@@ -291,8 +282,8 @@ def reset_new_arch_mocks_between_tests():
         reset_mock_completely(mock)
 
     # Restore default behaviors
-    if "client" in _GLOBAL_MOCKS_REGISTRY:
-        client_mock = _GLOBAL_MOCKS_REGISTRY["client"]
+    if "api_client" in _GLOBAL_MOCKS_REGISTRY:
+        client_mock = _GLOBAL_MOCKS_REGISTRY["api_client"]
         client_mock.submit_job.return_value = "ds-job-default-new-arch"
         client_mock.get_job_status.return_value = "COMPLETED"
 

@@ -1,10 +1,10 @@
-import pytest
-from unittest.mock import MagicMock
-import pandas as pd
 from datetime import date
+from unittest.mock import MagicMock
 
-from deployment.app.services.report_service import generate_report
+import pytest
+
 from deployment.app.models.api_models import ReportParams, ReportType
+from deployment.app.services.report_service import generate_report
 
 
 @pytest.fixture

@@ -3,17 +3,16 @@ import json
 import logging
 import os
 import shutil
-import sqlite3
 import tempfile
 import time
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pandas as pd
 import pytest
 
-from deployment.app.db.schema import init_db
+from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.models.api_models import (
     LRSchedulerConfig,
     ModelConfig,
@@ -21,223 +20,6 @@ from deployment.app.models.api_models import (
     TrainingConfig,
     TrainingDatasetConfig,
 )
-from tests.deployment.app.services.conftest import temp_workspace, mock_datasphere_env
-
-
-@pytest.fixture(scope="function")
-def mocked_db(temp_db):
-    """
-    Provides a mocked DB interface with helper functions for integration tests.
-    - Uses a real in-memory DB connection from the `temp_db` fixture.
-    - Provides helper methods to create jobs and execute queries.
-    - **Note:** This fixture relies on `temp_db` for schema initialization and `row_factory` settings, 
-      ensuring that its internal helper functions (like `get_job`) return dictionary-like objects.
-    """
-    conn = temp_db["conn"] if isinstance(temp_db, dict) else temp_db
-
-    # Initialize all necessary tables if they don't exist
-    init_db(connection=conn)
-    conn.commit()
-
-    # These tables are required for the integration tests to work
-    # The 'cursor' variable is only used within nested functions now, so it should be defined there.
-
-    def create_job(
-        job_id, job_type="training", status="pending", config_id=None, model_id=None
-    ):
-        """Helper to insert a job record into the database."""
-        # Create a new cursor for this function
-        cursor = conn.cursor()
-
-        if config_id is None:
-            # Create a dummy config if none provided
-            config_id = "config_" + str(uuid.uuid4())
-            cursor.execute(
-                "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-                (
-                    config_id,
-                    json.dumps({"sample": "config"}),
-                    datetime.now().isoformat(),
-                ),
-            )
-            conn.commit()
-
-        # Re-check columns after schema initialization
-        cursor.execute("PRAGMA table_info(jobs)")
-        columns = [column["name"] for column in cursor.fetchall()]
-
-        now = datetime.now().isoformat()
-
-        # Build query dynamically based on available columns
-        query = "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at"
-
-        # Add optional columns if they exist in the schema
-        if "config_id" in columns and config_id is not None:
-            query += ", config_id"
-        if "model_id" in columns and model_id is not None:
-            query += ", model_id"
-
-        query += ") VALUES (?, ?, ?, ?, ?"
-
-        # Add placeholders for optional columns
-        params = [job_id, job_type, status, now, now]
-        if "config_id" in columns and config_id is not None:
-            query += ", ?"
-            params.append(config_id)
-        if "model_id" in columns and model_id is not None:
-            query += ", ?"
-            params.append(model_id)
-
-        query += ")"
-
-        # Execute with dynamic parameters
-        cursor.execute(query, params)
-        conn.commit()
-
-        return job_id
-
-    def update_job_status(job_id, status, progress=None, error_message=None, status_message=None, connection=None):
-        """Если connection не передан, используется conn из фикстуры."""
-        if connection is None:
-            connection = conn
-        """Update a job's status."""
-        cursor = connection.cursor()
-        now = datetime.now().isoformat()
-        cursor.execute(
-            """
-            UPDATE jobs
-            SET status = ?, updated_at = ?, progress = COALESCE(?, progress), error_message = COALESCE(?, error_message)
-            WHERE job_id = ?
-            """,
-            (status, now, progress, error_message, job_id),
-        )
-        conn.commit()
-
-        # Add to job status history if provided
-        if status_message:
-            create_job_status_history(job_id, status, status_message)
-
-        return True
-
-    def get_job_status_history(job_id):
-        """Get job status history for a job, ordered by updated_at."""
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT status, status_message, updated_at FROM job_status_history WHERE job_id = ? ORDER BY updated_at",
-            (job_id,),
-        )
-        return cursor.fetchall()
-
-    def create_job_status_history(job_id, status, status_message=None):
-        """Create a job status history entry."""
-        cursor = conn.cursor()
-        try:
-            # Check if the job_status_history table exists
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='job_status_history'"
-            )
-            if not cursor.fetchone():
-                # Create the job_status_history table with the correct schema
-                cursor.execute("""
-                CREATE TABLE job_status_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    job_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    status_message TEXT,
-                    updated_at TEXT NOT NULL
-                )
-                """
-                )
-
-            # Get current time for updated_at
-            now = datetime.now().isoformat()
-
-            # Insert the history record with updated_at
-            cursor.execute(
-                """
-            INSERT INTO job_status_history (job_id, status, status_message, updated_at)
-            VALUES (?, ?, ?, ?)
-            """,
-                (job_id, status, status_message, now),
-            )
-            conn.commit()
-            return True
-        except Exception:
-            conn.rollback()
-            return False
-
-    def create_model(model_id, job_id, model_path="/fake/path/model.onnx", created_at=None, metadata=None, is_active=False, connection=None):
-        """Если connection не передан, используется conn из фикстуры."""
-        if connection is None:
-            connection = conn
-        """Create a model record that can be referenced by training_results, with explicit model_id and job_id."""
-        if created_at is None:
-            created_at = datetime.now().isoformat()
-        cursor = connection.cursor()
-        cursor.execute(
-            "INSERT INTO models (model_id, job_id, model_path, created_at, is_active) VALUES (?, ?, ?, ?, ?)",
-            (model_id, job_id, model_path, created_at, is_active),
-        )
-        conn.commit()
-        return model_id
-
-    def create_training_result(job_id, model_id, config_id, metrics=None, duration=None, **kwargs):
-        """Create a training result record."""
-        if metrics is None:
-            metrics = {"mape": 10.5}
-
-        result_id = str(uuid.uuid4())
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics, duration)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (result_id, job_id, model_id, config_id, json.dumps(metrics), 20),
-        )
-        conn.commit()
-        return result_id
-    
-    def get_job(job_id, connection=None):
-        """Если connection не передан, используется conn из фикстуры."""
-        if connection is None:
-            connection = conn
-        """Get a job by ID."""
-        cursor = connection.cursor()
-        cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
-        return cursor.fetchone()
-
-    def query_handler(query, params=(), fetchall=False, connection=None):
-        """Handles both regular SQL and special-cased queries from tests."""
-        if query == "job_status_history":
-            # This is a special case from the test, not a real query
-            # The job_id should be passed in params
-            job_id_param = params[0] if params else None
-            if not job_id_param:
-                raise ValueError("job_id must be provided to fetch status history.")
-            statuses = get_job_status_history(job_id_param)
-            return statuses
-        return execute_query(query, params, fetchall, connection=connection)
-
-    def execute_query(query, params=(), fetchall=False, connection=None):
-        """Helper to execute a query against the test database."""
-        cursor = conn.cursor()
-        # As temp_db returns a connection with Row factory, we can treat rows as dicts
-        cursor.execute(query, params)
-        if fetchall:
-            return cursor.fetchall()
-        return cursor.fetchone()
-
-    yield {
-        "conn": conn,
-        "create_job": create_job,
-        "execute_query": query_handler,
-        "create_job_status_history": create_job_status_history,
-        "create_model": create_model,
-        "create_training_result": create_training_result,
-        "get_job": get_job,  # Add the get_job function
-        "update_job_status": update_job_status,  # Add update_job_status function
-    }
 
 
 def json_default_serializer(obj):
@@ -477,17 +259,15 @@ def mock_datasphere(monkeypatch):
 # ==============================================
 
 
-def verify_predictions_saved(connection, result, expected_data):
+def verify_predictions_saved(dal, result, expected_data):
     """
     Проверяет, что предсказания корректно сохранены в базе данных.
 
     Args:
-        connection: Соединение с БД
+        dal: DataAccessLayer instance
         result: Результат сохранения предсказаний
         expected_data: Ожидаемые данные (словарь как SAMPLE_PREDICTIONS)
     """
-    cursor = connection.cursor()
-
     # Проверяем, что результат содержит валидный result_id
     assert result is not None
     assert "result_id" in result
@@ -495,22 +275,22 @@ def verify_predictions_saved(connection, result, expected_data):
     assert result["predictions_count"] == len(expected_data["barcode"])
 
     # Проверяем таблицу prediction_results
-    cursor.execute(
-        "SELECT * FROM prediction_results WHERE result_id = ?", (result["result_id"],)
+    prediction_result = dal.execute_raw_query(
+        "SELECT * FROM prediction_results WHERE result_id = ?",
+        (result["result_id"],)
     )
-    prediction_result = cursor.fetchone()
     assert prediction_result is not None
 
     # Проверяем, что в fact_predictions сохранены все предсказания
-    cursor.execute(
+    count_result = dal.execute_raw_query(
         "SELECT COUNT(*) as count FROM fact_predictions WHERE result_id = ?",
         (result["result_id"],),
     )
-    count = cursor.fetchone()["count"]
+    count = count_result["count"]
     assert count == len(expected_data["barcode"])
 
     # Проверяем значения квантилей для первой записи
-    cursor.execute(
+    record = dal.execute_raw_query(
         """
         SELECT p.*, m.barcode, m.artist, m.album FROM fact_predictions p
         JOIN dim_multiindex_mapping m ON p.multiindex_id = m.multiindex_id
@@ -524,8 +304,6 @@ def verify_predictions_saved(connection, result, expected_data):
             result["result_id"],
         ),
     )
-
-    record = cursor.fetchone()
     assert record is not None
 
     # Проверяем каждую квантиль
@@ -558,13 +336,14 @@ def dict_factory(cursor, row):
 
 
 @pytest.fixture
-def temp_db(sample_predictions_data):
+def temp_db(sample_predictions_data, in_memory_db):
     """
     Creates a temporary database and a predictions CSV file for testing.
     This fixture provides a more specific setup for tests that need to
     read a predictions file and write to a database.
 
     CRITICAL FIXES APPLIED:
+    - Uses the existing in_memory_db fixture for proper database initialization
     - Uses context manager pattern for proper resource management
     - Forces garbage collection before cleanup to release Windows file locks
     - Uses manual file removal instead of TemporaryDirectory for better control
@@ -572,60 +351,45 @@ def temp_db(sample_predictions_data):
     """
     # Create temporary directory manually for better control
     temp_dir_path = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir_path, "test_predictions.db")
     predictions_path = os.path.join(temp_dir_path, "predictions.csv")
 
     # Create and save the predictions CSV
     pd.DataFrame(sample_predictions_data).to_csv(predictions_path, index=False)
 
-    # Initialize the database with context manager
-    conn = sqlite3.connect(db_path)
+    # Use the existing in_memory_db fixture for database operations
+    dal = in_memory_db
+
+    # Create a job and model record for the predictions
     try:
-        init_db(connection=conn)
-        conn.row_factory = dict_factory
+            model_id = "model-" + str(uuid.uuid4())
 
-        job_id = "job-" + str(uuid.uuid4())
-        model_id = "model-" + str(uuid.uuid4())
+            # Pre-populate jobs and models tables since they are foreign keys
+            # Добавляю параметры с prediction_month
+            job_parameters = json.dumps({"prediction_month": "2023-10-01"})
+            job_id = dal.create_job(
+                job_type="prediction",
+                parameters=job_parameters,
+                status="running",
+            )
+            dal.create_model_record(
+                model_id=model_id,
+                job_id=job_id,
+                model_path="/fake/path/model.onnx",
+                created_at=datetime.now(),
+                is_active=True,
+            )
 
-        # Pre-populate jobs and models tables since they are foreign keys
-        cursor = conn.cursor()
-        # Добавляю параметры с prediction_month
-        job_parameters = json.dumps({"prediction_month": "2023-10-01"})
-        cursor.execute(
-            "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at, parameters) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                job_id,
-                "prediction",
-                "running",
-                datetime.now().isoformat(),
-                datetime.now().isoformat(),
-                job_parameters,
-            ),
-        )
-        cursor.execute(
-            "INSERT INTO models (model_id, job_id, model_path, is_active, created_at) VALUES (?, ?, ?, ?, ?)",
-            (
-                model_id,
-                job_id,
-                "/fake/path/model.onnx",
-                True,
-                datetime.now().isoformat(),
-            ),
-        )
-        conn.commit()
+            db_info = {
+                "temp_dir_path": temp_dir_path,  # Changed from temp_dir object to path
+                "predictions_path": predictions_path,
+                "job_id": job_id,
+                "model_id": model_id,
+                "dal": dal,
+            }
 
-        db_info = {
-            "temp_dir_path": temp_dir_path,  # Changed from temp_dir object to path
-            "db_path": db_path,
-            "predictions_path": predictions_path,
-            "job_id": job_id,
-            "model_id": model_id,
-            "conn": conn,
-        }
-
-        yield db_info
+            yield db_info
     finally:
-        conn.close()
+        # dal manages connection closing
         # Force garbage collection to release file handles on Windows
         gc.collect()
         # Clean up temporary directory with retry logic
@@ -644,12 +408,11 @@ def cleanup_with_retry(path, max_retries=3):
 
 
 @pytest.fixture(autouse=True, scope='function')
-def insert_minimal_fact_data(mocked_db):
+def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
     """
     Заполняет fact_sales, fact_stock, fact_stock_changes минимум 13 уникальными датами для lags=12.
-    Использует conn из mocked_db.
+    Использует dal из in_memory_db.
     """
-    conn = mocked_db["conn"] if isinstance(mocked_db, dict) and "conn" in mocked_db else mocked_db
     today = datetime.today().date()
     base_barcode = "1234567890"
     base_artist = "Test Artist"
@@ -662,16 +425,14 @@ def insert_minimal_fact_data(mocked_db):
     base_style = "Rock"
     base_year = 2015
     # Получить или создать multiindex_id
-    from deployment.app.db.database import get_or_create_multiindex_id
-    multiindex_id = get_or_create_multiindex_id(
+    multiindex_id = in_memory_db.get_or_create_multiindex_id(
         base_barcode, base_artist, base_album, base_cover, base_price,
         base_release_type, base_recording_decade, base_release_decade, base_style, base_year,
-        connection=conn
     )
     from dateutil.relativedelta import relativedelta
     # Генерируем 13 месяцев назад от текущего месяца
     base_date = today.replace(day=1) - relativedelta(months=13)
-    
+
     # Generate stock data for only the very first month (base_date)
     stock_date_str = base_date.strftime("%Y-%m-01")
     stock_rows = [
@@ -687,24 +448,122 @@ def insert_minimal_fact_data(mocked_db):
         sales_rows.append((multiindex_id, date_str, 10 + i))
         changes_rows.append((multiindex_id, date_str, 1))
 
-    conn.executemany(
-        "INSERT INTO fact_sales (multiindex_id, data_date, value) VALUES (?, ?, ?)",
-        sales_rows
+    import pandas as pd
+
+    from deployment.app.db.feature_storage import SQLFeatureStore
+
+    feature_store = SQLFeatureStore(dal=in_memory_db)
+
+    def create_df(data):
+        df = pd.DataFrame(data, columns=["multiindex_id", "data_date", "value"])
+        df["data_date"] = pd.to_datetime(df["data_date"])
+        pivot_df = df.pivot_table(index="data_date", columns="multiindex_id", values="value")
+
+        from deployment.app.db.schema import MULTIINDEX_NAMES
+        # Create a mapping from multiindex_id to the full multiindex tuple
+        multiindex_id_to_tuple = {}
+        for multiindex_id_val in pivot_df.columns:
+            # Retrieve the full multiindex tuple from the DAL
+            # Assuming dal.get_multiindex_mapping_by_id exists or can be mocked
+            # For now, create a dummy tuple that matches the expected structure
+            # In a real scenario, you'd fetch this from the DB or ensure it's created
+            multiindex_tuple = (
+                str(multiindex_id_val), # barcode
+                base_artist, # artist
+                base_album, # album
+                base_cover, # cover_type
+                base_price, # price_category
+                base_release_type, # release_type
+                base_recording_decade, # recording_decade
+                base_release_decade, # release_decade
+                base_style, # style
+                base_year # record_year
+            )
+            multiindex_id_to_tuple[multiindex_id_val] = multiindex_tuple
+
+        # Map the pivot_df columns (multiindex_ids) to the full multiindex tuples
+        pivot_df.columns = pd.MultiIndex.from_tuples(
+            [multiindex_id_to_tuple[col] for col in pivot_df.columns],
+            names=MULTIINDEX_NAMES
         )
-    conn.executemany(
-        "INSERT INTO fact_stock (multiindex_id, data_date, value) VALUES (?, ?, ?)",
-        stock_rows
-    )
-    conn.executemany(
-        "INSERT INTO fact_stock_changes (multiindex_id, data_date, value) VALUES (?, ?, ?)",
-        changes_rows
-        )
-    conn.commit()
+        return pivot_df
+
+    feature_store.save_features({"sales": create_df(sales_rows)})
+    feature_store.save_features({"stock": create_df(stock_rows)})
+    feature_store.save_features({"change": create_df(changes_rows)})
 
 @pytest.fixture
 def mock_init_db():
     """Mock для init_db (schema initialization)."""
     return MagicMock()
+
+
+@pytest.fixture
+def mocked_db(in_memory_db):
+    """
+    Creates a mocked database fixture that provides all the necessary methods
+    and objects for datasphere pipeline integration tests.
+
+    Returns a dictionary-like object with:
+    - create_job: method to create jobs
+    - create_model: method to create models
+    - conn: database connection
+    - dal: DataAccessLayer instance
+    - execute_query: method to execute queries
+    - create_job_status_history: method to create job status history
+    """
+    # Create a mock object that behaves like a dictionary
+    mock_db = MagicMock()
+
+    # Set up the database connection
+    mock_db["conn"] = in_memory_db._connection
+
+    # Set up the DAL
+    mock_db["dal"] = in_memory_db
+
+    # Create job method
+    def create_job(job_id):
+        return in_memory_db.create_job(
+            job_type="prediction",
+            parameters='{"prediction_month": "2023-10-01"}',
+            status="running"
+        )
+    mock_db["create_job"] = create_job
+
+    # Create model method
+    def create_model(model_id, job_id):
+        return in_memory_db.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/fake/path/model.onnx",
+            created_at=datetime.now(),
+            is_active=True
+        )
+    mock_db["create_model"] = create_model
+
+    # Execute query method
+    def execute_query(query, params=None):
+        cursor = in_memory_db.get_connection().cursor()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        return cursor.fetchall()
+    mock_db["execute_query"] = execute_query
+
+    # Create job status history method
+    def create_job_status_history(job_id, status, progress=0, error_message=None):
+        # Actually create job status history records in the database
+        cursor = in_memory_db._connection.cursor()
+        cursor.execute(
+            "INSERT INTO job_status_history (job_id, status, progress, error_message, created_at) VALUES (?, ?, ?, ?, ?)",
+            (job_id, status, progress, error_message, datetime.now().isoformat())
+        )
+        in_memory_db._connection.commit()
+        return True
+    mock_db["create_job_status_history"] = create_job_status_history
+
+    return mock_db
 
 @pytest.fixture
 def mock_get_db():

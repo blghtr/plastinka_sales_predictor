@@ -1,6 +1,5 @@
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable, Sequence
-from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -9,8 +8,8 @@ import dill
 import numpy as np
 import pandas as pd
 from darts.timeseries import TimeSeries
-from darts.utils.data.torch_datasets.training_dataset import TorchTrainingDataset
 from darts.utils.data.torch_datasets.inference_dataset import TorchInferenceDataset
+from darts.utils.data.torch_datasets.training_dataset import TorchTrainingDataset
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MultiLabelBinarizer, OrdinalEncoder, minmax_scale
 from typing_extensions import Self
@@ -95,11 +94,10 @@ class PlastinkaBaseTSDataset:
         ].values.astype(self.dtype)
         self._stock_features = self._get_stock_features_values(stock_features)
         self._n_time_steps = self._monthly_sales.shape[0]
-        if end is None:
-            end = self._n_time_steps
-        self.end = end
+        self._end = end
         self.start = start
         self._past_covariates_fnames = past_covariates_fnames
+        self.minimum_sales_months = minimum_sales_months
         self.setup_dataset(
             input_chunk_length=input_chunk_length,
             output_chunk_length=output_chunk_length,
@@ -111,7 +109,6 @@ class PlastinkaBaseTSDataset:
             copy=False,
             reindex=False,
         )
-        self.minimum_sales_months = minimum_sales_months
         self._allow_empty_stock = False
         self._idx_mapping = self._build_index_mapping()
         self.save_dir = save_dir
@@ -135,7 +132,7 @@ class PlastinkaBaseTSDataset:
 
         if not valid_indices:
             raise ValueError("No valid indices found")
-        
+
         arr = stock_features.loc[self._time_index, valid_indices].values.astype(
             self.dtype
         )
@@ -240,36 +237,13 @@ class PlastinkaBaseTSDataset:
         past_cov_arr = past_cov_arr.astype(self.dtype)
         return past_cov_arr
 
-    def set_length(self, input_chunk_length, output_chunk_length):
-        if all(
-            [
-                input_chunk_length > 1,
-                output_chunk_length > 0,
-                ((self.end - self.start) >= (input_chunk_length + output_chunk_length)),
-            ]
-        ):
-            self.input_chunk_length = input_chunk_length
-            self.output_chunk_length = output_chunk_length
+    def _set_length(self, input_chunk_length, output_chunk_length):
+        self.input_chunk_length = input_chunk_length
+        self.output_chunk_length = output_chunk_length
 
-        else:
-            raise ValueError(
-                f"Invalid length: input_chunk_length={input_chunk_length}, "
-                f"output_chunk_length={output_chunk_length}. "
-            )
-
-    def set_window(self, start, end):
-        if end is None:
-            end = self._n_time_steps
-        length = self.input_chunk_length + self.output_chunk_length
-        if all([start >= 0, end <= self._n_time_steps, (end - start) >= length]):
-            self.start = start
-            self.end = end
-
-        else:
-            raise ValueError(
-                f"Invalid window: start={start}, end={end}, length={length} "
-                "Length must not be greater than the window size"
-            )
+    def _set_window(self, start, end):
+        self.start = start
+        self._end = end
 
     def set_scaler(self, scaler):
         if not scaler.is_fit():
@@ -292,35 +266,61 @@ class PlastinkaBaseTSDataset:
         copy: bool = True,
         reindex: bool = True,
     ) -> Self | None:
+        def validate_boundaries(window, input_chunk_length, output_chunk_length):
+            window = (0, self._n_time_steps) if window is None else window
+            start, end = window
+            if start < 0 or end > self._n_time_steps:
+                raise ValueError(f"Invalid boundaries: start={start}, end={end}. \n"
+                                 f"start must be >= 0 and end must be <= {self._n_time_steps}")
+            if input_chunk_length and output_chunk_length:
+                if input_chunk_length < self.minimum_sales_months or output_chunk_length <= 0:
+                    raise ValueError(f"Invalid length: input_chunk_length={input_chunk_length}, output_chunk_length={output_chunk_length}. \n"
+                                     f"input_chunk_length must be >= {self.minimum_sales_months} and output_chunk_length must be > 0")
+                if (end - start) < input_chunk_length + output_chunk_length:
+                    raise ValueError(f"Invalid boundaries: start={start}, end={end}, input_chunk_length={input_chunk_length}, output_chunk_length={output_chunk_length}. \n"
+                                     f"window length {end - start} must be >= input_chunk_length + output_chunk_length")
+            return True
+
         if copy:
             ds = deepcopy(self)
         else:
             ds = self
 
-        if input_chunk_length and output_chunk_length:
-            ds.set_length(input_chunk_length, output_chunk_length)
+        try:
+            validate_boundaries(
+                window,
+                input_chunk_length,
+                output_chunk_length
+            )
+            if input_chunk_length and output_chunk_length:
+                ds._set_length(input_chunk_length, output_chunk_length)
+            if window:
+                ds._set_window(*window)
 
-        if window:
-            ds.set_window(*window)
+            if scaler:
+                ds.set_scaler(scaler)
 
-        if scaler:
-            ds.set_scaler(scaler)
+            self.static_features = static_features
+            if transformer:
+                ds.set_static_transformer(transformer)
+                self.static_covariates_mapping = self.get_static_covariates()
 
-        self.static_features = static_features
-        if transformer:
-            ds.set_static_transformer(transformer)
-            self.static_covariates_mapping = self.get_static_covariates()
+            if weights_alpha is not None:
+                ds.set_reweight_fn(weights_alpha)
 
-        if weights_alpha is not None:
-            ds.set_reweight_fn(weights_alpha)
+            if reindex:
+                ds._idx_mapping = ds._build_index_mapping()
 
-        if reindex:
-            ds._idx_mapping = ds._build_index_mapping()
+            ds.prepare_past_covariates(span)
 
-        ds.prepare_past_covariates(span)
+            if copy:
+                return ds
 
-        if copy:
-            return ds
+        except Exception as e:
+            print(f"Error setting up dataset: {e}")
+            print('--------------------------------DEBUG--------------------------------')
+            print(f"Window: {window}, input_chunk_length: {input_chunk_length}, output_chunk_length: {output_chunk_length}, span: {span}, weights_alpha: {weights_alpha}, scaler: {scaler}, transformer: {transformer}, static_features: {static_features}, copy: {copy}, reindex: {reindex}")
+            raise e
 
     def _build_index_mapping(self):
         current_index = 0
@@ -371,7 +371,7 @@ class PlastinkaBaseTSDataset:
         Extracts raw NumPy arrays for a given index, common to both training and inference datasets.
         """
         end_index_safe = end_index if end_index is not None else self._n_time_steps
-        
+
         series_item = np.expand_dims(
             self.monthly_sales[start_index:end_index, array_index], axis=1
         )
@@ -435,7 +435,7 @@ class PlastinkaBaseTSDataset:
 
     def _get_item_stock(self, item_multiidx):
         return self.stock_features[:, :, self._multiidx2idx[item_multiidx]]
-    
+
     @property
     def monthly_sales(self):
         if self._monthly_sales is not None:
@@ -471,7 +471,14 @@ class PlastinkaBaseTSDataset:
     @property
     def L(self):
         return self.end - self.start
-    
+
+    @property
+    def end(self):
+        end = self._end
+        if end is None:
+            return self._n_time_steps
+        return end
+
     @property
     def labels(self):
         labels = []
@@ -544,7 +551,7 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
             start=last_date + pd.DateOffset(months=1), periods=pad, freq="MS"
         )
         self._time_index = self._time_index.append(new_dates)
-        
+
         self.setup_dataset(
             window=(self._n_time_steps - (
                 self.input_chunk_length + self.output_chunk_length
@@ -570,10 +577,10 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
         # Darts InferenceDataset expects a SeriesSchema for target_series (7th element)
         # and pred_time (8th element).
         time_index_for_ts = self.time_index[start_index: end_index] # Use unpacked start_index, end_index
-        
+
         # This is a workaround because Darts doesn't provide a direct way to build SeriesSchema
         # without a TimeSeries object from raw data, but expects a SeriesSchema from __getitem__.
-        
+
         static_covariates_item_array = None
         if static_covariates_item is not None:
             static_covariates_item_array = np.expand_dims(
@@ -603,7 +610,7 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
             pred_time, # pred_time
         )
         return output
-    
+
 
 class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
     def __init__(self, separator="/"):
@@ -711,7 +718,7 @@ class GlobalLogMinMaxScaler(BaseEstimator, TransformerMixin):
             raise ValueError(
                 "This GlobalMinMaxScaler instance is not fitted yet. Call 'fit' before using this method."
             )
-        
+
         X_scaled = self._validate_data(X_scaled)
 
         scale = self.feature_range[1] - self.feature_range[0]
@@ -892,7 +899,7 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
     validated.loc[:, "Цена, руб."] = pd.to_numeric(
         validated["Цена, руб."], errors='coerce'
     ).astype("int64")
-    
+
     validated, bins = categorize_prices(validated, bins)
     validated = validate_date_columns(validated)
     validated = validate_categories(validated)
@@ -1091,7 +1098,7 @@ def process_data(
     )
 
     stock, prices_from_stock = _process_stock(
-        preprocessed_stock_df, 
+        preprocessed_stock_df,
         keys_no_dates
     )
 
@@ -1111,7 +1118,7 @@ def process_data(
     # If explicit file extension provided – treat as single file even if the
     # physical file may be absent (unit-tests rely on mocked I/O).
     if sales_path_str.lower().endswith((".csv", ".xlsx", ".xls")):
-        sales_files.append(Path(sales_path))    
+        sales_files.append(Path(sales_path))
     # Otherwise, if the path exists and is a file
     elif Path(sales_path).is_file():
         raise ValueError("Sales path is an unsupported file, not a directory")
@@ -1131,7 +1138,7 @@ def process_data(
             if str(p).lower().endswith(".csv"):
                 # Always use read_csv for CSV files (including mocked tests)
                 file_df = pd.read_csv(
-                    p, 
+                    p,
                     dtype="str",
                     index_col=None
                 )
@@ -1153,7 +1160,7 @@ def process_data(
             )
 
             stock, prices_from_stock = _process_stock(
-                preprocessed_df, 
+                preprocessed_df,
                 keys_no_dates
             )
 
@@ -1162,7 +1169,7 @@ def process_data(
             )
 
             prices = pd.concat(
-                [prices_from_stock, prices_from_sales], 
+                [prices_from_stock, prices_from_sales],
                 axis=1
             ).mean(axis=1)
 
@@ -1192,7 +1199,7 @@ def process_data(
         date_index = pd.Index([cutoff_date_ts], name='_date')
         stock_transposed.index = date_index
         features["stock"] = stock_transposed
-    
+
     if not features["prices"].empty:
         # Добавляем дату к prices и транспонируем
         cutoff_date_ts = pd.to_datetime(cutoff_date, dayfirst=True)
@@ -1215,7 +1222,7 @@ def process_data(
             if isinstance(sales_unstacked.columns, pd.MultiIndex):
                 sales_unstacked.columns = sales_unstacked.columns.droplevel(0)
             features["sales"] = sales_unstacked
-    
+
     if not features["change"].empty:
         # change аналогично sales
         change_df = features["change"]
@@ -1239,17 +1246,17 @@ def get_stock_features(
     # для совместимости с существующей логикой функции
     if isinstance(stock.index, pd.DatetimeIndex):
         stock = stock.T  # Транспонируем для совместимости с логикой функции
-    
+
     if isinstance(daily_movements.columns, pd.DatetimeIndex):
         daily_movements = daily_movements.T
-    
+
     stock_features = defaultdict(list)
     groups = daily_movements.groupby(
         daily_movements.index.get_level_values("_date").to_period("M")
     )
     for month, daily_data in groups:
         stock = stock.join(
-            daily_data.T, 
+            daily_data.T,
             how="outer"
         ).fillna(0).cumsum(axis=1)
 
