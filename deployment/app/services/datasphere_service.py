@@ -1238,7 +1238,6 @@ async def run_job(
     client: DataSphereClient | None = None
     project_input_link_path: str | None = None
     job_completed_successfully = False
-    import debugpy; debugpy.listen(5678);  print("Waiting for debugger ..."); debugpy.wait_for_client()
     try:
         config = TrainingConfig(**config)
     except (ValidationError, ValueError) as e:
