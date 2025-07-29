@@ -68,7 +68,9 @@ async def test_prepare_training_inputs_creates_config_json(temp_workspace, dummy
     assert config_json_path.exists(), "config.json was not created"
     with open(config_json_path, encoding="utf-8") as f:
         data = json.load(f)
-    assert data == dummy_training_config.model_dump()
+    dummy_training_config_dict = dummy_training_config.model_dump()
+    dummy_training_config_dict['model_config'] = dummy_training_config_dict.pop('nn_model_config')
+    assert data == dummy_training_config_dict
     assert f"[{job_id}] Saving training config to {config_json_path}" in caplog.text
 
 # =====================
