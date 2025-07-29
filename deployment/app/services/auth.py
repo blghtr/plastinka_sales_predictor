@@ -46,11 +46,11 @@ docs_security = HTTPBasic()
 def get_docs_user(credentials: HTTPBasicCredentials = Depends(docs_security), settings: AppSettings = Depends(get_settings)):
     """Dependency to protect documentation endpoints with Basic Auth."""
     # Use secrets.compare_digest to prevent timing attacks
-    correct_username = secrets.compare_digest(credentials.username.encode("utf8"), b"admin")
+    correct_username = secrets.compare_digest(credentials.username.encode("utf8"), b"doc_user")
     # IMPORTANT: This compares against the RAW token, not the hash.
-    # The admin_api_key setting should hold the raw token for this to work.
-    # Ensure the config `admin_api_key` holds the raw token value.
-    correct_password = pwd_context.verify(credentials.password, settings.api.admin_api_key_hash)
+    # The x_api_key_hash setting should hold the raw token for this to work.
+    # Ensure the config `x_api_key_hash` holds the raw token value.
+    correct_password = pwd_context.verify(credentials.password, settings.api.x_api_key_hash)
 
     if not (correct_username and correct_password):
         raise HTTPException(
