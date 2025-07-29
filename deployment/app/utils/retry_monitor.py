@@ -13,7 +13,7 @@ from datetime import datetime
 from threading import RLock
 from typing import Any
 
-# Removed: from deployment.app.db.database import get_db_connection, insert_retry_event
+from deployment.app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +85,7 @@ class RetryMonitor:
     def record_retry(
         self,
         operation: str,
-        exception_type: str,
-        exception_message: str,
+        exception: Exception,
         attempt: int,
         max_attempts: int,
         successful: bool,
@@ -98,19 +97,28 @@ class RetryMonitor:
 
         Args:
             operation: Name of the operation being retried
-            exception_type: Type of exception that triggered the retry
-            exception_message: Exception message
+            exception: The exception that triggered the retry
             attempt: Current attempt number
             max_attempts: Maximum number of allowed attempts
             successful: Whether the attempt was ultimately successful
             component: Component name (e.g., 'storage_client', 'function_client')
             duration_ms: Duration of the operation in milliseconds
         """
+        # Check if the exception is a database lock error to prevent cascading failures.
+        original_exc = getattr(exception, "original_error", exception)
+        if "OperationalError" in type(original_exc).__name__ and "database is locked" in str(
+            original_exc
+        ):
+            logger.warning(
+                f"Database is locked. Skipping retry event recording for {component}.{operation}."
+            )
+            return
+
         event = {
             "timestamp": datetime.now().isoformat(),
             "operation": operation,
-            "exception_type": exception_type,
-            "exception_message": exception_message,
+            "exception_type": type(exception).__name__,
+            "exception_message": str(exception),
             "attempt": attempt,
             "max_attempts": max_attempts,
             "successful": successful,
@@ -229,10 +237,13 @@ class RetryMonitor:
                 self._log_statistics()
                 self._last_log_time = current_time
 
-            # Persist the event depending on backend
+            # Persist the event depending on backend - use separate connection to avoid locks
             if self._persistence_backend == "db":
                 try:
-                    self._insert_event_db(event)
+                    # Use a separate connection to avoid database locks
+                    from deployment.app.db.database import get_db_connection
+                    with get_db_connection(db_path_override=self._db_path) as separate_conn:
+                        self._insert_event_db(event, separate_conn)
                 except Exception as db_exc:
                     logger.error(
                         "Failed to persist retry event to DB: %s", db_exc, exc_info=True
@@ -555,8 +566,8 @@ class RetryMonitor:
         """Fetch recent retry_events rows up to self._capacity."""
         try:
             # Local import to break circular dependency
-            from deployment.app.db.database import fetch_recent_retry_events, get_db_connection
-
+            from deployment.app.db.data_access_layer import fetch_recent_retry_events
+            from deployment.app.db.database import get_db_connection
             conn = get_db_connection(db_path_override=self._db_path)
             try:
                 return fetch_recent_retry_events(limit=self._capacity, connection=conn)
@@ -627,14 +638,13 @@ class RetryMonitor:
                 # Restore original list to avoid side-effects
                 self._retry_events = original_events
 
-    def _insert_event_db(self, event_data: dict[str, Any]) -> None:
+    def _insert_event_db(self, event_data: dict[str, Any], connection) -> None:
         """Internal: Inserts a single event into the DB."""
         if self._db_path:
             try:
                 # Local import to break circular dependency
-                from deployment.app.db.database import get_db_connection, insert_retry_event
-                with get_db_connection(self._db_path) as conn:
-                    insert_retry_event(event_data, connection=conn)
+                from deployment.app.db.database import insert_retry_event
+                insert_retry_event(event_data, connection=connection)
             except Exception as e:
                 logger.error(f"[RetryMonitor._insert_event_db] Failed to insert retry event into DB: {e}", exc_info=True)
         else:
@@ -651,7 +661,6 @@ DEFAULT_PERSISTENCE_PATH = os.path.join(
 )
 
 # Ensure main database path exists and instantiate monitor with DB backend only
-from deployment.app.config import get_settings
 
 db_path = get_settings().database_path
 retry_monitor = RetryMonitor(
@@ -682,16 +691,20 @@ def record_retry(
         component: Component name
         duration_ms: Duration of the operation in milliseconds
     """
-    retry_monitor.record_retry(
-        operation=operation,
-        exception_type=type(exception).__name__,
-        exception_message=str(exception),
-        attempt=attempt,
-        max_attempts=max_attempts,
-        successful=successful,
-        component=component,
-        duration_ms=duration_ms,
-    )
+    try:
+        retry_monitor.record_retry(
+            operation=operation,
+            exception=exception,  # Pass the whole exception object
+            attempt=attempt,
+            max_attempts=max_attempts,
+            successful=successful,
+            component=component,
+            duration_ms=duration_ms,
+        )
+    except Exception as e:
+        # If recording retry events fails, just log it but don't let it break the main operation
+        logger.warning(f"Failed to record retry event for {operation}: {e}")
+        # Don't re-raise the exception to avoid cascading failures
 
 
 def get_retry_statistics() -> dict[str, Any]:

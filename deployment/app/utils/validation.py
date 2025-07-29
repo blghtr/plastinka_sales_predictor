@@ -1,8 +1,8 @@
 import io
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any
-import os
 
 import pandas as pd
 
@@ -111,7 +111,7 @@ def validate_data_file_content(
     """
     # Determine file type by extension
     file_ext = os.path.splitext(filename.lower())[1] if filename else ""
-    
+
     if file_ext in [".xls", ".xlsx"]:
         return validate_excel_file(file_content, expected_columns)
     elif file_ext == ".csv":
@@ -121,11 +121,11 @@ def validate_data_file_content(
         is_valid, error = validate_excel_file(file_content, expected_columns)
         if is_valid:
             return True, ""
-        
+
         is_valid_csv, error_csv = validate_csv_file(file_content, expected_columns)
         if is_valid_csv:
             return True, ""
-        
+
         return False, f"File is neither valid Excel nor CSV. Excel error: {error}. CSV error: {error_csv}"
 
 

@@ -6,21 +6,14 @@ using the registry pattern to eliminate conditional checks and improve extensibi
 """
 
 import asyncio
-from datetime import date
 import json
 import logging
 import os
-import sqlite3
-from typing import Any, Callable, Dict
+from collections.abc import Callable
+from datetime import date
+from typing import Any
 
-from deployment.app.config import get_settings
-from deployment.app.db.database import (
-    auto_activate_best_config_if_enabled,
-    create_or_get_config,
-    create_tuning_result,
-    execute_query,
-    update_job_status,
-)
+from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.models.api_models import JobStatus, TrainingConfig
 
 # Note: Avoiding circular import by importing these functions inside the functions where needed
@@ -33,12 +26,12 @@ async def process_training_results(
     ds_job_id: str,
     results_dir: str,
     config: TrainingConfig,
-    metrics_data: Dict[str, Any] | None,
-    output_files: Dict[str, str | None],
+    metrics_data: dict[str, Any] | None,
+    output_files: dict[str, str | None],
     polls: int,
     poll_interval: float,
     config_id: str,
-    connection: sqlite3.Connection = None, # NEW: Add connection parameter
+    dal: DataAccessLayer,
     **kwargs,
 ) -> None:
     """Process training job results - handles model and predictions."""
@@ -54,11 +47,10 @@ async def process_training_results(
         # Import functions to avoid circular import
         from deployment.app.services.datasphere_service import (
             _perform_model_cleanup,
+            calculate_and_store_report_features,
             save_model_file_and_db,
             save_predictions_to_db,
-            calculate_and_store_report_features,
         )
-        from deployment.app.db.database import create_training_result, get_job
 
         # Save model and predictions if they exist
         if model_path:
@@ -68,7 +60,7 @@ async def process_training_results(
                 ds_job_id=ds_job_id,
                 config=config,
                 metrics_data=metrics_data,
-                connection=connection, # Pass connection
+                dal=dal,
             )
             logger.info(f"[{job_id}] Model saved with ID: {model_id_for_status}")
 
@@ -77,26 +69,35 @@ async def process_training_results(
                     predictions_path=predictions_path,
                     job_id=job_id,
                     model_id=model_id_for_status,
-                    direct_db_connection=connection, # Pass connection
+                    dal=dal,
                 )
                 logger.info(
                     f"[{job_id}] Saved {prediction_result_info.get('predictions_count', 'N/A')} predictions to database with result_id: {prediction_result_info.get('result_id', 'N/A')}"
                 )
 
                 # --- NEW: Trigger report feature calculation ---
-                job_details = get_job(job_id, connection=connection)
+                job_details = dal.get_job(job_id)
                 if job_details and job_details.get("parameters"):
-                    params = json.loads(job_details["parameters"])
-                    prediction_month_str = params.get("prediction_month")
-                    if prediction_month_str:
-                        prediction_month = date.fromisoformat(prediction_month_str)
-                        logger.info(f"[{job_id}] Triggering report feature calculation for {prediction_month}.")
-                        await calculate_and_store_report_features(
-                            prediction_month, 
-                            connection=connection
-                        )
-                    else:
-                        logger.warning(f"[{job_id}] No prediction_month in job parameters, cannot calculate report features.")
+                    try:
+                        # Handle both string and dict parameters
+                        if isinstance(job_details["parameters"], str):
+                            params = json.loads(job_details["parameters"])
+                        else:
+                            params = job_details["parameters"]
+                        
+                        prediction_month_str = params.get("prediction_month")
+                        if prediction_month_str:
+                            prediction_month = date.fromisoformat(prediction_month_str)
+                            logger.info(f"[{job_id}] Triggering report feature calculation for {prediction_month}.")
+                            await calculate_and_store_report_features(
+                                prediction_month,
+                                dal
+                            )
+                        else:
+                            logger.warning(f"[{job_id}] No prediction_month in job parameters, cannot calculate report features.")
+                    except (json.JSONDecodeError, ValueError, AttributeError) as e:
+                        logger.warning(f"[{job_id}] Could not parse job parameters for report feature calculation: {e}")
+                        logger.warning(f"[{job_id}] Parameters value: {job_details['parameters']}")
 
             else:
                 logger.warning(
@@ -112,14 +113,13 @@ async def process_training_results(
         # Create a record of the training result with metrics
         training_result_id = None
         if metrics_data:
-            training_result_id = create_training_result(
+            training_result_id = dal.create_training_result(
                 job_id=job_id,
                 config_id=config_id,
                 metrics=metrics_data,
                 model_id=model_id_for_status,
                 duration=int(polls * poll_interval),
                 config=config.model_dump(),
-                connection=connection, # Pass connection
             )
             logger.info(
                 f"[{job_id}] Training result record created: {training_result_id}"
@@ -136,7 +136,7 @@ async def process_training_results(
             final_message += " Processing warnings: " + "; ".join(warnings_list)
 
         # Update job status to completed
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.COMPLETED.value,
             progress=100,
@@ -149,7 +149,7 @@ async def process_training_results(
 
         # Perform model cleanup only if a model was successfully created in this run
         if model_id_for_status:
-            await _perform_model_cleanup(job_id, model_id_for_status)
+            await _perform_model_cleanup(job_id, model_id_for_status, dal)
         else:
             logger.info(
                 f"[{job_id}] Skipping model cleanup as no new model was created in this job run."
@@ -164,10 +164,11 @@ async def process_training_results(
 def process_tuning_results(
     job_id: str,
     results_dir: str,
-    metrics_data: Dict[str, Any] | None,
-    output_files: Dict[str, str | None],
+    metrics_data: dict[str, Any] | None,
+    output_files: dict[str, str | None],
     polls: int,
     poll_interval: float,
+    dal: DataAccessLayer,
     **kwargs,
 ) -> None:
     """Process tuning job results - handles best configs and metrics."""
@@ -176,7 +177,7 @@ def process_tuning_results(
 
     if not best_configs_path or not os.path.exists(best_configs_path):
         logger.error(f"[{job_id}] best_configs.json (role: configs) not found in results")
-        update_job_status(
+        dal.update_job_status(
             job_id,
             JobStatus.FAILED.value,
             error_message="Tuning results missing best_configs.json",
@@ -185,7 +186,7 @@ def process_tuning_results(
 
     # Load configs
     try:
-        with open(best_configs_path, "r", encoding="utf-8") as f:
+        with open(best_configs_path, encoding="utf-8") as f:
             best_cfgs: list[dict[str, Any]] = json.load(f)
     except Exception as e:
         logger.error(f"[{job_id}] Failed to parse best_configs.json: {e}")
@@ -195,7 +196,7 @@ def process_tuning_results(
     if not isinstance(metrics_data, list):
         error_msg = "metrics.json must contain a list of metric dicts (one per config)"
         logger.error(f"[{job_id}] {error_msg}. Got type: {type(metrics_data).__name__}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg)
 
     if len(metrics_data) != len(best_cfgs):
@@ -203,7 +204,7 @@ def process_tuning_results(
             f"metrics.json list length ({len(metrics_data)}) does not match number of configs ({len(best_cfgs)})"
         )
         logger.error(f"[{job_id}] {error_msg}")
-        update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg)
 
     metrics_list: list[dict[str, Any]] = metrics_data
@@ -214,11 +215,11 @@ def process_tuning_results(
         try:
             # Store config, mark source
             cfg_copy = cfg.copy()
-            cfg_id = create_or_get_config(cfg_copy, is_active=False, source="tuning")
+            cfg_id = dal.create_or_get_config(cfg_copy, is_active=False, source="tuning")
 
             metric_dict = metrics_list[idx] if idx < len(metrics_list) else {}
 
-            create_tuning_result(
+            dal.create_tuning_result(
                 job_id=job_id,
                 config_id=cfg_id,
                 metrics=metric_dict,
@@ -228,17 +229,7 @@ def process_tuning_results(
         except Exception as cfg_e:
             logger.warning(f"[{job_id}] Failed to persist tuning config #{idx}: {cfg_e}")
 
-    # Auto-activate best config if enabled in settings
-    try:
-        activated = auto_activate_best_config_if_enabled()
-        if activated:
-            logger.info(f"[{job_id}] Auto-activated best config after tuning")
-        else:
-            logger.debug(f"[{job_id}] Auto-activation of configs after tuning: disabled or no best config found")
-    except Exception as e:
-        logger.warning(f"[{job_id}] Failed to auto-activate best config after tuning: {e}")
-
-    update_job_status(
+    dal.update_job_status(
         job_id,
         JobStatus.COMPLETED.value,
         progress=100,
@@ -247,13 +238,13 @@ def process_tuning_results(
 
 
 # Registry of result processors
-RESULT_PROCESSORS: Dict[str, Callable] = {
+RESULT_PROCESSORS: dict[str, Callable] = {
     "process_training_results": process_training_results,
     "process_tuning_results": process_tuning_results,
 }
 
 
-async def process_job_results_unified(job_id: str, processor_name: str, connection: sqlite3.Connection = None, **kwargs) -> None:
+async def process_job_results_unified(job_id: str, processor_name: str, dal: DataAccessLayer, **kwargs) -> None:
     """
     Unified result processing using registry pattern.
 
@@ -277,9 +268,9 @@ async def process_job_results_unified(job_id: str, processor_name: str, connecti
 
     # Call the processor function (async or sync)
     if asyncio.iscoroutinefunction(processor_func):
-        await processor_func(job_id=job_id, connection=connection, **kwargs) # Pass connection
+        await processor_func(job_id=job_id, dal=dal, **kwargs) # Pass dal
     else:
-        processor_func(job_id=job_id, connection=connection, **kwargs) # Pass connection
+        processor_func(job_id=job_id, dal=dal, **kwargs) # Pass dal
 
 
 def register_result_processor(name: str, processor_func: Callable) -> None:
@@ -296,4 +287,4 @@ def register_result_processor(name: str, processor_func: Callable) -> None:
 
 def get_available_processors() -> list[str]:
     """Get list of available result processors."""
-    return list(RESULT_PROCESSORS.keys()) 
+    return list(RESULT_PROCESSORS.keys())

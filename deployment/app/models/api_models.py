@@ -1,11 +1,10 @@
+import json
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Optional
-import json
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi import Form
-
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class YandexCloudToken(BaseModel):
@@ -167,6 +166,7 @@ class TrainingConfig(BaseModel):
     nn_model_config: ModelConfig = Field(
         ..., description="Neural network model configuration"
     )
+
     optimizer_config: OptimizerConfig = Field(
         ..., description="Optimizer configuration"
     )
@@ -289,21 +289,21 @@ class TuningParams(BaseModel):
     """Parameters for a tuning job."""
 
     dataset_start_date: date | None = Field(
-        None, 
+        None,
         description="Start date for the training dataset (YYYY-MM-DD). Optional, defaults to None."
     )
     dataset_end_date: date | None = Field(
-        None, 
+        None,
         description="End date for the training dataset (YYYY-MM-DD). Optional, defaults to None."
     )
     mode: str = Field(
-        "light", 
-        description="Tuning mode: full or light", 
-        pattern="^(light|full)$"
+        "lite",
+        description="Tuning mode: full or lite",
+        pattern="^(lite|full)$"
     )
-    time_budget_s: int = Field(
-        7200, 
-        description="Time budget for tuning in seconds", 
+    time_budget_s: int | None = Field(
+        None,
+        description="Time budget for tuning in seconds",
         gt=0
     )
 
@@ -420,20 +420,20 @@ class ModelCreateRequest(BaseModel):
 
 class ModelUploadMetadata(BaseModel):
     """Metadata for uploaded models."""
-    description: Optional[str] = Field(None, description="A brief description of the model.")
-    version: Optional[str] = Field(None, description="Version of the model.")
-    tags: Optional[list[str]] = Field(None, description="List of tags for categorization.")
-    training_metrics: Optional[dict[str, Any]] = Field(None, description="Metrics from the training run that produced this model.")
-    source_job_id: Optional[str] = Field(None, description="ID of the job that created this model.")
+    description: str | None = Field(None, description="A brief description of the model.")
+    version: str | None = Field(None, description="Version of the model.")
+    tags: list[str] | None = Field(None, description="List of tags for categorization.")
+    training_metrics: dict[str, Any] | None = Field(None, description="Metrics from the training run that produced this model.")
+    source_job_id: str | None = Field(None, description="ID of the job that created this model.")
 
     @classmethod
     def as_form(
         cls,
-        description: Optional[str] = Form(None, description="A brief description of the model."),
-        version: Optional[str] = Form(None, description="Version of the model."),
-        tags: Optional[str] = Form(None, description="Comma-separated list of tags for categorization."),
-        training_metrics: Optional[str] = Form(None, description="JSON string of metrics from the training run."),
-        source_job_id: Optional[str] = Form(None, description="ID of the job that created this model."),
+        description: str | None = Form(None, description="A brief description of the model."),
+        version: str | None = Form(None, description="Version of the model."),
+        tags: str | None = Form(None, description="Comma-separated list of tags for categorization."),
+        training_metrics: str | None = Form(None, description="JSON string of metrics from the training run."),
+        source_job_id: str | None = Form(None, description="ID of the job that created this model."),
     ):
         parsed_tags = tags.split(',') if tags else None
         parsed_metrics = json.loads(training_metrics) if training_metrics else None

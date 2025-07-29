@@ -1,17 +1,16 @@
-import json
 import logging
 import os
 import traceback
 import uuid
 from datetime import date, datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from deployment.app.utils.validation import ValidationError as AppValidationError
 from deployment.app.models.api_models import ErrorDetailResponse
+from deployment.app.utils.validation import ValidationError as AppValidationError
 
 # Configure more detailed logging
 logger = logging.getLogger("plastinka.errors")
@@ -98,7 +97,7 @@ class ErrorDetail:
 
         return error_dict
 
-    def log_error(self, request: Optional[Request] = None):
+    def log_error(self, request: Request | None = None):
         """Log the error details."""
         log_message = f"Error: {self.message} (Code: {self.code}, Status: {self.status_code})"
         if self.details:

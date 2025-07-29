@@ -10,6 +10,7 @@ from datasphere.client import Client as DatasphereClient
 from datasphere.config import check_limits, parse_config
 from datasphere.files import prepare_inputs, prepare_local_modules
 from datasphere.pyenv import define_py_env
+
 from deployment.app.utils.retry import retry_cloud_operation
 
 logger = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ class DataSphereClient:
 
         client_oauth_token = None
         client_yc_profile = None
-        
+
         if auth_method == "yc_profile" or (auth_method == "auto" and yc_profile):
             logger.info(f"Using YC CLI profile authentication: {yc_profile}")
             client_yc_profile = yc_profile
@@ -112,17 +113,17 @@ class DataSphereClient:
 
         try:
             self._client = DatasphereClient(
-                oauth_token=client_oauth_token, 
+                oauth_token=client_oauth_token,
                 yc_profile=client_yc_profile
             )
-            
+
             if client_yc_profile and not client_oauth_token:
                 logger.info(f"DataSphere client initialized with YC profile: {client_yc_profile}")
             elif client_oauth_token and not client_yc_profile:
                 logger.info("DataSphere client initialized with OAuth token")
             else:
                 logger.info("DataSphere client initialized with auto-detection")
-                
+
         except Exception as e:
             logger.exception(f"Failed to initialize DataSphere client: {e}")
             raise DataSphereClientError(

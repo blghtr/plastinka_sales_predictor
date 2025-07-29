@@ -6,8 +6,9 @@ This module provides a unified configuration approach for different types of Dat
 """
 
 import copy
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import Any
 
 
 @dataclass
@@ -23,13 +24,13 @@ class JobTypeConfig:
     config_filename: str
     """Name of the config file (usually 'config.yaml')."""
 
-    required_input_files: List[str]
+    required_input_files: list[str]
     """List of required input files that must be present."""
 
-    optional_input_files: List[str]
+    optional_input_files: list[str]
     """List of optional input files that may be present."""
 
-    expected_output_files: List[str]
+    expected_output_files: list[str]
     """List of expected output files from the job."""
 
     result_processor_name: str
@@ -38,18 +39,18 @@ class JobTypeConfig:
     input_preparator_name: str
     """Name of the function to prepare job inputs."""
 
-    output_file_roles: Dict[str, str] = field(default_factory=dict)
+    output_file_roles: dict[str, str] = field(default_factory=dict)
     """Roles of output files, e.g. {'model.onnx': 'model', 'predictions.csv': 'predictions'}"""
 
     async_processor: bool = False
     """Whether the result processor is asynchronous."""
 
-    additional_params: Dict[str, Any] = field(default_factory=dict)
-    """Dynamic job-specific parameters (e.g., {"mode": "light"}).
+    additional_params: dict[str, Any] = field(default_factory=dict)
+    """Dynamic job-specific parameters (e.g., {"mode": "lite"}).
     Filled/updated перед запуском run_job, не хранится в реестре глобально."""
 
-    datasets_to_generate: List[str] = field(default_factory=list)
-    """List of dataset types to generate by prepare_datasets (e.g., ["train", "val", "inference"])."""
+    datasets_to_generate: list[str] = field(default_factory=list)
+    """List of dataset types to generate by prepare_datasets (e.g., ["train", "inference"])."""
 
     def get_script_dir(self, settings) -> str:
         """Get the script directory for this job type."""
@@ -62,27 +63,27 @@ JOB_TYPE_CONFIGS = {
         name="train",
         script_dir_getter=lambda s: s.datasphere_job_train_dir,
         config_filename="config.yaml",
-        required_input_files=["train.dill", "val.dill", "config.json", "inference.dill"],
+        required_input_files=["train.dill", "config.json", "inference.dill"],
         optional_input_files=[],
         expected_output_files=["model.onnx", "predictions.csv", "metrics.json"],
         result_processor_name="process_training_results",
         input_preparator_name="training_input_preparator",
         output_file_roles={"model.onnx": "model", "predictions.csv": "predictions", "metrics.json": "metrics"},
         async_processor=True,
-        datasets_to_generate=["train", "val", "inference"],
+        datasets_to_generate=["train", "inference"],
     ),
     "tune": JobTypeConfig(
         name="tune",
         script_dir_getter=lambda s: s.datasphere_job_tune_dir,
         config_filename="config.yaml",
-        required_input_files=["train.dill", "val.dill", "config.json"],
+        required_input_files=["train.dill", "config.json"],
         optional_input_files=["tuning_settings.json", "initial_configs.json"],
         expected_output_files=["best_configs.json", "metrics.json"],
         result_processor_name="process_tuning_results",
         input_preparator_name="tuning_input_preparator",
         output_file_roles={"best_configs.json": "configs", "metrics.json": "metrics"},
         async_processor=False,
-        datasets_to_generate=["train", "val"],
+        datasets_to_generate=["train"],
     ),
 }
 
@@ -109,6 +110,6 @@ def get_job_type_config(job_type: str) -> JobTypeConfig:
     return copy.deepcopy(config)
 
 
-def get_available_job_types() -> List[str]:
+def get_available_job_types() -> list[str]:
     """Get list of available job types."""
-    return list(JOB_TYPE_CONFIGS.keys()) 
+    return list(JOB_TYPE_CONFIGS.keys())

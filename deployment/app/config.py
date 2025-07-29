@@ -3,6 +3,7 @@ Central configuration module for the Plastinka Sales Predictor API.
 Loads configuration from environment variables or config files.
 """
 
+import functools
 import json
 import logging  # Added
 import os
@@ -12,6 +13,7 @@ from functools import lru_cache
 from pathlib import Path  # Added
 from typing import Any
 
+import pandas as pd
 import yaml
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,8 +23,6 @@ from pydantic_settings.sources import (  # Added
     InitSettingsSource,
     SecretsSettingsSource,
 )  # PydanticSettingsSource removed as it's likely internal
-import functools
-import pandas as pd
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
@@ -193,7 +193,7 @@ class APISettings(BaseSettings):
         """Set default value for docs_security_enabled based on environment."""
         if v is not None:
             return v
-        
+
         # Fallback to environment variable if not explicitly provided
         env_val = os.getenv("API_DOCS_SECURITY_ENABLED")
         if env_val is not None:
@@ -202,7 +202,7 @@ class APISettings(BaseSettings):
         # Default based on app environment
         app_env = values.get("env", "production")  # Default to production if env not set
         is_dev = app_env.lower() == "development"
-        
+
         logger.info(f"docs_security_enabled not set, defaulting to {not is_dev} for env: {app_env}")
         return not is_dev
 
@@ -250,7 +250,7 @@ class APISettings(BaseSettings):
         customize_sources=settings_customise_sources,
     )
 
-    
+
 
 
 class DatabaseSettings(BaseSettings):
@@ -320,17 +320,17 @@ class DataSphereSettings(BaseSettings):
     # Client settings
     project_id: str = Field(default="", description="ID of the DataSphere project")
     folder_id: str = Field(default="", description="Yandex Cloud folder ID")
-    
+
     oauth_token: str = Field(
         default="",
         description="Yandex Cloud OAuth token for user authentication.",
     )
-    
+
     yc_profile: str = Field(
         default="datasphere-prod",
         description="Yandex Cloud CLI profile name for service account authentication.",
     )
-    
+
     auth_method: str = Field(
         default="auto",
         description="Authentication method: 'auto', 'yc_profile', or 'oauth_token'.",
@@ -400,6 +400,11 @@ class DataSphereSettings(BaseSettings):
             "yc_profile": self.yc_profile,
             "auth_method": self.auth_method,
         }
+
+    @property
+    def api_client(self) -> dict[str, Any]:
+        """Get client configuration as a dictionary (alias for client property)."""
+        return self.client
 
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_datasphere_config
 
@@ -539,7 +544,7 @@ class DataRetentionSettings(BaseSettings):
 class TuningSettings(BaseSettings):
     """Hyperparameter tuning specific settings."""
 
-    num_samples_light: int = Field(50, description="Samples for light mode")
+    num_samples_light: int = Field(50, description="Samples for lite mode")
     num_samples_full: int = Field(200, description="Samples for full mode")
     max_concurrent: int = Field(16, description="Max concurrent Ray trials")
     resources: dict[str, int] = Field({"cpu": 32}, description="Resource allocation per trial")
@@ -547,13 +552,13 @@ class TuningSettings(BaseSettings):
     seed_configs_limit: int = Field(5, description="How many historical configs to pass to tuning as starters")
     metric_threshold: float = Field(1.2, description="Minimum metric for initial configs selection")
 
-    # NEW: default tuning mode (overridable per-job via API) – 'light' or 'full'
-    mode: str = Field("light", description="Default tuning mode: light or full")
+    # NEW: default tuning mode (overridable per-job via API) – 'lite' or 'full'
+    mode: str = Field("lite", description="Default tuning mode: lite or full")
 
     @field_validator("mode", mode="before")
     @classmethod
     def validate_mode(cls, v: str):
-        allowed = {"light", "full"}
+        allowed = {"lite", "full"}
         if v not in allowed:
             raise ValueError(f"Invalid tuning mode '{v}'. Allowed values: {allowed}")
         return v
@@ -584,7 +589,7 @@ class AppSettings(BaseSettings):
         default=50 * 1024 * 1024,  # 50 MB default
         description="Maximum upload size in bytes",
     )
-    
+
     # SQLite configuration
     sqlite_max_variables: int = Field(
         default=900,
@@ -738,7 +743,7 @@ class AppSettings(BaseSettings):
         """Path to DataSphere job configuration file."""
         return os.path.join(self.datasphere_jobs_base_dir, "config.yaml")
 
-    
+
 
     # Валидатор для создания базовой директории данных
     @field_validator("data_root_dir", mode="after")

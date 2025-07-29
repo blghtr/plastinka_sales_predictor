@@ -27,7 +27,7 @@ VALID_EXCEL_CONTENT_TYPES = [
 
 VALID_CSV_CONTENT_TYPES = [
     "text/csv",
-    "application/csv", 
+    "application/csv",
     "text/plain",  # Sometimes CSV files get this generic type
     "application/octet-stream",  # Generic type fallback
 ]
@@ -167,7 +167,7 @@ async def validate_data_file_upload(file: UploadFile) -> None:
     """
     filename = file.filename or ""
     file_ext = os.path.splitext(filename.lower())[1]
-    
+
     if file_ext in [".xls", ".xlsx"]:
         await validate_excel_file_upload(file)
     elif file_ext == ".csv":
@@ -175,7 +175,7 @@ async def validate_data_file_upload(file: UploadFile) -> None:
     else:
         # Fallback to content type detection
         content_type = file.content_type or ""
-        
+
         if any(ct in content_type for ct in ["excel", "spreadsheet"]):
             await validate_excel_file_upload(file)
         elif any(ct in content_type for ct in ["csv", "text/csv"]):

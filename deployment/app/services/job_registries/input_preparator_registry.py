@@ -6,11 +6,12 @@ using the registry pattern.
 """
 import json
 import logging
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Coroutine, Dict
+from typing import Any
 
 from deployment.app.config import get_settings
-from deployment.app.db.database import get_top_configs
+from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.models.api_models import TrainingConfig
 from deployment.app.services.job_registries.job_type_registry import JobTypeConfig
 
@@ -25,15 +26,16 @@ async def prepare_training_inputs(
     config: TrainingConfig,
     target_dir: Path,
     job_config: JobTypeConfig,
+    dal: DataAccessLayer,
 ):
     """Prepares inputs for standard training jobs."""
     logger.info(f"[{job_id}] Preparing inputs for training job...")
     if config:
-        config = _replace_model_config_keys(config)
+        config = _replace_model_config_keys(config.model_dump()) # TODO: check it
         config_json_path = target_dir / "config.json"
         logger.info(f"[{job_id}] Saving training config to {config_json_path}")
         with open(config_json_path, "w", encoding="utf-8") as f:
-            json.dump(config.model_dump(), f, indent=2)
+            json.dump(config, f, indent=2)
 
 
 async def prepare_tuning_inputs(
@@ -41,6 +43,7 @@ async def prepare_tuning_inputs(
     config: TrainingConfig,
     target_dir: Path,
     job_config: JobTypeConfig,
+    dal: DataAccessLayer,
 ):
     """Prepares inputs for hyperparameter tuning jobs."""
     logger.info(f"[{job_id}] Preparing inputs for tuning job...")
@@ -60,21 +63,23 @@ async def prepare_tuning_inputs(
     logger.info(f"[{job_id}] Tuning settings saved to {tuning_json_path}")
 
     if config:
-        config = _replace_model_config_keys(config)
+        config = _replace_model_config_keys(config.model_dump())
         config_path = target_dir / "config.json"
         logger.info(f"[{job_id}] Saving config to {config_path}")
         with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config.model_dump(), f, indent=2)
+            json.dump(config, f, indent=2)
         logger.info(f"[{job_id}] Config saved to {config_path}")
 
     # Create initial_configs.json with top historical configs
-    init_cfgs: list[dict] = get_top_configs(
+    init_cfgs_meta: list[dict] = dal.get_top_configs(
         limit=get_settings().tuning.seed_configs_limit,
         metric_name=get_settings().default_metric,
         higher_is_better=get_settings().default_metric_higher_is_better,
     )
-    if not init_cfgs:
+    if not init_cfgs_meta:
         logger.info(f"[{job_id}] No starter configs found for initial_configs.json")
+
+    init_cfgs = [cfg["config"] for cfg in init_cfgs_meta]
     initial_cfgs_path = target_dir / "initial_configs.json"
     with open(initial_cfgs_path, "w", encoding="utf-8") as f:
         json.dump(init_cfgs, f, indent=2)
@@ -87,11 +92,11 @@ async def prepare_tuning_inputs(
 
 # Define a type hint for preparator functions
 PreparatorFunc = Callable[
-    [str, TrainingConfig | None, Path, JobTypeConfig], Coroutine[Any, Any, None]
+    [str, TrainingConfig | None, Path, JobTypeConfig, DataAccessLayer], Coroutine[Any, Any, None]
 ]
 
 
-INPUT_PREPARATORS: Dict[str, PreparatorFunc] = {
+INPUT_PREPARATORS: dict[str, PreparatorFunc] = {
     "training_input_preparator": prepare_training_inputs,
     "tuning_input_preparator": prepare_tuning_inputs,
 }

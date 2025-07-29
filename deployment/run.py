@@ -28,7 +28,7 @@ def parse_args():
     )
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
     # Remove workers argument as it's for production use with gunicorn
-    
+
     return parser.parse_args()
 
 

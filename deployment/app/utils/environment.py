@@ -3,26 +3,27 @@ Environment validation utilities.
 Centralized logic for checking required environment variables.
 """
 
-import os
 import json
+import os
 import urllib.request
-from typing import Dict, List, Any
+from typing import Any
+
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict
 
 
 class ComponentHealth(BaseModel):
     """Component health status."""
-    
+
     status: str
-    details: Dict[str, Any] = {}
-    
+    details: dict[str, Any] = {}
+
     model_config = ConfigDict(from_attributes=True)
 
 
 class EnvironmentConfig:
     """Configuration for environment variable validation."""
-    
+
     # Required environment variables
     REQUIRED_VARS = {
         "DATASPHERE_PROJECT_ID": "DataSphere project ID for ML model training and inference",
@@ -30,14 +31,14 @@ class EnvironmentConfig:
         "API_ADMIN_API_KEY_HASH": "Hashed Admin API key for Bearer authentication",
         "API_X_API_KEY_HASH": "Hashed Public API key for X-API-Key header",
     }
-    
+
     # DataSphere authentication alternatives (need at least one)
     DATASPHERE_AUTH_VARS = {
         "YC_OAUTH_TOKEN": "OAuth token for DataSphere API access",
     }
 
 
-def get_missing_required_variables() -> List[str]:
+def get_missing_required_variables() -> list[str]:
     """Get list of missing required environment variables."""
     load_dotenv()  # Загружаем переменные из .env файла
     missing = []
@@ -47,17 +48,17 @@ def get_missing_required_variables() -> List[str]:
     return missing
 
 
-def check_datasphere_authentication() -> tuple[bool, List[str]]:
+def check_datasphere_authentication() -> tuple[bool, list[str]]:
     """
     Check DataSphere authentication configuration.
     Returns (has_auth, missing_description).
     """
     has_oauth = bool(os.environ.get("YC_OAUTH_TOKEN"))
     has_yc_profile = bool(os.environ.get("DATASPHERE_YC_PROFILE"))
-    
+
     if has_oauth or has_yc_profile:
         return True, []
-    
+
     return False, ["YC_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)"]
 
 
@@ -66,7 +67,7 @@ def check_yc_profile_health() -> ComponentHealth:
     Check if the Yandex Cloud CLI profile is valid and accessible.
     """
     profile_name = os.environ.get("DATASPHERE_YC_PROFILE", "datasphere-prod")
-    
+
     try:
         # Check if yc CLI is available
         import subprocess
@@ -76,12 +77,12 @@ def check_yc_profile_health() -> ComponentHealth:
             text=True,
             timeout=10
         )
-        
+
         if result.returncode == 0:
             return ComponentHealth(status="healthy", details={"profile": profile_name})
         else:
             return ComponentHealth(
-                status="unhealthy", 
+                status="unhealthy",
                 details={
                     "error": f"Profile '{profile_name}' not found or invalid",
                     "stderr": result.stderr
@@ -155,28 +156,28 @@ def get_environment_status() -> ComponentHealth:
     """
     missing = get_missing_required_variables()
     has_auth, auth_missing = check_datasphere_authentication()
-    
+
     all_missing = missing + auth_missing
-    
+
     if all_missing:
         # Create detailed missing variables list with descriptions
         missing_with_desc = []
         for var in missing:
             desc = EnvironmentConfig.REQUIRED_VARS.get(var, "")
             missing_with_desc.append(f"{var} ({desc})" if desc else var)
-        
+
         missing_with_desc.extend(auth_missing)
-        
+
         details = {
             "missing_variables": missing_with_desc,
             "message": "Some required environment variables are missing",
         }
         return ComponentHealth(status="degraded", details=details)
-    
+
     # Check authentication method and validate accordingly
     has_oauth = bool(os.environ.get("YC_OAUTH_TOKEN"))
     has_yc_profile = bool(os.environ.get("DATASPHERE_YC_PROFILE"))
-    
+
     if has_oauth:
         # Check YC token health
         token_health = check_yc_token_health()
@@ -197,22 +198,22 @@ def get_environment_status() -> ComponentHealth:
     return ComponentHealth(status="healthy")
 
 
-def get_missing_variables_simple() -> List[str]:
+def get_missing_variables_simple() -> list[str]:
     """
     Get simple list of missing variables for script usage.
     Combines required vars and auth requirements.
     """
     missing = get_missing_required_variables()
     has_auth, _ = check_datasphere_authentication()
-    
+
     if not has_auth:
         # Add auth option to the missing list for script display
         missing.append("YC_OAUTH_TOKEN or DATASPHERE_YC_PROFILE")
-    
+
     return missing
 
 
-def get_all_variable_descriptions() -> Dict[str, str]:
+def get_all_variable_descriptions() -> dict[str, str]:
     """Get all environment variables with their descriptions for template generation."""
     all_vars = {}
     all_vars.update(EnvironmentConfig.REQUIRED_VARS)

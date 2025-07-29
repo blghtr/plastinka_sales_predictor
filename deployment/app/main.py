@@ -1,43 +1,28 @@
-# Apply centralised logging configuration before the rest of the app starts.
-from deployment.app.logger_config import configure_logging
 import logging
-# Configure logging
-configure_logging()
-logger = logging.getLogger(__name__)  # Use __name__ for module-specific logger
-
-# Import context manager for lifespan
 from contextlib import asynccontextmanager
 
-# Import FastAPI dependencies
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
-from fastapi.staticfiles import StaticFiles
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 
-# Import API routers
+from deployment.app.api.admin import router as admin_router
+from deployment.app.api.auth import router as auth_router
+from deployment.app.api.health import router as health_router
 from deployment.app.api.jobs import router as jobs_router
 from deployment.app.api.models_configs import router as models_params_router
 from deployment.app.api.results import router as results_router
-from deployment.app.api.admin import router as admin_router
-from deployment.app.api.health import router as health_router
-from deployment.app.api.auth import router as auth_router
-
-# Import configuration
 from deployment.app.config import get_settings
 
-# Import database initializer
+settings = get_settings()
 from deployment.app.db.schema import init_db
-
-# Import utils
-from deployment.app.utils.error_handling import configure_error_handlers
-
-# Import security dependencies
+from deployment.app.logger_config import configure_logging
 from deployment.app.services.auth import get_docs_user
-
-# Получаем актуальную версию пакета
+from deployment.app.utils.error_handling import configure_error_handlers
 from plastinka_sales_predictor import __version__ as app_version
 
-settings = get_settings()
+# Apply centralised logging configuration before the rest of the app starts.
+configure_logging()
+logger = logging.getLogger(__name__)  # Use __name__ for module-specific logger
 
 # Lifespan context manager for application startup and shutdown events
 @asynccontextmanager
