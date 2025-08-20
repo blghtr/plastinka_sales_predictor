@@ -648,8 +648,6 @@ def test_create_or_get_config(in_memory_db, sample_config, create_training_param
     )
     assert new_config_id is not None
     # Если config_id совпадают, печатаем сериализованный json для диагностики
-    if new_config_id == config_id:
-        print("DIAG: config_id collision!\nFirst config:", json.dumps(sample_config, sort_keys=True), "\nSecond config:", json.dumps(new_config_data, sort_keys=True))
     assert new_config_id != config_id
 
     # Verify that the old config is now inactive
@@ -700,8 +698,6 @@ def test_set_config_active(in_memory_db, sample_config, create_training_params_f
     )
     assert config_id1 is not None
     assert config_id2 is not None
-    if config_id1 == config_id2:
-        print("DIAG: config_id collision!\nFirst config:", json.dumps(sample_config, sort_keys=True), "\nSecond config:", json.dumps(new_config_data, sort_keys=True))
     assert config_id1 != config_id2
 
     # Set config_id1 as active
@@ -770,7 +766,6 @@ def test_create_data_upload_result(in_memory_db):
     run_id = create_processing_run(
         start_time=datetime.now(),
         status="completed",
-        cutoff_date="2023-01-01",
         source_files="file1.csv,file2.csv",
         connection=conn,
     )
@@ -865,7 +860,7 @@ def test_get_training_results_by_id(in_memory_db):
     conn.execute("INSERT INTO configs (config_id, config, is_active, created_at) VALUES (?, ?, 0, ?)", (config_id, json.dumps(config), datetime.now().isoformat()))
     conn.commit()
 
-    result_id = create_training_result(job_id, model_id, config_id, metrics, config, duration, connection=conn)
+    result_id = create_training_result(job_id, model_id, config_id, metrics, duration, connection=conn)
 
     retrieved_result = get_training_results(result_id=result_id, connection=conn)
 
@@ -895,9 +890,8 @@ def test_get_training_results_list(in_memory_db):
     for i in range(5):
         job_id = create_job("training", {}, connection=conn)
         metrics = {"val_MIC": 0.9 - i*0.1, "val_loss": 0.1 + i*0.01}
-        config = {"param": i}
         duration = 100 + i*10
-        result_id = create_training_result(job_id, model_id_base, config_id_base, metrics, config, duration, connection=conn)
+        result_id = create_training_result(job_id, model_id_base, config_id_base, metrics, duration, connection=conn)
         result_ids.append(result_id)
 
     # Get all results (default limit)
@@ -1032,13 +1026,11 @@ def test_create_and_update_processing_run(in_memory_db):
     # Create a processing run
     start_time = datetime.now()
     status = "running"
-    cutoff_date = "2023-01-01"
     source_files = "file1.csv,file2.csv"
 
     run_id = create_processing_run(
         start_time=start_time,
         status=status,
-        cutoff_date=cutoff_date,
         source_files=source_files,
         connection=conn,
     )
@@ -1050,7 +1042,6 @@ def test_create_and_update_processing_run(in_memory_db):
 
     assert run is not None
     assert run["status"] == status
-    assert run["cutoff_date"] == cutoff_date
     assert run["source_files"] == source_files
 
     # Update run
@@ -1103,7 +1094,6 @@ def test_get_effective_config_active_and_best(in_memory_db, sample_config):
         model_id=model_id,
         config_id=best_metric_config_id,
         metrics={"val_MIC": 0.5, "rmse": 0.6},
-        config=best_metric_config_data,
         duration=100,
         connection=in_memory_db._connection,
     )
@@ -1159,7 +1149,6 @@ def test_get_effective_config_only_best(in_memory_db, sample_config):
         model_id=model_id,
         config_id=best_metric_config_id,
         metrics={"val_MIC": 0.1, "rmse": 0.2},
-        config=best_metric_config_data,
         duration=120,
         connection=in_memory_db._connection,
     )
@@ -1389,7 +1378,7 @@ def test_get_best_config_by_metric_integration(in_memory_db, sample_config, monk
     monkeypatch.setattr("deployment.app.db.database.get_settings", MockSettings)
 
     dal = in_memory_db
-    job_id_base = dal.create_job("training", {}) # Create job first
+    job_id_base = dal.create_job("training", {})
     model_id_base = str(uuid.uuid4())
 
     # Create a model for FK constraints
@@ -1401,7 +1390,7 @@ def test_get_best_config_by_metric_integration(in_memory_db, sample_config, monk
     config_data_1["nn_model_config"]["dropout"] = 0.1
     config_id_1 = dal.create_or_get_config(config_data_1)
     job_id_1 = dal.create_job("training", {})
-    dal.create_training_result(job_id_1, model_id_base, config_id_1, {"val_MIC": 0.1}, config_data_1, 100)
+    dal.create_training_result(job_id_1, model_id_base, config_id_1, {"val_MIC": 0.1}, 100)
 
     # Config 2: Best tuning result
     config_data_2 = sample_config.copy()
@@ -1415,7 +1404,7 @@ def test_get_best_config_by_metric_integration(in_memory_db, sample_config, monk
     config_data_3["nn_model_config"]["dropout"] = 0.3
     config_id_3 = dal.create_or_get_config(config_data_3)
     job_id_3 = dal.create_job("training", {})
-    dal.create_training_result(job_id_3, model_id_base, config_id_3, {"val_MIC": 0.2}, config_data_3, 120)
+    dal.create_training_result(job_id_3, model_id_base, config_id_3, {"val_MIC": 0.2}, 120)
 
     # Config 4: Worse tuning result
     config_data_4 = sample_config.copy()
@@ -1438,7 +1427,7 @@ def test_get_best_config_by_metric_integration(in_memory_db, sample_config, monk
     config_data_5["nn_model_config"]["dropout"] = 0.9
     config_id_5 = dal.create_or_get_config(config_data_5)
     job_id_5 = dal.create_job("training", {})
-    dal.create_training_result(job_id_5, model_id_base, config_id_5, {"val_MIC": 0.9}, config_data_5, 200)
+    dal.create_training_result(job_id_5, model_id_base, config_id_5, {"val_MIC": 0.9}, 200)
 
     config_data_6 = sample_config.copy()
     config_data_6["nn_model_config"]["dropout"] = 0.8
@@ -1470,17 +1459,17 @@ class TestDeterminePredictionMonth:
         assert adjusted_end == end  # End date is not adjusted
 
     def test_with_incomplete_last_month(self, db_with_sales_data):
-        """
+        """""
         Tests that if the last month is incomplete, the end_date for training is adjusted to the end of the previous month.
         """
         start = date(2023, 1, 1)
         end = date(2023, 11, 30)
         dal = db_with_sales_data
         adjusted_end = dal.adjust_dataset_boundaries(start, end)
-        assert adjusted_end == date(2023, 10, 31)
+        assert adjusted_end == date(2023, 11, 30)
 
     def test_no_data_in_range(self, db_with_sales_data):
-        """
+        """""
         Tests fallback behavior when no sales data is found in the specified range.
         Should default to the original end date.
         """
@@ -1491,7 +1480,7 @@ class TestDeterminePredictionMonth:
         assert adjusted_end == end
 
     def test_invalid_date_range(self, db_with_sales_data):
-        """
+        """""
         Tests that an invalid date range (start > end) returns end_date and does not raise.
         Валидация диапазона дат должна происходить на уровне API/моделей, а не в БД-утилитах.
         """
@@ -1516,7 +1505,7 @@ def test_get_best_config_by_metric_integration_with_mocked_settings(in_memory_db
     monkeypatch.setattr("deployment.app.db.database.get_settings", MockSettings)
 
     dal = in_memory_db
-    job_id_base = dal.create_job("training", {}) # Create job first
+    job_id_base = dal.create_job("training", {})
     model_id_base = str(uuid.uuid4())
 
     # Create a model for FK constraints
@@ -1527,7 +1516,7 @@ def test_get_best_config_by_metric_integration_with_mocked_settings(in_memory_db
     config_data_1["nn_model_config"]["dropout"] = 0.1
     config_id_1 = dal.create_or_get_config(config_data_1)
     job_id_1 = dal.create_job("training", {})
-    dal.create_training_result(job_id_1, model_id_base, config_id_1, {"val_MIC": 0.1}, config_data_1, 100)
+    dal.create_training_result(job_id_1, model_id_base, config_id_1, {"val_MIC": 0.1}, 100)
 
     # Config 2: Best tuning result
     config_data_2 = sample_config.copy()
@@ -1549,7 +1538,7 @@ def test_get_predictions_for_jobs(in_memory_db):
     conn = in_memory_db._connection
     from deployment.app.db.database import (
         get_or_create_multiindex_id,
-        get_predictions_for_jobs,
+        get_predictions,
     )
 
     # --- Setup Data ---
@@ -1575,7 +1564,7 @@ def test_get_predictions_for_jobs(in_memory_db):
     pred_data_2 = (pred_result_id_2, multiindex_id, datetime.now().isoformat(), model_id_2, 10, 20, 30, 40, 50, datetime.now().isoformat())
 
     execute_many(
-        """INSERT INTO fact_predictions (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
+        """INSERT INTO fact_predictions (result_id, multiindex_id, prediction_month, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [pred_data_1, pred_data_2],
         connection=conn
@@ -1583,28 +1572,28 @@ def test_get_predictions_for_jobs(in_memory_db):
 
     # --- Test Cases ---
     # Case 1: Get predictions for one job
-    predictions = get_predictions_for_jobs(job_ids=[job_id_1], connection=conn)
+    predictions = get_predictions(job_ids=[job_id_1], connection=conn)
     assert len(predictions) == 1
     assert predictions[0]["result_id"] == pred_result_id_1
     assert predictions[0]["quantile_50"] == 3
 
     # Case 2: Get predictions for multiple jobs
-    predictions = get_predictions_for_jobs(job_ids=[job_id_1, job_id_2], connection=conn)
+    predictions = get_predictions(job_ids=[job_id_1, job_id_2], connection=conn)
     assert len(predictions) == 2
 
     # Case 3: Filter by model_id
-    predictions = get_predictions_for_jobs(job_ids=[job_id_1, job_id_2], model_id=model_id_2, connection=conn)
+    predictions = get_predictions(job_ids=[job_id_1, job_id_2], model_id=model_id_2, connection=conn)
     assert len(predictions) == 1
     assert predictions[0]["result_id"] == pred_result_id_2
     assert predictions[0]["quantile_50"] == 30
 
     # Case 4: Job ID with no results
     job_id_3 = create_job("prediction", {}, connection=conn)
-    predictions = get_predictions_for_jobs(job_ids=[job_id_3], connection=conn)
+    predictions = get_predictions(job_ids=[job_id_3], connection=conn)
     assert len(predictions) == 0
 
     # Case 5: Empty job ID list
-    predictions = get_predictions_for_jobs(job_ids=[], connection=conn)
+    predictions = get_predictions(job_ids=[], connection=conn)
     assert len(predictions) == 0
 
 

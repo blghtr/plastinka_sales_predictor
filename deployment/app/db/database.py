@@ -55,6 +55,16 @@ ALLOWED_METRICS = [
     "train_train_MIWS_MIC_Ratio",
 ]
 
+EXPECTED_REPORT_FEATURES = [
+    "availability",
+    "confidence",
+    "masked_mean_sales_items",
+    "masked_mean_sales_rub",
+    "lost_sales",
+]
+
+EXPECTED_REPORT_FEATURES_SET = set(EXPECTED_REPORT_FEATURES)
+
 # Use database path from settings
 # DB_PATH = settings.database_path
 
@@ -996,7 +1006,6 @@ def create_training_result(
     model_id: str,
     config_id: str,
     metrics: dict[str, Any],
-    config: dict[str, Any],
     duration: int | None,
     connection: sqlite3.Connection = None,  # Allow passing connection for transaction
 ) -> str:
@@ -1133,6 +1142,7 @@ def create_prediction_result(
 def insert_predictions(
     result_id: str,
     model_id: str,
+    prediction_month: date,
     df: pd.DataFrame,
     connection: sqlite3.Connection = None,
 ):
@@ -1158,7 +1168,7 @@ def insert_predictions(
             prediction_row = (
                 result_id,
                 multiindex_id,
-                timestamp,
+                prediction_month,
                 model_id,
                 row["0.05"],
                 row["0.25"],
@@ -1172,7 +1182,7 @@ def insert_predictions(
         execute_many(
             """
             INSERT OR REPLACE INTO fact_predictions
-            (result_id, multiindex_id, prediction_date, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
+            (result_id, multiindex_id, prediction_month, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             predictions_data,
@@ -1431,12 +1441,15 @@ def get_prediction_results_by_month(
         query += " AND model_id = ?"
         params.append(model_id)
 
-    query += " ORDER BY prediction_date DESC"
+    query += " ORDER BY prediction_month DESC"
     return execute_query(query, tuple(params), fetchall=True, connection=connection)
 
 
-def get_predictions_for_jobs(
-    job_ids: list[str], model_id: str | None = None, connection: sqlite3.Connection = None
+def get_predictions(
+    job_ids: list[str], 
+    model_id: str | None = None, 
+    prediction_month: date | None = None,
+    connection: sqlite3.Connection = None
 ) -> list[dict]:
     """
     Extract prediction data for the given training jobs.
@@ -1444,6 +1457,7 @@ def get_predictions_for_jobs(
     Args:
         job_ids: List of training job IDs
         model_id: Optional model_id for filtering
+        prediction_month: Optional prediction month for filtering
         connection: Optional existing database connection
 
     Returns:
@@ -1467,6 +1481,10 @@ def get_predictions_for_jobs(
         base_query += " AND pr.model_id = ?"
         params_list.append(model_id)
 
+    if prediction_month:
+        base_query += " AND pr.prediction_month = ?"
+        params_list.append(prediction_month.isoformat() if isinstance(prediction_month, date) else prediction_month)
+
     prediction_results = execute_query(
         base_query, params=tuple(params_list), fetchall=True, connection=connection
     )
@@ -1482,6 +1500,7 @@ def get_predictions_for_jobs(
     predictions_query = f"""
         SELECT
             fp.result_id,
+            dmm.multiindex_id,
             dmm.barcode,
             dmm.artist,
             dmm.album,
@@ -1493,7 +1512,7 @@ def get_predictions_for_jobs(
             dmm.style,
             dmm.record_year,
             fp.model_id,
-            fp.prediction_date,
+            fp.prediction_month,
             fp.quantile_05,
             fp.quantile_25,
             fp.quantile_50,
@@ -1502,13 +1521,19 @@ def get_predictions_for_jobs(
         FROM fact_predictions fp
         JOIN dim_multiindex_mapping dmm ON fp.multiindex_id = dmm.multiindex_id
         WHERE fp.result_id IN ({result_ids_placeholder})
-        ORDER BY dmm.artist, dmm.album, fp.prediction_date
     """
 
     query_params = result_ids.copy()
+    
     if model_id:
         predictions_query += " AND fp.model_id = ?"
         query_params.append(model_id)
+
+    if prediction_month:
+        predictions_query += " AND fp.prediction_month = ?"
+        query_params.append(prediction_month.isoformat() if isinstance(prediction_month, date) else prediction_month)
+
+    predictions_query += " ORDER BY dmm.artist, dmm.album, fp.prediction_month"
 
     return execute_query(
         predictions_query, params=tuple(query_params), fetchall=True, connection=connection
@@ -1527,7 +1552,6 @@ def get_report_result(result_id: str, connection: sqlite3.Connection = None) -> 
 def create_processing_run(
     start_time: datetime,
     status: str,
-    cutoff_date: str,
     source_files: str,
     end_time: datetime = None,
     connection: sqlite3.Connection = None,
@@ -1538,7 +1562,6 @@ def create_processing_run(
     Args:
         start_time: Start time of processing
         status: Status of the run
-        cutoff_date: Date cutoff for data processing
         source_files: Comma-separated list of source files
         end_time: Optional end time of processing
         connection: Optional existing database connection to use
@@ -1547,14 +1570,13 @@ def create_processing_run(
         Generated run ID
     """
     query = """
-    INSERT INTO processing_runs (start_time, status, cutoff_date, source_files, end_time)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO processing_runs (start_time, status, source_files, end_time)
+    VALUES (?, ?, ?, ?)
     """
 
     params = (
         start_time.isoformat(),
         status,
-        cutoff_date,
         source_files,
         end_time.isoformat() if end_time else None,
     )
@@ -1808,8 +1830,8 @@ def insert_report_features(
         execute_many(
             """
             INSERT OR REPLACE INTO report_features (
-                multiindex_id, prediction_month, avg_sales_items, avg_sales_rub, lost_sales_rub
-            ) VALUES (?, ?, ?, ?, ?)
+                data_date, multiindex_id, availability, confidence, masked_mean_sales_items, masked_mean_sales_rub, lost_sales, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             features_data,
             connection=conn_to_use,
@@ -1821,74 +1843,99 @@ def insert_report_features(
 
 
 def get_report_features(
-    prediction_month: date,
-    model_id: str | None = None,
-    filters: dict[str, Any] | None = None,
+    multiidx_ids: list[int] | None = None,
+    prediction_month: date | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    feature_subset: list[str] | None = None,
     connection: sqlite3.Connection = None,
 ) -> list[dict]:
     """
-    Retrieves pre-calculated report features for a given prediction month,
-    with optional filters on multi-index attributes and model_id.
+    Retrieves a specific subset of report features and associated product
+    attributes, filtered by a specific month or a date range.
+
+    If `multiidx_ids` is provided, it filters for those specific IDs. Otherwise,
+    it fetches features for all available items within the date filter.
 
     Args:
-        prediction_month: The month for which to retrieve report features (YYYY-MM-DD).
-        model_id: Optional model ID to filter predictions.
-        filters: A dictionary of filters to apply on the multi-index attributes.
-                 Example: {"artist": "Artist Name", "style": "Rock"}
-        connection: Optional existing database connection.
+        multiidx_ids: Optional list of multiindex_ids to retrieve features for.
+        prediction_month: The specific month for which to retrieve features (YYYY-MM-DD).
+        start_date: The start of the date range (inclusive).
+        end_date: The end of the date range (inclusive).
+        feature_subset: Optional list of specific features to retrieve from report_features
+                        (e.g., ["avg_sales_items", "lost_sales_rub"]). If None, all are fetched.
+        connection: An active database connection.
 
     Returns:
-        A list of dictionaries, where each dictionary represents a row of report features.
+        A list of dictionaries, where each dictionary contains product attributes
+        and its requested features. Returns an empty list if no matching data is found.
+
+    Raises:
+        ValueError: If no date filter (prediction_month or start/end_date) is provided.
     """
-    params = []
+    if prediction_month:
+        start_date = prediction_month.replace(day=1) 
+        end_date =(prediction_month.replace(day=1) + pd.DateOffset(months=1) - pd.Timedelta(days=1)).date()
+    elif not (start_date and end_date):
+        raise ValueError("A date filter must be provided. Use 'prediction_month' or both 'start_date' and 'end_date'.")
 
-    # Base query with corrected column order
-    select_clause = """
-        SELECT
-            dmm.barcode, dmm.artist, dmm.album, dmm.cover_type, dmm.price_category,
-            dmm.release_type, dmm.recording_decade, dmm.release_decade, dmm.style, dmm.record_year,
-            rf.avg_sales_items, rf.avg_sales_rub, rf.lost_sales_rub,
-            fp.quantile_05, fp.quantile_25, fp.quantile_50, fp.quantile_75, fp.quantile_95
-        FROM report_features rf
-        JOIN dim_multiindex_mapping dmm ON rf.multiindex_id = dmm.multiindex_id
-    """
-
-    # Dynamically build the JOIN clause for fact_predictions
-    join_clause = """
-    LEFT JOIN fact_predictions fp ON rf.multiindex_id = fp.multiindex_id
-    LEFT JOIN prediction_results pr ON fp.result_id = pr.result_id
-    """
-
-    # Build WHERE clause
-    where_clauses = []
-    params.append(prediction_month.strftime("%Y-%m-%d"))
-    where_clauses.append("rf.prediction_month = ?")
-
-    if model_id:
-        params.append(model_id)
-        where_clauses.append("fp.model_id = ?")
-
-    if filters:
-        for key, value in filters.items():
-            if key in ["barcode", "artist", "album", "cover_type", "price_category", "release_type", "recording_decade", "release_decade", "style", "record_year"]:
-                where_clauses.append(f"dmm.{key} = ?")
-                params.append(value)
-
-    where_statement = ""
-    if where_clauses:
-        where_statement = " WHERE " + " AND ".join(where_clauses)
-
-    # Final query assembly
-    full_query = f"{select_clause} {join_clause} {where_statement} ORDER BY dmm.artist, dmm.album"
-
-    try:
-        results = execute_query(
-            query=full_query, params=tuple(params), fetchall=True, connection=connection
+    # Build the SELECT clause
+    select_parts = ["dmm.*", "rf.multiindex_id as rf_multiindex_id"]  # Alias to avoid collision
+    if feature_subset:
+        selected_features = list(
+            EXPECTED_REPORT_FEATURES_SET.intersection(feature_subset)
         )
-        return results or []
-    except DatabaseError as e:
-        logger.error(f"Failed to get report features for {prediction_month}: {e}")
-        raise
+    else:
+        selected_features = EXPECTED_REPORT_FEATURES
+    
+    for feature in selected_features:
+        select_parts.append(f"rf.{feature}")
+
+    select_clause = "SELECT " + ", ".join(select_parts)
+    from_clause = """
+    FROM report_features rf
+    JOIN dim_multiindex_mapping dmm ON rf.multiindex_id = dmm.multiindex_id
+    """
+
+    # Date filtering logic
+    where_clauses = []
+    params = []
+    if start_date:
+        where_clauses.append("rf.data_date >= ?")
+        params.append(start_date.strftime("%Y-%m-%d"))
+    if end_date:
+        where_clauses.append("rf.data_date <= ?")
+        params.append(end_date.strftime("%Y-%m-%d"))
+    # Handle multiidx_ids with batching if provided
+
+    if multiidx_ids:
+        # Use existing batching function for multiidx_ids filtering
+        where_clauses.append("rf.multiindex_id IN ({placeholders})")
+        query_template = f"{select_clause} {from_clause} WHERE {' AND '.join(where_clauses)}"
+
+        # Execute with batching using the existing function
+        return execute_query_with_batching(
+            query_template=query_template,
+            ids=multiidx_ids,
+            batch_size=get_batch_size(),
+            connection=connection,
+            fetchall=True,
+            placeholder_name="placeholders"
+        )
+    else:
+        # No multiidx_ids, single query for all items in the date range
+        if where_clauses:
+            query_template = f"{select_clause} {from_clause} WHERE {' AND '.join(where_clauses)}"
+        else:
+            query_template = f"{select_clause} {from_clause}"
+
+        try:
+            results = execute_query(query=query_template, params=tuple(params), fetchall=True, connection=connection)
+            return results or []
+        except DatabaseError as e:
+            logger.error(f"Failed to get report features: {e}")
+            raise
+
 
 def delete_configs_by_ids(
     config_ids: list[str], connection: sqlite3.Connection = None
@@ -2436,26 +2483,36 @@ def insert_features_batch(table: str, params_list: list[tuple], connection: sqli
     _insert_operation(connection)
 
 
-def get_features_by_date_range(table: str, start_date: str | None = None, end_date: str | None = None, connection: sqlite3.Connection = None) -> list[dict]:
-    """Get features from a table within a date range."""
+def get_features_by_date_range(
+    table: str, start_date: str | None, end_date: str | None, connection: sqlite3.Connection = None
+) -> list[dict]:
+    """Generic function to get features from a table by date range."""
+
     def _get_operation(conn_to_use: sqlite3.Connection) -> list[dict]:
+        # Determine the correct date column based on the table
+        date_column = "data_date"
+
         query = f"SELECT * FROM {table}"
         params = []
+        where_clauses = []
 
-        if start_date or end_date:
-            conditions = []
-            if start_date:
-                conditions.append("data_date >= ?")
-                params.append(start_date)
-            if end_date:
-                conditions.append("data_date <= ?")
-                params.append(end_date)
+        if start_date:
+            where_clauses.append(f"{date_column} >= ?")
+            params.append(start_date)
+        if end_date:
+            where_clauses.append(f"{date_column} <= ?")
+            params.append(end_date)
 
-            if conditions:
-                query += " WHERE " + " AND ".join(conditions)
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
 
-        query += " ORDER BY data_date"
-        return execute_query(query, params=tuple(params), connection=conn_to_use, fetchall=True) or []
+        query += f" ORDER BY {date_column}"
+
+        try:
+            return execute_query(query=query, params=tuple(params), connection=conn_to_use, fetchall=True) or []
+        except DatabaseError as e:
+            logger.error(f"Failed to get features from {table}: {e}")
+            raise
 
     return _get_operation(connection)
 
@@ -2506,8 +2563,8 @@ def adjust_dataset_boundaries(
         last_date_in_data = date.fromisoformat(result["last_date"])
 
         # Check if the month is complete
-        last_day_of_month = (last_date_in_data.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-        is_month_complete = last_date_in_data == last_day_of_month
+        next_day = last_date_in_data + timedelta(days=1)
+        is_month_complete = last_date_in_data.month != next_day.month
 
         if is_month_complete:
             # Month is complete — return the original end_date
@@ -2549,3 +2606,83 @@ def get_multiindex_mapping_by_ids(
     """
 
     return execute_query_with_batching(query_template, multiindex_ids, connection=connection)
+
+
+def get_job_params(
+    job_id: str, 
+    connection: sqlite3.Connection = None, 
+    param_name: str = None
+) -> dict[str, Any]:
+    """
+    Retrieves and parses job parameters from the database.
+    
+    Args:
+        job_id: The job ID to retrieve parameters for
+        connection: Optional existing database connection to use
+        param_name: Optional specific parameter name to extract (e.g., 'prediction_month')
+        
+    Returns:
+        Dictionary of job parameters if param_name is None, or the specific parameter value
+    """
+    try:
+        job_details = get_job(job_id, connection=connection)
+        if not job_details or not job_details.get("parameters"):
+            logger.warning(f"No parameters found for job {job_id}")
+            return {} if param_name is None else None
+            
+        params_str = job_details["parameters"]
+        
+        # Parse JSON string to dictionary
+        if isinstance(params_str, str):
+            try:
+                params = json.loads(params_str)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Invalid JSON in job parameters for job {job_id}: {params_str}, error: {e}")
+                return {} if param_name is None else None
+        else:
+            params = params_str
+            
+        if not isinstance(params, dict):
+            logger.warning(f"Job parameters for job {job_id} is not a dictionary: {type(params)}")
+            return {} if param_name is None else None
+            
+        # Return specific parameter if requested
+        if param_name is not None:
+            return params.get(param_name)
+            
+        return params
+        
+    except Exception as e:
+        logger.warning(f"Could not retrieve parameters for job {job_id}: {e}")
+        return {} if param_name is None else None
+
+
+def get_job_prediction_month(job_id: str, connection: sqlite3.Connection = None) -> date:
+    """
+    Retrieves and parses the prediction_month parameter from job parameters.
+    
+    Args:
+        job_id: The job ID to retrieve prediction_month for
+        connection: Optional existing database connection to use
+        
+    Returns:
+        date object representing the prediction month, or today's date as fallback
+    """
+    prediction_month = get_job_params(job_id, connection=connection, param_name="prediction_month")
+    
+    if prediction_month is None:
+        logger.warning(f"No prediction_month found for job {job_id}, using today's date as fallback")
+        return date.today()
+    
+    # Convert string to date object if needed
+    if isinstance(prediction_month, str):
+        try:
+            return date.fromisoformat(prediction_month)
+        except ValueError as e:
+            logger.warning(f"Invalid prediction_month format for job {job_id}: {prediction_month}, error: {e}")
+            return date.today()
+    elif isinstance(prediction_month, date):
+        return prediction_month
+    else:
+        logger.warning(f"Unexpected prediction_month type for job {job_id}: {type(prediction_month)}")
+        return date.today()

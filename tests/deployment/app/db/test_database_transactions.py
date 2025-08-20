@@ -484,7 +484,7 @@ def test_connection_isolation(isolated_db_session):
         conn1.execute("CREATE TABLE iso_test (id int)")
         conn1.execute("INSERT INTO iso_test VALUES (1)")
 
-        # conn2 should not see the uncommitted change from conn1
+        # conn2 should not see the uncommitted movement from conn1
         res2 = conn2.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='iso_test'"
         ).fetchone()
@@ -493,7 +493,7 @@ def test_connection_isolation(isolated_db_session):
         # Commit on conn1
         conn1.commit()
 
-        # Now conn2 should see the change
+        # Now conn2 should see the movement
         res2_after_commit = conn2.execute("SELECT * FROM iso_test").fetchone()
         assert res2_after_commit is not None
 

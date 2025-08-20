@@ -40,9 +40,8 @@ class TestResultsApi:
         in_memory_db.create_model_record(model_id, job_id, "/fake/path/model.onnx", datetime.now())
 
         metrics = {"acc": 0.9, "val_loss": 0.1}
-        config_data = {"test": "config"}
         result_id = in_memory_db.create_training_result(
-            job_id, model_id, config_id, metrics, config_data, 100
+            job_id, model_id, config_id, metrics, 100
         )
 
         # Act
@@ -91,9 +90,8 @@ class TestResultsApi:
         in_memory_db.create_model_record(model_id, job_id, "/fake/path/model.onnx", datetime.now())
 
         metrics = {"acc": 0.9, "val_loss": 0.1}
-        config_data = {"test": "config"}
         result_id = in_memory_db.create_training_result(
-            job_id, model_id, config_id, metrics, config_data, 100
+            job_id, model_id, config_id, metrics, 100
         )
 
         # Act

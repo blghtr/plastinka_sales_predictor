@@ -144,7 +144,7 @@ class TestConfigEndpoints:
             "lags": 12
         }
         config_id_1 = in_memory_db.create_or_get_config(config_data_1)
-        in_memory_db.create_training_result(job_id=job_id, model_id=model_id, config_id=config_id_1, metrics={"val_MIWS_MIC_Ratio": 0.8}, config=config_data_1, duration=100)
+        in_memory_db.create_training_result(job_id=job_id, model_id=model_id, config_id=config_id_1, metrics={"val_MIWS_MIC_Ratio": 0.8}, duration=100)
 
         config_data_2 = {
             "nn_model_config": {
@@ -167,7 +167,7 @@ class TestConfigEndpoints:
             "lags": 12
         }
         config_id_2 = in_memory_db.create_or_get_config(config_data_2)
-        in_memory_db.create_training_result(job_id=job_id, model_id=model_id, config_id=config_id_2, metrics={"val_MIWS_MIC_Ratio": 0.9}, config=config_data_2, duration=100)
+        in_memory_db.create_training_result(job_id=job_id, model_id=model_id, config_id=config_id_2, metrics={"val_MIWS_MIC_Ratio": 0.9}, duration=100)
 
         # Act
         response = api_client.get("/api/v1/models-configs/configs/best", headers={auth_header_name: auth_token})
@@ -412,11 +412,11 @@ class TestModelEndpoints:
         # Create models and training results with different metrics
         model_data_1 = {"model_id": "model1", "model_path": "/fake/path1"}
         in_memory_db.create_model_record(model_id=model_data_1["model_id"], job_id=job_id, model_path=model_data_1["model_path"], created_at=datetime.now())
-        in_memory_db.create_training_result(job_id=job_id, model_id=model_data_1["model_id"], config_id=config_id, metrics={"val_MIWS_MIC_Ratio": 0.8}, config={}, duration=100)
+        in_memory_db.create_training_result(job_id=job_id, model_id=model_data_1["model_id"], config_id=config_id, metrics={"val_MIWS_MIC_Ratio": 0.8}, duration=100)
 
         model_data_2 = {"model_id": "model2", "model_path": "/fake/path2"}
         in_memory_db.create_model_record(model_id=model_data_2["model_id"], job_id=job_id, model_path=model_data_2["model_path"], created_at=datetime.now())
-        in_memory_db.create_training_result(job_id=job_id, model_id=model_data_2["model_id"], config_id=config_id, metrics={"val_MIWS_MIC_Ratio": 0.9}, config={}, duration=100)
+        in_memory_db.create_training_result(job_id=job_id, model_id=model_data_2["model_id"], config_id=config_id, metrics={"val_MIWS_MIC_Ratio": 0.9}, duration=100)
 
         # Act
         response = api_client.get("/api/v1/models-configs/models/best", headers={auth_header_name: auth_token})

@@ -306,7 +306,7 @@ class TestDataRetention:
         CREATE TABLE IF NOT EXISTS fact_predictions (
             prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
             multiindex_id INTEGER NOT NULL,
-            prediction_date TIMESTAMP NOT NULL,
+            prediction_month TIMESTAMP NOT NULL,
             result_id TEXT NOT NULL,
             model_id TEXT NOT NULL,
             quantile_05 DECIMAL(10,2) NOT NULL,
@@ -319,8 +319,6 @@ class TestDataRetention:
         # Old predictions (older than 30 days)
         old_date_1 = (now - timedelta(days=45)).strftime("%Y-%m-%d")
         old_date_2 = (now - timedelta(days=40)).strftime("%Y-%m-%d")
-        print(f"Debug: Creating old prediction 1 with date: {old_date_1}")
-        print(f"Debug: Creating old prediction 2 with date: {old_date_2}")
 
         old_predictions = [
             (
@@ -378,39 +376,17 @@ class TestDataRetention:
         all_predictions = old_predictions + recent_predictions
         conn.executemany(
             """INSERT INTO fact_predictions
-               (multiindex_id, prediction_date, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
+               (multiindex_id, prediction_month, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             all_predictions,
         )
         conn.commit()
-
-        # Test that the DAL can see the data
-        test_result = dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_predictions")
-        print(f"DEBUG: DAL test query result after data insertion: {test_result}")
-
-        # Test direct connection query
-        direct_result = conn.execute("SELECT COUNT(*) as count FROM fact_predictions").fetchone()
-        print(f"DEBUG: Direct connection query result: {direct_result}")
-
-        # Check if DAL connection is the same as test connection
-        print(f"DEBUG: DAL connection: {dal._connection}")
-        print(f"DEBUG: Test connection: {conn}")
-        print(f"DEBUG: Connections are the same: {dal._connection is conn}")
 
         # Run cleanup
         deleted_count = cleanup_old_predictions(dal=dal)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) as count FROM fact_predictions")
         final_count = cursor.fetchone()["count"]
-
-        # Debug: Check what cutoff date was used
-        cursor.execute("SELECT prediction_date FROM fact_predictions ORDER BY prediction_date")
-        dates = cursor.fetchall()
-        print(f"Debug: All prediction dates: {[d['prediction_date'] for d in dates]}")
-        print(f"Debug: Current date: {datetime.now().strftime('%Y-%m-%d')}")
-        print(f"Debug: Cutoff date (30 days ago): {(datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')}")
-        print(f"Debug: Deleted count: {deleted_count}")
-        print(f"Debug: Final count: {final_count}")
 
         assert deleted_count == 2  # 2 old predictions should be deleted
         assert final_count == 2  # 2 recent predictions should remain
@@ -444,7 +420,7 @@ class TestDataRetention:
         mock_cleanup_historical.return_value = {
             "sales": 10,
             "stock": 8,
-            "stock_changes": 3,
+            "stock_movement": 3,
             "prices": 2,
         }
 

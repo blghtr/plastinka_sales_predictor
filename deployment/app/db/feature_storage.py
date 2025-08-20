@@ -1,11 +1,12 @@
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from deployment.app.db.data_access_layer import DataAccessLayer
+from deployment.app.db.database import EXPECTED_REPORT_FEATURES, EXPECTED_REPORT_FEATURES_SET
 from deployment.app.db.schema import MULTIINDEX_NAMES
 
 logger = logging.getLogger(__name__)
@@ -30,12 +31,11 @@ class SQLFeatureStore:
         # Connection is managed by the DAL, so no need to close it here.
         pass
 
-    def create_run(self, cutoff_date: str, source_files: str) -> int:
+    def create_run(self, source_files: str) -> int:
         """Create a new processing run and store its ID using the DAL."""
         self.run_id = self._dal.create_processing_run(
             start_time=datetime.now(),
             status="running",
-            cutoff_date=cutoff_date,
             source_files=source_files,
         )
         return self.run_id
@@ -50,9 +50,12 @@ class SQLFeatureStore:
             )
 
     def save_features(
-        self, features: dict[str, pd.DataFrame], append: bool = False
+        self, 
+        features: dict[str, pd.DataFrame], 
+        append: bool = True
     ) -> None:
         """Save all feature DataFrames to SQL database via the DAL."""
+        # Сохраняем  фичи
         for feature_type, df in features.items():
             if hasattr(df, "shape"):
                 self._save_feature(feature_type, df, append)
@@ -63,79 +66,204 @@ class SQLFeatureStore:
                 status="features_saved",
             )
 
+    def _save_report_features(self, df: pd.DataFrame) -> None:
+        """Сохраняет специальный датафрейм с фичами для отчетов."""
+
+        # 1. Сбрасываем индекс, чтобы получить доступ к его уровням как к колонкам
+        # Гарантируем, что нет дубликатов в индексе
+        df_reset = (
+            df[~df.index.duplicated(keep='first')]
+            .reset_index()
+        )
+
+        # 2. Проверяем наличие всех необходимых колонок
+        id_map_cols = set(MULTIINDEX_NAMES)
+        expected_cols = set(['_date']) | id_map_cols
+        missing_cols = expected_cols - set(df_reset.columns)
+        if missing_cols:
+            logger.error(
+                f"Missing columns in report_features: {missing_cols}"
+            )
+            raise ValueError(
+                f"Missing columns in report_features: {missing_cols}"
+            )
+        
+        # 3. Добавляем отсутствующие фичи для отчета
+        missing_report_features = EXPECTED_REPORT_FEATURES_SET.difference(
+            df_reset.columns
+        )
+        df_reset = df_reset.assign(**{
+            feature: 0.0 for feature in missing_report_features
+        })
+        expected_cols.update(EXPECTED_REPORT_FEATURES_SET)
+
+        # 4. Проверяем, что нет лишних колонок
+        forbidden_keys = set(df_reset.columns) - expected_cols
+        if forbidden_keys:
+            logger.warning(
+                "Forbidden columns in report_features will be skipped: "
+                f"{forbidden_keys}"
+            )
+        df_reset = df_reset.loc[:, list(expected_cols)]
+
+        # 5. Проверяем, что нет пустых значений
+        df_reset[EXPECTED_REPORT_FEATURES] = df_reset[
+                EXPECTED_REPORT_FEATURES
+            ].fillna(0.0)
+
+        # 6. Получаем ID для всех мульти-индексов за один раз
+        expected_features = expected_cols - id_map_cols
+        features_data = df_reset[list(expected_features)]
+        index_elems = df_reset[MULTIINDEX_NAMES]
+        unique_tuples = (
+            index_elems
+            .itertuples(index=False, name=None)
+        )
+        id_map = self._dal.get_or_create_multiindex_ids_batch(list(unique_tuples))
+        features_data['multiindex_id'] = (
+            index_elems
+            .agg(tuple, axis=1)
+            .map(id_map)
+        )
+        features_data['data_date'] = features_data['_date'].dt.strftime('%Y-%m-%d')
+        features_data['created_at'] = datetime.now().isoformat()
+        features_data = features_data.drop(columns=['_date'])
+
+        # 4. Формируем данные для вставки
+        params_list = list(
+            features_data[
+                ['data_date', 'multiindex_id'] + 
+                EXPECTED_REPORT_FEATURES + 
+                ['created_at']
+            ]
+            .astype(object)
+            .itertuples(index=False, name=None)
+        )
+
+        self._dal.insert_report_features(params_list)
+        logger.info(f"Сохранено {len(params_list)} записей в таблицу report_features.")
+
+
     def _get_feature_config(self):
         """Return standardized configuration for different feature types."""
         return {
-            "sales": {"table": "fact_sales", "is_date_in_index": True},
-            "stock": {"table": "fact_stock", "is_date_in_index": True},
-            "change": {"table": "fact_stock_changes", "is_date_in_index": True},
-            "prices": {"table": "fact_prices", "is_date_in_index": True},
+            "sales": {"table": "fact_sales", "is_time_agnostic": False},
+            "movement": {"table": "fact_stock_movement", "is_time_agnostic": False},
+            # --- Новая конфигурация для фичей отчета ---
+            "report_features": {
+                "table": "report_features",
+                "is_time_agnostic": False,
+                "value_columns": EXPECTED_REPORT_FEATURES,
+            },
         }
 
-    def _get_or_create_multiindex_ids_batch(self, unique_tuples: list[tuple]) -> dict[tuple, int]:
-        """Get or create multi-index IDs in a batch using the DAL."""
-        id_map = {}
-        for t in unique_tuples:
-            # Assuming MULTIINDEX_NAMES order matches the tuple order
-            params = dict(zip(MULTIINDEX_NAMES, t, strict=False))
-            multiindex_id = self._dal.get_or_create_multiindex_id(**params)
-            id_map[t] = multiindex_id
-        return id_map
-
     def _save_feature(
-        self, feature_type: str, df: pd.DataFrame, append: bool = False
+        self, feature_type: str, df: pd.DataFrame | pd.Series, append: bool = True
     ) -> None:
         """Save a feature DataFrame to the appropriate SQL table using the DAL."""
+        expected_cols = [
+            'multiindex_id',
+            'data_date',
+            'value',
+        ]
         config = self._get_feature_config().get(feature_type)
         if not config:
             logger.warning(f"Unknown feature type '{feature_type}'")
             return
-
+        
         table = config["table"]
+        is_time_agnostic = config["is_time_agnostic"]
 
-        if not isinstance(df.index, pd.DatetimeIndex):
-            logger.warning(f"Unexpected DataFrame format for {feature_type}: expected DatetimeIndex in index")
+        # TODO: подумать, как реализовать безопаснее
+        if not append:
+            self._dal.delete_features_by_table(table)
+
+        if feature_type == "report_features":
+            self._save_report_features(df)
             return
+        
+        if isinstance(df, pd.Series):
+            df = df.to_frame(name='value')
 
-        unique_tuples = [tuple(col) for col in df.columns]
-        id_map = self._get_or_create_multiindex_ids_batch(unique_tuples)
+        if isinstance(df, pd.DataFrame):
+            # Check for empty DataFrame first
+            if df.empty:
+                logger.warning(f"Empty DataFrame provided for {feature_type}, skipping save")
+                return
+                
+            if not isinstance(df.index, pd.MultiIndex):
+                logger.error(
+                    f"Unexpected DataFrame format for {feature_type}: "
+                    f"expected MultiIndex in index, got {type(df.index)}"
+                )
+                raise ValueError(f"Unexpected DataFrame format for {feature_type}: expected MultiIndex in index, got {type(df.index)}")
+            
+            # Check if DataFrame is empty after dropna
+            df = df.dropna()
+            if df.empty:
+                logger.warning(f"Empty DataFrame after dropna for {feature_type}, skipping save")
+                return
+                
+            df = df.loc[~df.index.duplicated(keep='first')]
+            unique_tuples = df.index.to_list()
+            id_map = self._dal.get_or_create_multiindex_ids_batch(unique_tuples)
+            multiindex_id = (
+                df
+                .index
+                .to_frame()
+                .agg(tuple, axis=1)
+                .map(id_map)
+                .astype(int)
+                .values
+            )
 
-        params_list = []
-        for date_idx, row in df.iterrows():
-            date_str = self._convert_to_date_str(date_idx)
-            for col_idx, value in row.items():
-                if pd.notna(value):
-                    multiindex_id = id_map.get(tuple(col_idx))
-                    if multiindex_id:
-                        params_list.append((multiindex_id, date_str, value))
+            if not isinstance(df.columns, pd.DatetimeIndex) and not is_time_agnostic:
+                logger.warning(
+                    f"Unexpected DataFrame format for {feature_type}: "
+                    f"expected DatetimeIndex in columns, got {type(df.columns)}"
+                )
+                raise ValueError(f"Unexpected DataFrame format for {feature_type}: expected DatetimeIndex in columns, got {type(df.columns)}")
+            
+            df = df.reset_index(drop=True)
+            if is_time_agnostic:
+                # value
+                if len(df.columns) != 1:
+                    msg = (
+                        f"Unexpected DataFrame format for {feature_type}: "
+                        f"expected single feature column, got {len(df.columns)}"
+                    )
+                    logger.error(msg)
+                    raise ValueError(msg)
 
-        if not params_list:
-            logger.warning(f"No valid data to save for feature type '{feature_type}'")
-            return
+                df = df.rename(columns={df.columns[0]: 'value'})
+                df['data_date'] = pd.Timestamp('today').normalize()
+                df['multiindex_id'] = multiindex_id
 
-        if feature_type == "stock":
-            query = f"INSERT OR IGNORE INTO {table} (multiindex_id, data_date, value) VALUES (?, ?, ?)"
-            self._dal.execute_many_with_batching(query, params_list)
-            logger.info(f"Saved/ignored {len(params_list)} records to {table} (non-overwrite mode)")
-        else:
-            if not append:
-                self._dal.delete_features_by_table(table)
+            else:
+                df = (
+                    df
+                    .assign(multiindex_id=multiindex_id)
+                    .melt(
+                        id_vars=['multiindex_id'],
+                        var_name="data_date",
+                        value_name="value"
+                    )
+                )
+                
+            df['data_date'] = pd.to_datetime(df['data_date'], errors='coerce').dt.strftime('%Y-%m-%d')
+            df = df.loc[df.value.ne(0.0)]
 
-            self._dal.insert_features_batch(table, params_list)
-            logger.info(f"Saved {len(params_list)} records to {table}")
-
-    def _convert_to_date_str(self, date_value: Any) -> str:
-        """Convert various date formats to a standard date string."""
-        if hasattr(date_value, "strftime"):
-            return date_value.strftime("%Y-%m-%d")
-        elif isinstance(date_value, str):
-            try:
-                parsed_date = pd.to_datetime(date_value)
-                return parsed_date.strftime("%Y-%m-%d")
-            except (ValueError, TypeError):
-                return str(date_value)
-        else:
-            return str(date_value)
+            if not df.empty:
+                params_list = list(
+                    df[expected_cols]
+                    .astype(object)
+                    .itertuples(index=False, name=None)
+                )
+            else:
+                logger.warning(f"No data to save for {feature_type}")
+                params_list = []
+        self._dal.insert_features_batch(table, params_list)
+        logger.info(f"Saved {len(params_list)} records to {table}")
 
     def _convert_to_int(self, value: Any, default: int = 0) -> int:
         """Safely convert any value to integer with proper handling of np.float64."""
@@ -189,6 +317,44 @@ class SQLFeatureStore:
                 features[feature_type] = df
         return features
 
+    def load_report_features(
+        self,
+        multiidx_ids: list[int] | None = None,
+        prediction_month: date | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        feature_subset: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """
+        Load report features from database and convert to DataFrame format.
+        
+        Args:
+            start_date: Start date for filtering (optional)
+            end_date: End date for filtering (optional)
+            prediction_month: Specific prediction month (optional)
+            
+        Returns:
+            DataFrame with report features in MultiIndex format
+        """
+        try:
+            report_data = self._dal.get_report_features(
+                prediction_month=prediction_month,
+                multiidx_ids=multiidx_ids,
+                start_date=start_date,
+                end_date=end_date,
+                feature_subset=feature_subset,
+            )
+
+            # Convert to DataFrame format
+            df = pd.DataFrame(report_data)
+            
+            logger.info(f"Loaded {len(df)} report features records")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error loading report features: {e}")
+            return pd.DataFrame()
+
     def _build_multiindex_from_mapping(
         self, multiindex_ids: list[int]
     ) -> tuple[pd.MultiIndex, list[bool]]:
@@ -241,7 +407,10 @@ class SQLFeatureStore:
             return None
 
         table = config["table"]
-
+        is_time_agnostic = config["is_time_agnostic"]
+        if is_time_agnostic:
+            start_date = None
+            end_date = None
         data = self._dal.get_features_by_date_range(table, start_date, end_date)
 
         if not data:
@@ -289,10 +458,10 @@ class FeatureStoreFactory:
 
 def save_features(
     features: dict[str, pd.DataFrame],
-    cutoff_date: str,
     source_files: str,
     store_type: str = "sql",
     dal: DataAccessLayer = None,
+    append: bool = True,
     **kwargs,
 ) -> int:
     """Helper function to save features using a specific store type, requiring a DAL instance."""
@@ -302,8 +471,8 @@ def save_features(
     # The DAL now manages transactions, so we don't need a separate db_transaction context.
     # We assume the DAL is configured with a connection that can handle transactions.
     store = FeatureStoreFactory.get_store(store_type=store_type, dal=dal, **kwargs)
-    run_id = store.create_run(cutoff_date, source_files)
-    store.save_features(features)
+    run_id = store.create_run(source_files)
+    store.save_features(features, append=append)
     store.complete_run()
     return run_id
 
@@ -325,4 +494,29 @@ def load_features(
         start_date=start_date, end_date=end_date, feature_types=feature_types
     )
     return features
+
+
+def load_report_features(
+    store_type: str = "sql",
+    multiidx_ids: list[int] | None = None,
+    prediction_month: date | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    feature_subset: list[str] | None = None,
+    dal: DataAccessLayer = None,
+    **kwargs,
+) -> pd.DataFrame:
+    """Helper function to load report features, requiring a DAL instance."""
+    if not dal:
+        raise ValueError("A DataAccessLayer instance must be provided.")
+
+    store = FeatureStoreFactory.get_store(store_type=store_type, dal=dal, **kwargs)
+    return store.load_report_features(
+        prediction_month=prediction_month,
+        multiidx_ids=multiidx_ids,
+        start_date=start_date,
+        end_date=end_date,
+        feature_subset=feature_subset,
+    )
+
 

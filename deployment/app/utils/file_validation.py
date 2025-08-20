@@ -30,6 +30,8 @@ VALID_CSV_CONTENT_TYPES = [
     "application/csv",
     "text/plain",  # Sometimes CSV files get this generic type
     "application/octet-stream",  # Generic type fallback
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ]
 
 

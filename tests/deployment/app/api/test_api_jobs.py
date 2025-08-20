@@ -131,13 +131,11 @@ class TestDataUploadEndpoint:
                 ("sales1.xlsx", BytesIO(sales_content1), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
             ),
         ]
-        data = {"cutoff_date": "30.09.2022"}
 
         # Act
         response = api_client.post(
             "/api/v1/jobs/data-upload",
             files=files,
-            data=data,
             headers={"X-API-Key": TEST_X_API_KEY},
         )
 
@@ -172,13 +170,11 @@ class TestDataUploadEndpoint:
                 ("sales.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
             ),
         ]
-        data = {"cutoff_date": "30-09-2022"}
 
         # Act
         response = api_client.post(
             "/api/v1/jobs/data-upload",
             files=files,
-            data=data,
             headers={"X-API-Key": TEST_X_API_KEY},
         )
 
@@ -446,7 +442,6 @@ class TestJobStatusEndpoint:
             model_id=model_id,
             config_id=config_id,
             metrics={"accuracy": 0.95},
-            config={},
             duration=120
         )
 
@@ -623,13 +618,11 @@ class TestAuthenticationScenarios:
                 ("sales1.xlsx", BytesIO(sales_content1), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
             ),
         ]
-        data = {"cutoff_date": "30.09.2022"}
 
         # Act
         response = api_client.post(
             "/api/v1/jobs/data-upload",
             files=files,
-            data=data,
             headers={auth_header_name: auth_token},
         )
 
@@ -652,7 +645,6 @@ class TestAuthenticationScenarios:
         response = api_client.post(
             "/api/v1/jobs/data-upload",
             files={"stock_file": ("f.csv", b"c")},
-            data={"cutoff_date": "30.09.2022"},
         )
 
         # Assert
@@ -668,7 +660,6 @@ class TestAuthenticationScenarios:
         response = api_client.post(
             "/api/v1/jobs/data-upload",
             files={"stock_file": ("f.csv", b"c")},
-            data={"cutoff_date": "30.09.2022"},
             headers={auth_header_name: auth_token},
         )
 
@@ -687,7 +678,6 @@ class TestAuthenticationScenarios:
         response = api_client.post(
             "/api/v1/jobs/data-upload",
             files={"stock_file": ("f.csv", b"c")},
-            data={"cutoff_date": "30.09.2022"},
             headers={"X-API-Key": "any_key"},
         )
 

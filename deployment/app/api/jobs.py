@@ -129,15 +129,11 @@ async def create_data_upload_job(
 ):
     """
     Accepts stock and sales data files, validates them, and queues a background job
-    to process the data and store it in the database. The `cutoff_date` determines
-    the time boundary for the data to be considered.
+    to process the data and store it in the database.
     """
     job_id = None
     temp_job_dir = None
     try:
-        # Validate cutoff date
-        cutoff_date = params.cutoff_date # Access cutoff_date from the Pydantic model
-
         # Validate stock file format and size
         await validate_data_file_upload(stock_file)
 
@@ -175,7 +171,7 @@ async def create_data_upload_job(
             parameters={
                 "stock_file": stock_file.filename,
                 "sales_files": [f.filename for f in sales_files],
-                "cutoff_date": cutoff_date,
+                "overwrite": params.overwrite
             },
         )
 
@@ -205,7 +201,6 @@ async def create_data_upload_job(
             job_id=job_id,
             stock_file_path=str(saved_stock_path),
             sales_files_paths=saved_sales_paths,
-            cutoff_date=cutoff_date,
             temp_dir_path=str(temp_job_dir),  # Передаем путь для очистки
             dal=dal, # Передаем dal
         )
@@ -681,7 +676,7 @@ async def get_job_status(
                 if prediction_result:
                     result = {
                         "model_id": prediction_result["model_id"],
-                        "prediction_date": prediction_result["prediction_date"],
+                        "prediction_month": prediction_result["prediction_month"],
                         "output_path": prediction_result["output_path"],
                         "summary_metrics": json.loads(
                             prediction_result["summary_metrics"]

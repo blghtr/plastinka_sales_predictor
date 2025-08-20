@@ -25,21 +25,10 @@ CREATE TABLE IF NOT EXISTS dim_multiindex_mapping (
 );
 
 -- Fact Tables (with standardized column names)
-CREATE TABLE IF NOT EXISTS fact_stock (
-    multiindex_id INTEGER,
-    data_date DATE,
-    value REAL,
-    PRIMARY KEY (multiindex_id, data_date),
-    FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
-);
 
-CREATE TABLE IF NOT EXISTS fact_prices (
-    multiindex_id INTEGER,
-    data_date DATE,
-    value REAL,
-    PRIMARY KEY (multiindex_id),
-    FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
-);
+-- fact_stock is obsolete and now removed from the code : stock now not used
+
+-- fact_prices is obsolete and now removed from the code : prices now implicitly stored as part of multiindex_id
 
 CREATE TABLE IF NOT EXISTS fact_sales (
     multiindex_id INTEGER,
@@ -49,7 +38,7 @@ CREATE TABLE IF NOT EXISTS fact_sales (
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
-CREATE TABLE IF NOT EXISTS fact_stock_changes (
+CREATE TABLE IF NOT EXISTS fact_stock_movement (
     multiindex_id INTEGER,
     data_date DATE,
     value REAL,
@@ -61,7 +50,7 @@ CREATE TABLE IF NOT EXISTS fact_stock_changes (
 CREATE TABLE IF NOT EXISTS fact_predictions (
     prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
     multiindex_id INTEGER NOT NULL,
-    prediction_date TIMESTAMP NOT NULL,
+    prediction_month DATE NOT NULL,
     result_id TEXT NOT NULL,
     model_id TEXT NOT NULL,
     quantile_05 DECIMAL(10,2) NOT NULL,
@@ -73,7 +62,7 @@ CREATE TABLE IF NOT EXISTS fact_predictions (
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id),
     FOREIGN KEY (model_id) REFERENCES models(model_id),
     FOREIGN KEY (result_id) REFERENCES prediction_results(result_id),
-    UNIQUE(multiindex_id, prediction_date, model_id)
+    UNIQUE(multiindex_id, prediction_month, model_id)
 );
 
 -- Utility Tables
@@ -82,7 +71,6 @@ CREATE TABLE IF NOT EXISTS processing_runs (
     start_time TIMESTAMP,
     end_time TIMESTAMP,
     status TEXT,
-    cutoff_date DATE,
     source_files TEXT
 );
 
@@ -192,13 +180,15 @@ CREATE TABLE IF NOT EXISTS tuning_results (
 
 
 CREATE TABLE IF NOT EXISTS report_features (
-    prediction_month DATE NOT NULL,
+    data_date DATE NOT NULL,
     multiindex_id INTEGER NOT NULL,
-    avg_sales_items REAL,
-    avg_sales_rub REAL,
-    lost_sales_rub REAL,
+    availability REAL,
+    confidence REAL,
+    masked_mean_sales_items REAL,
+    masked_mean_sales_rub REAL,
+    lost_sales REAL,
     created_at TIMESTAMP NOT NULL,
-    PRIMARY KEY (prediction_month, multiindex_id),
+    PRIMARY KEY (data_date, multiindex_id),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
@@ -220,18 +210,17 @@ CREATE INDEX IF NOT EXISTS idx_multiindex_barcode ON dim_multiindex_mapping(barc
 CREATE INDEX IF NOT EXISTS idx_multiindex_artist_album ON dim_multiindex_mapping(artist, album);
 CREATE INDEX IF NOT EXISTS idx_multiindex_style ON dim_multiindex_mapping(style);
 
-CREATE INDEX IF NOT EXISTS idx_stock_date ON fact_stock(data_date);
 CREATE INDEX IF NOT EXISTS idx_sales_date ON fact_sales(data_date);
-CREATE INDEX IF NOT EXISTS idx_changes_date ON fact_stock_changes(data_date);
+CREATE INDEX IF NOT EXISTS idx_movement_date ON fact_stock_movement(data_date);
 
 -- Indexes for predictions
 CREATE INDEX IF NOT EXISTS idx_predictions_multiindex ON fact_predictions(multiindex_id);
-CREATE INDEX IF NOT EXISTS idx_predictions_date ON fact_predictions(prediction_date);
+CREATE INDEX IF NOT EXISTS idx_predictions_date ON fact_predictions(prediction_month);
 CREATE INDEX IF NOT EXISTS idx_predictions_result ON fact_predictions(result_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_model ON fact_predictions(model_id);
-CREATE INDEX IF NOT EXISTS idx_predictions_date_model ON fact_predictions(prediction_date, model_id);
-CREATE INDEX IF NOT EXISTS idx_predictions_date_multiindex ON fact_predictions(prediction_date, multiindex_id);
-CREATE INDEX IF NOT EXISTS idx_predictions_date_multiindex_model ON fact_predictions(prediction_date, multiindex_id, model_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_date_model ON fact_predictions(prediction_month, model_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_date_multiindex ON fact_predictions(prediction_month, multiindex_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_date_multiindex_model ON fact_predictions(prediction_month, multiindex_id, model_id);
 
 -- Index for prediction_results
 CREATE INDEX IF NOT EXISTS idx_prediction_results_month ON prediction_results(prediction_month);

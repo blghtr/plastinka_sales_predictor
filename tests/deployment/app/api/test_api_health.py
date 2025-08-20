@@ -452,8 +452,8 @@ class TestComponentHealthChecks:
         # Mock execute_query_with_batching to return all required tables
         required_tables = [
             "jobs", "models", "configs", "training_results", "prediction_results",
-            "job_status_history", "dim_multiindex_mapping", "fact_sales", "fact_stock",
-            "fact_prices", "fact_stock_changes", "fact_predictions",
+            "job_status_history", "dim_multiindex_mapping", "fact_sales",
+            "fact_stock_movement", "fact_predictions",
             "processing_runs", "data_upload_results", "report_results"
         ]
         monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(return_value=[{"name": table} for table in required_tables]))
@@ -474,7 +474,7 @@ class TestComponentHealthChecks:
             if "SELECT name FROM sqlite_master" in query:
                 # Return only "jobs" table, missing all others
                 return [{"name": "jobs"}]
-            if "fact_sales" in query or "fact_stock_changes" in query:
+            if "fact_sales" in query or "fact_stock_movement" in query:
                 # Return empty for fact table queries since they don't exist
                 return []
             return []
@@ -678,7 +678,7 @@ DATASPHERE_YC_PROFILE=default
             if "SELECT name FROM sqlite_master" in query:
                 # Return only "jobs" table, missing all others
                 return [{"name": "jobs"}]
-            if "fact_sales" in query or "fact_stock_changes" in query:
+            if "fact_sales" in query or "fact_stock_movement" in query:
                 # Return empty for fact table queries since they don't exist
                 return []
             return []
@@ -707,7 +707,7 @@ DATASPHERE_YC_PROFILE=default
         in_memory_db.execute_raw_query.assert_called()
 
     def test_check_database_unhealthy_missing_months(self, in_memory_db, monkeypatch):
-        """Test check_database returns unhealthy if there are missing months in fact_sales or fact_stock_changes."""
+        """Test check_database returns unhealthy if there are missing months in fact_sales or fact_stock_movement."""
 
         def side_effect_for_missing_months(query, params=(), fetchall=False):
             if query == "SELECT 1":
@@ -717,8 +717,8 @@ DATASPHERE_YC_PROFILE=default
             if "fact_sales" in query:
                 # Simulate a gap in fact_sales
                 return [{"data_date": "2024-01-01"}, {"data_date": "2024-03-01"}]
-            if "fact_stock_changes" in query:
-                # Simulate no gap in fact_stock_changes
+            if "fact_stock_movement" in query:
+                # Simulate no gap in fact_stock_movement
                 return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
             return []
 
@@ -737,8 +737,8 @@ DATASPHERE_YC_PROFILE=default
         result = check_database(in_memory_db)
         assert result.status == "unhealthy"
         assert "missing_months_sales" in result.details
-        assert result.details["missing_months_sales"] == ["2024-02-01"] # check_monotonic_months returns this format
-        assert "missing_months_stock_changes" not in result.details
+        assert result.details["missing_months_sales"] == ["2024-02"] # check_monotonic_months returns this format
+        assert "missing_months_stock_movement" not in result.details
 
     def test_check_database_healthy_no_missing_months(self, in_memory_db, monkeypatch):
         """Test check_database returns healthy if all months are present in both tables."""
@@ -750,7 +750,7 @@ DATASPHERE_YC_PROFILE=default
                 return [{"name": table} for table in params]
             if "fact_sales" in query:
                 return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
-            if "fact_stock_changes" in query:
+            if "fact_stock_movement" in query:
                 return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
             return []
 

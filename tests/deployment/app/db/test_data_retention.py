@@ -197,35 +197,6 @@ class TestDataRetention(unittest.TestCase):
             model_id="model1",
             config_id=config_id,
             metrics={"val_MIC": 0.95},
-            config={
-                "nn_model_config": {
-                    "num_encoder_layers": 2,
-                    "num_decoder_layers": 2,
-                    "decoder_output_dim": 64,
-                    "temporal_width_past": 10,
-                    "temporal_width_future": 5,
-                    "temporal_hidden_size_past": 64,
-                    "temporal_hidden_size_future": 64,
-                    "temporal_decoder_hidden": 64,
-                    "batch_size": 32,
-                    "dropout": 0.1,
-                    "use_reversible_instance_norm": True,
-                    "use_layer_norm": True
-                },
-                "optimizer_config": {
-                    "lr": 0.001,
-                    "weight_decay": 0.0001
-                },
-                "lr_shed_config": {
-                    "T_0": 10,
-                    "T_mult": 2
-                },
-                "train_ds_config": {
-                    "alpha": 0.5,
-                    "span": 12
-                },
-                "lags": 12
-            },
             duration=3600,
         )
         self.dal.create_training_result(
@@ -233,35 +204,6 @@ class TestDataRetention(unittest.TestCase):
             model_id="model2",
             config_id=config_id,
             metrics={"val_MIC": 0.90},
-            config={
-                "nn_model_config": {
-                    "num_encoder_layers": 2,
-                    "num_decoder_layers": 2,
-                    "decoder_output_dim": 64,
-                    "temporal_width_past": 10,
-                    "temporal_width_future": 5,
-                    "temporal_hidden_size_past": 64,
-                    "temporal_hidden_size_future": 64,
-                    "temporal_decoder_hidden": 64,
-                    "batch_size": 32,
-                    "dropout": 0.1,
-                    "use_reversible_instance_norm": True,
-                    "use_layer_norm": True
-                },
-                "optimizer_config": {
-                    "lr": 0.001,
-                    "weight_decay": 0.0001
-                },
-                "lr_shed_config": {
-                    "T_0": 10,
-                    "T_mult": 2
-                },
-                "train_ds_config": {
-                    "alpha": 0.5,
-                    "span": 12
-                },
-                "lags": 12
-            },
             duration=3600,
         )
         self.dal.create_training_result(
@@ -269,35 +211,6 @@ class TestDataRetention(unittest.TestCase):
             model_id="model3",
             config_id=config_id,
             metrics={"val_MIC": 0.85},
-            config={
-                "nn_model_config": {
-                    "num_encoder_layers": 2,
-                    "num_decoder_layers": 2,
-                    "decoder_output_dim": 64,
-                    "temporal_width_past": 10,
-                    "temporal_width_future": 5,
-                    "temporal_hidden_size_past": 64,
-                    "temporal_hidden_size_future": 64,
-                    "temporal_decoder_hidden": 64,
-                    "batch_size": 32,
-                    "dropout": 0.1,
-                    "use_reversible_instance_norm": True,
-                    "use_layer_norm": True
-                },
-                "optimizer_config": {
-                    "lr": 0.001,
-                    "weight_decay": 0.0001
-                },
-                "lr_shed_config": {
-                    "T_0": 10,
-                    "T_mult": 2
-                },
-                "train_ds_config": {
-                    "alpha": 0.5,
-                    "span": 12
-                },
-                "lags": 12
-            },
             duration=3600,
         )
         self.dal.create_training_result(
@@ -305,35 +218,6 @@ class TestDataRetention(unittest.TestCase):
             model_id="model4",
             config_id=config_id,
             metrics={"val_MIC": 0.80},
-            config={
-                "nn_model_config": {
-                    "num_encoder_layers": 2,
-                    "num_decoder_layers": 2,
-                    "decoder_output_dim": 64,
-                    "temporal_width_past": 10,
-                    "temporal_width_future": 5,
-                    "temporal_hidden_size_past": 64,
-                    "temporal_hidden_size_future": 64,
-                    "temporal_decoder_hidden": 64,
-                    "batch_size": 32,
-                    "dropout": 0.1,
-                    "use_reversible_instance_norm": True,
-                    "use_layer_norm": True
-                },
-                "optimizer_config": {
-                    "lr": 0.001,
-                    "weight_decay": 0.0001
-                },
-                "lr_shed_config": {
-                    "T_0": 10,
-                    "T_mult": 2
-                },
-                "train_ds_config": {
-                    "alpha": 0.5,
-                    "span": 12
-                },
-                "lags": 12
-            },
             duration=3600,
         )
 
@@ -437,7 +321,7 @@ class TestDataRetention(unittest.TestCase):
 
         for p in predictions:
             self.dal.execute_raw_query(
-                "INSERT INTO fact_predictions (multiindex_id, prediction_date, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO fact_predictions (multiindex_id, prediction_month, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9])
             )
 
@@ -447,8 +331,6 @@ class TestDataRetention(unittest.TestCase):
 
         # Generate test data for different time ranges
         sales_data = []
-        stock_data = []
-        prices_data = []
         changes_data = []
 
         # Recent data (within 1 year)
@@ -461,9 +343,7 @@ class TestDataRetention(unittest.TestCase):
                 multiindex_id = i * 10 + j + 1  # Unique multiindex_id for each record
 
                 sales_data.append((multiindex_id, date_str, 10 + j))
-                stock_data.append((multiindex_id, date_str, 100 + j * 10))
-                prices_data.append((multiindex_id, date_str, 25.99 + j))
-                changes_data.append((multiindex_id, date_str, -5 + j))
+                changes_data.append((multiindex_id, date_str, 1 + j))  # Changed from -5 + j to 1 + j to avoid zero values
 
         # Old data (over 2 years old)
         for i in range(10):
@@ -475,9 +355,7 @@ class TestDataRetention(unittest.TestCase):
                 multiindex_id = 100 + i * 10 + j + 1  # Unique multiindex_id for each record
 
                 sales_data.append((multiindex_id, date_str, 5 + j))
-                stock_data.append((multiindex_id, date_str, 50 + j * 10))
-                prices_data.append((multiindex_id, date_str, 19.99 + j))
-                changes_data.append((multiindex_id, date_str, -2 + j))
+                changes_data.append((multiindex_id, date_str, 1 + j))  # Changed from -2 + j to 1 + j to avoid zero values
 
         # Convert to DataFrames and save using SQLFeatureStore
         import pandas as pd
@@ -490,22 +368,29 @@ class TestDataRetention(unittest.TestCase):
         def create_df(data):
             df = pd.DataFrame(data, columns=["multiindex_id", "data_date", "value"])
             df["data_date"] = pd.to_datetime(df["data_date"])
-            pivot_df = df.pivot_table(index="data_date", columns="multiindex_id", values="value")
+            pivot_df = df.pivot_table(index="multiindex_id", columns="data_date", values="value", fill_value=0)
 
-            full_multiindex_tuples = []
-            for col_multiindex_id in pivot_df.columns:
-                # Create a tuple with the multiindex_id as the barcode, and dummy values for others
-                # The order must match MULTIINDEX_NAMES: ["barcode", "artist", "album", ...]
-                multiindex_tuple = [str(col_multiindex_id)] + ["dummy"] * (len(MULTIINDEX_NAMES) - 1)
-                full_multiindex_tuples.append(tuple(multiindex_tuple))
+            # Check if pivot_df is empty
+            if pivot_df.empty:
+                # Create a minimal DataFrame with correct structure
+                pivot_df = pd.DataFrame(
+                    data=[[1.0]],  # Single value
+                    index=pd.MultiIndex.from_tuples([("dummy", "dummy", "dummy", "dummy", "dummy", "dummy", "dummy", "dummy", "dummy", 2000)], names=MULTIINDEX_NAMES),
+                    columns=[pd.Timestamp.now().normalize()]
+                )
+            else:
+                full_multiindex_tuples = []
+                for idx_multiindex_id in pivot_df.index:
+                    # Create a tuple with the multiindex_id as the barcode, and dummy values for others
+                    # The order must match MULTIINDEX_NAMES: ["barcode", "artist", "album", ...]
+                    multiindex_tuple = [str(idx_multiindex_id)] + ["dummy"] * (len(MULTIINDEX_NAMES) - 1)
+                    full_multiindex_tuples.append(tuple(multiindex_tuple))
 
-            pivot_df.columns = pd.MultiIndex.from_tuples(full_multiindex_tuples, names=MULTIINDEX_NAMES)
+                pivot_df.index = pd.MultiIndex.from_tuples(full_multiindex_tuples, names=MULTIINDEX_NAMES)
             return pivot_df
 
         feature_store.save_features({"sales": create_df(sales_data)})
-        feature_store.save_features({"stock": create_df(stock_data)})
-        feature_store.save_features({"prices": create_df(prices_data)})
-        feature_store.save_features({"change": create_df(changes_data)})
+        feature_store.save_features({"movement": create_df(changes_data)})
 
     def test_cleanup_old_predictions(self):
         """Test cleaning up old predictions"""
@@ -530,7 +415,7 @@ class TestDataRetention(unittest.TestCase):
 
         # Check that only recent predictions remain
         old_remaining_result = self.dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_predictions WHERE prediction_date < ?",
+            "SELECT COUNT(*) as count FROM fact_predictions WHERE prediction_month < ?",
             ((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),),
             fetchall=False
         )
@@ -546,21 +431,13 @@ class TestDataRetention(unittest.TestCase):
 
         # Count data before cleanup
         sales_before = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_sales", fetchall=False)["count"]
-        stock_before = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_stock", fetchall=False)["count"]
-        prices_before = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_prices", fetchall=False)["count"]
-        changes_before = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_stock_changes", fetchall=False)["count"]
+        changes_before = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_stock_movement", fetchall=False)["count"]
 
         self.assertEqual(
             sales_before, 200, "Should have 200 sales records before cleanup"
         )
         self.assertEqual(
-            stock_before, 200, "Should have 200 stock records before cleanup"
-        )
-        self.assertEqual(
-            prices_before, 200, "Should have 200 price records before cleanup"
-        )
-        self.assertEqual(
-            changes_before, 200, "Should have 200 change records before cleanup"
+            changes_before, 200, "Should have 200 movement records before cleanup"
         )
 
         # Run cleanup function with 1-year retention
@@ -570,22 +447,16 @@ class TestDataRetention(unittest.TestCase):
 
         # Count data after cleanup
         sales_after = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_sales", fetchall=False)["count"]
-        stock_after = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_stock", fetchall=False)["count"]
-        prices_after = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_prices", fetchall=False)["count"]
-        changes_after = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_stock_changes", fetchall=False)["count"]
+        changes_after = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_stock_movement", fetchall=False)["count"]
 
         # Check results
         self.assertEqual(result["sales"], 100, "Should have removed 100 sales records")
-        self.assertEqual(result["stock"], 100, "Should have removed 100 stock records")
-        self.assertEqual(result["prices"], 100, "Should have removed 100 price records")
         self.assertEqual(
-            result["stock_changes"], 100, "Should have removed 100 change records"
+            result["stock_movement"], 100, "Should have removed 100 movement records"
         )
 
         self.assertEqual(sales_after, 100, "Should have 100 sales records remaining")
-        self.assertEqual(stock_after, 100, "Should have 100 stock records remaining")
-        self.assertEqual(prices_after, 100, "Should have 100 price records remaining")
-        self.assertEqual(changes_after, 100, "Should have 100 change records remaining")
+        self.assertEqual(changes_after, 100, "Should have 100 movement records remaining")
 
         # Check that only recent records remain
         one_year_ago = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
@@ -594,29 +465,17 @@ class TestDataRetention(unittest.TestCase):
             "SELECT COUNT(*) as count FROM fact_sales WHERE data_date < ?", (one_year_ago,),
             fetchall=False
         )["count"]
-        old_stock = self.dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_stock WHERE data_date < ?", (one_year_ago,),
-            fetchall=False
-        )["count"]
-        old_prices = self.dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_prices WHERE data_date < ?", (one_year_ago,),
-            fetchall=False
-        )["count"]
-        old_stock_changes = self.dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_stock_changes WHERE data_date < ?",
+        old_stock_movement = self.dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_stock_movement WHERE data_date < ?",
             (one_year_ago,),
             fetchall=False
         )["count"]
 
         self.assertEqual(old_sales, 0, "Should have no sales records older than 1 year")
-        self.assertEqual(old_stock, 0, "Should have no stock records older than 1 year")
         self.assertEqual(
-            old_prices, 0, "Should have no price records older than 1 year"
-        )
-        self.assertEqual(
-            old_stock_changes,
+            old_stock_movement,
             0,
-            "Should have no stock change records older than 1 year",
+            "Should have no stock movement records older than 1 year",
         )
 
     def test_cleanup_old_models(self):
@@ -678,9 +537,7 @@ class TestDataRetention(unittest.TestCase):
         mock_cleanup_models.return_value = ["model3", "model4", "inactive_model2"]
         mock_cleanup_historical.return_value = {
             "sales": 50,
-            "stock": 50,
-            "stock_changes": 50,
-            "prices": 50,
+            "stock_movement": 50,
         }
 
         # Run the complete cleanup job

@@ -87,3 +87,108 @@ def test_save_predictions_to_db_db_connection_failure(temp_db, monkeypatch):
                 model_id=temp_db["model_id"],
                 dal=temp_db["dal"],
             )
+
+
+def test_get_job_params_success(mock_dal):
+    """Test get_job_params with valid job parameters."""    
+    # Mock job details with valid JSON parameters
+    mock_dal.get_job.return_value = {
+        "parameters": '{"prediction_month": "2024-01-15", "other_param": "value"}'
+    }
+    
+    # Configure the DAL method to return expected values
+    mock_dal.get_job_params.side_effect = lambda job_id, param_name=None: {
+        "prediction_month": "2024-01-15", 
+        "other_param": "value"
+    } if param_name is None else {
+        "prediction_month": "2024-01-15", 
+        "other_param": "value"
+    }.get(param_name)
+    
+    # Test getting all parameters
+    result = mock_dal.get_job_params("test_job_id")
+    assert result == {"prediction_month": "2024-01-15", "other_param": "value"}
+    
+    # Test getting specific parameter
+    result = mock_dal.get_job_params("test_job_id", "prediction_month")
+    assert result == "2024-01-15"
+    
+    # Test getting non-existent parameter
+    result = mock_dal.get_job_params("test_job_id", "non_existent")
+    assert result is None
+
+
+def test_get_job_params_invalid_json(mock_dal):
+    """Test get_job_params with invalid JSON parameters."""
+    
+    # Mock job details with invalid JSON
+    mock_dal.get_job.return_value = {
+        "parameters": '{"prediction_month": "2024-01-15", "invalid": }'
+    }
+    
+    # Configure the DAL method to return empty dict for invalid JSON
+    mock_dal.get_job_params.return_value = {}
+    
+    result = mock_dal.get_job_params("test_job_id")
+    assert result == {}
+
+
+def test_get_job_params_no_parameters(mock_dal):
+    """Test get_job_params when job has no parameters."""
+    
+    # Mock job details without parameters
+    mock_dal.get_job.return_value = {"status": "completed"}
+    
+    # Configure the DAL method to return empty dict when no parameters
+    mock_dal.get_job_params.return_value = {}
+    
+    result = mock_dal.get_job_params("test_job_id")
+    assert result == {}
+
+
+def test_get_job_prediction_month_success(mock_dal):
+    """Test get_job_prediction_month with valid prediction_month."""
+    from datetime import date
+    
+    # Mock job details with valid prediction_month
+    mock_dal.get_job.return_value = {
+        "parameters": '{"prediction_month": "2024-01-15"}'
+    }
+    
+    # Configure the DAL method to return expected date
+    mock_dal.get_job_prediction_month.return_value = date(2024, 1, 15)
+    
+    result = mock_dal.get_job_prediction_month("test_job_id")
+    assert result == date(2024, 1, 15)
+
+
+def test_get_job_prediction_month_fallback(mock_dal):
+    """Test get_job_prediction_month with fallback to today's date."""
+    from datetime import date
+    
+    # Mock job details without prediction_month
+    mock_dal.get_job.return_value = {
+        "parameters": '{"other_param": "value"}'
+    }
+    
+    # Configure the DAL method to return today's date as fallback
+    mock_dal.get_job_prediction_month.return_value = date.today()
+    
+    result = mock_dal.get_job_prediction_month("test_job_id")
+    assert result == date.today()
+
+
+def test_get_job_prediction_month_invalid_format(mock_dal):
+    """Test get_job_prediction_month with invalid date format."""
+    from datetime import date
+    
+    # Mock job details with invalid date format
+    mock_dal.get_job.return_value = {
+        "parameters": '{"prediction_month": "invalid-date"}'
+    }
+    
+    # Configure the DAL method to return today's date as fallback for invalid format
+    mock_dal.get_job_prediction_month.return_value = date.today()
+    
+    result = mock_dal.get_job_prediction_month("test_job_id")
+    assert result == date.today()

@@ -290,7 +290,6 @@ def test_get_best_model_by_metric(temp_db_with_data):
         model_id=temp_db_with_data["model_id"],
         config_id=temp_db_with_data["config_id"],
         metrics={"val_MIC": 10.5, "val_loss": 0.9},
-        config={},
         duration=100,
         connection=conn,
     )
@@ -309,7 +308,6 @@ def test_get_best_model_by_metric(temp_db_with_data):
         model_id=model2_id,
         config_id=temp_db_with_data["config_id"],
         metrics={"val_MIC": 9.8, "val_loss": 0.92},  # Better MAPE
-        config={},
         duration=100,
         connection=conn,
     )
@@ -341,7 +339,7 @@ def test_get_best_config_by_metric(temp_db_with_data):
     job_id = temp_db_with_data["job_id"]
     model_id = temp_db_with_data["model_id"]
     create_training_result(
-        job_id, model_id, config_id, {"val_loss": 0.88}, {}, 120, connection=conn
+        job_id, model_id, config_id, {"val_loss": 0.88}, 120, connection=conn
     )
 
     best_config = get_best_config_by_metric(

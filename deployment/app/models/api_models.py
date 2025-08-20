@@ -445,16 +445,17 @@ class ModelUploadMetadata(BaseModel):
             source_job_id=source_job_id,
         )
 
+
 class DataUploadFormParameters(BaseModel):
     """Form parameters for data upload."""
-    cutoff_date: str = Field(..., description="The cutoff date for data processing in `DD.MM.YYYY` format.")
-
+    overwrite: bool | None = Field(False, description="Whether to overwrite existing features.")
     @classmethod
     def as_form(
         cls,
-        cutoff_date: str = Form(..., description="The cutoff date for data processing in `DD.MM.YYYY` format."),
+        overwrite: bool | None = Form(False, description="Whether to overwrite existing features."),
     ):
-        return cls(cutoff_date=cutoff_date)
+        return cls(overwrite=overwrite)
+
 
 class ErrorDetailResponse(BaseModel):
     """Standardized error response model."""

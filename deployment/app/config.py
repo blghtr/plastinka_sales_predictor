@@ -13,6 +13,7 @@ from functools import lru_cache
 from pathlib import Path  # Added
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import yaml
 from pydantic import Field, field_validator
@@ -596,8 +597,9 @@ class AppSettings(BaseSettings):
         description="Maximum number of variables in SQLite queries (safe limit below 999)",
     )
 
-    PRICE_CATEGORY_BINS: list[float] = Field(
+    price_category_bins: list[float] = Field(
         default=[
+            0.0,
             689.999,
             2490.0,
             3990.0,
@@ -605,6 +607,7 @@ class AppSettings(BaseSettings):
             7390.0,
             8590.0,
             11990.0,
+            np.inf,
         ],
         description="Static bins for price categorization as a sequence of scalars.",
     )
@@ -613,7 +616,7 @@ class AppSettings(BaseSettings):
     def price_category_interval_index(self) -> pd.IntervalIndex:
         """Get price category bins as a pandas IntervalIndex."""
         import pandas as pd
-        return pd.IntervalIndex.from_breaks(self.PRICE_CATEGORY_BINS, closed="right")
+        return pd.IntervalIndex.from_breaks(self.price_category_bins, closed="right")
 
     @property
     def temp_upload_dir(self) -> str:

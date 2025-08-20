@@ -15,7 +15,6 @@ async def process_data_files(
     job_id: str,
     stock_file_path: str,
     sales_files_paths: list[str],
-    cutoff_date: str,
     temp_dir_path: str,
     dal: DataAccessLayer,
 ) -> None:
@@ -26,14 +25,14 @@ async def process_data_files(
         job_id: ID of the job
         stock_file_path: Path to the saved stock file
         sales_files_paths: List of paths to the saved sales files
-        cutoff_date: Cutoff date for processing (DD.MM.YYYY)
         temp_dir_path: Path to the temporary directory used for this job
         dal: DataAccessLayer instance
     """
     temp_dir = Path(temp_dir_path)
     stock_path = Path(stock_file_path)
     settings = get_settings()
-
+    job_params = dal.get_job_params(job_id)
+    overwrite = job_params.get('overwrite', False)
     try:
         # Update job status to running
         dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=0)
@@ -52,7 +51,6 @@ async def process_data_files(
         features = process_data(
             stock_path=str(stock_path),
             sales_path=str(sales_dir_path),
-            cutoff_date=cutoff_date,
             bins=settings.price_category_interval_index,
         )
 
@@ -62,7 +60,13 @@ async def process_data_files(
         stock_filename = stock_path.name
         sales_filenames = [Path(p).name for p in sales_files_paths]
         source_files = ", ".join([stock_filename] + sales_filenames)
-        run_id = save_features(features, cutoff_date, source_files, store_type="sql", dal=dal)
+        run_id = save_features(
+            features, 
+            source_files, 
+            store_type="sql", 
+            dal=dal, 
+            append=not overwrite
+        )
 
         # Create result record
         result_id = dal.create_data_upload_result(

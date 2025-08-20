@@ -5,7 +5,7 @@ Health and monitoring endpoints.
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from typing import Any
 
 import psutil
@@ -79,6 +79,7 @@ def check_monotonic_months(table_name: str, dal: DataAccessLayer) -> list[str]:
     Проверяет, что месяцы в data_date идут подряд без пропусков (по всей таблице).
     Возвращает список пропущенных месяцев в формате YYYY-MM-01.
     """
+    
     dates_rows = dal.execute_raw_query(
         f"SELECT DISTINCT data_date FROM {table_name}", fetchall=True
     )
@@ -87,22 +88,21 @@ def check_monotonic_months(table_name: str, dal: DataAccessLayer) -> list[str]:
     if not dates:
         return []
     # Преобразуем к datetime.date
-    date_objs = [datetime.strptime(d, "%Y-%m-%d").date() for d in dates]
+    date_objs = [date.fromisoformat(d) for d in dates]
+    unique_months = set([d.strftime("%Y-%m") for d in date_objs])
     # Строим полный диапазон месяцев
     min_date, max_date = date_objs[0], date_objs[-1]
+    # set max_date to the last day of the max_date's month
+    max_date = max_date.replace(day=28) + timedelta(days=4)
+    max_date = max_date - timedelta(days=max_date.day)
     current = min_date
     missing = []
-    while current <= max_date:
-        if current not in date_objs:
-            missing.append(current.strftime("%Y-%m-%d"))
+    while max_date >= current:
+        current_str = current.strftime("%Y-%m")
+        if current_str not in unique_months:
+            missing.append(current_str)
         # Переход к следующему месяцу
-        year, month = current.year, current.month
-        if month == 12:
-            year += 1
-            month = 1
-        else:
-            month += 1
-        current = current.replace(year=year, month=month, day=1)
+        current = (current.replace(day=1) + timedelta(days=31)).replace(day=1)
     return missing
 
 
@@ -126,9 +126,7 @@ def check_database(dal: DataAccessLayer) -> ComponentHealth:
             "job_status_history",
             "dim_multiindex_mapping",
             "fact_sales",
-            "fact_stock",
-            "fact_prices",
-            "fact_stock_changes",
+            "fact_stock_movement",
             "fact_predictions",
             "processing_runs",
             "data_upload_results",
@@ -157,14 +155,14 @@ def check_database(dal: DataAccessLayer) -> ComponentHealth:
                 f"Database unhealthy: missing months in fact_sales: {missing_months_sales}"
             )
 
-        missing_months_stock_changes = check_monotonic_months(
-            "fact_stock_changes", dal
+        missing_months_stock_movement = check_monotonic_months(
+            "fact_stock_movement", dal
         )
-        if missing_months_stock_changes:
+        if missing_months_stock_movement:
             status = "unhealthy"
-            details["missing_months_stock_changes"] = missing_months_stock_changes
+            details["missing_months_stock_movement"] = missing_months_stock_movement
             logger.warning(
-                f"Database unhealthy: missing months in fact_stock_changes: {missing_months_stock_changes}"
+                f"Database unhealthy: missing months in fact_stock_movement: {missing_months_stock_movement}"
             )
 
     except Exception as e:

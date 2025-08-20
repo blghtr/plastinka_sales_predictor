@@ -31,44 +31,34 @@ def cleanup_old_predictions(days_to_keep: int | None = None, dal: DataAccessLaye
     Returns:
         Number of records removed
     """
-    print(f"DEBUG: cleanup_old_predictions called with days_to_keep={days_to_keep}, dal={dal}")
     if days_to_keep is None:
-        print("DEBUG: Getting days_to_keep from settings")
         days_to_keep = get_settings().data_retention.prediction_retention_days
-        print(f"DEBUG: days_to_keep = {days_to_keep}")
-
-    retention_date = datetime.now() - timedelta(days=days_to_keep)
-    cutoff_date_str = retention_date.strftime("%Y-%m-%d")
-    logger.info(f"Debug: Cutoff date calculated as: {cutoff_date_str}")
 
     if dal is None:
         dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.SYSTEM]))
 
     retention_date = datetime.now() - timedelta(days=days_to_keep)
     cutoff_date_str = retention_date.strftime("%Y-%m-%d")
-    logger.info(f"Debug: Cutoff date calculated as: {cutoff_date_str}")
 
     try:
-        logger.info(f"Debug: Starting cleanup with cutoff date: {cutoff_date_str}")
         # Count records to be deleted
         count_result = dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_predictions WHERE prediction_date < ?",
+            "SELECT COUNT(*) as count FROM fact_predictions WHERE prediction_month < ?",
             (cutoff_date_str,),
-            fetchall=False
+            fetchall=False,
         )
         count = count_result["count"] if count_result else 0
-        logger.info(f"Debug: Found {count} predictions older than {cutoff_date_str}")
+        logger.info(f"Found {count} predictions older than {cutoff_date_str}")
 
         if count > 0:
             dal.execute_raw_query(
-                "DELETE FROM fact_predictions WHERE prediction_date < ?",
+                "DELETE FROM fact_predictions WHERE prediction_month < ?",
                 (cutoff_date_str,),
             )
             logger.info(f"Deleted {count} predictions older than {cutoff_date_str}")
         return count
 
     except Exception as e:
-        print(f"DEBUG: Exception caught in cleanup_old_predictions: {str(e)}")
         logger.error(f"Error cleaning up old predictions: {str(e)}")
         return 0
 
@@ -113,7 +103,7 @@ def cleanup_old_historical_data(
     sales_cutoff_str = sales_cutoff.strftime("%Y-%m-%d")
     stock_cutoff_str = stock_cutoff.strftime("%Y-%m-%d")
 
-    result = {"sales": 0, "stock": 0, "stock_changes": 0, "prices": 0}
+    result = {"sales": 0, "stock": 0, "stock_movement": 0, "prices": 0}
 
     try:
         # Clean up sales data
@@ -133,26 +123,9 @@ def cleanup_old_historical_data(
                 f"Deleted {sales_count} sales records older than {sales_cutoff_str}"
             )
 
-        # Clean up stock data
-        stock_count_result = dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_stock WHERE data_date < ?",
-            (stock_cutoff_str,),
-            fetchall=False
-        )
-        stock_count = stock_count_result["count"] if stock_count_result else 0
-
-        if stock_count > 0:
-            dal.execute_raw_query(
-                "DELETE FROM fact_stock WHERE data_date < ?", (stock_cutoff_str,)
-            )
-            result["stock"] = stock_count
-            logger.info(
-                f"Deleted {stock_count} stock records older than {stock_cutoff_str}"
-            )
-
-        # Clean up stock change data
+        # Clean up stock movement data
         changes_count_result = dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_stock_changes WHERE data_date < ?",
+            "SELECT COUNT(*) as count FROM fact_stock_movement WHERE data_date < ?",
             (stock_cutoff_str,),
             fetchall=False
         )
@@ -160,30 +133,16 @@ def cleanup_old_historical_data(
 
         if changes_count > 0:
             dal.execute_raw_query(
-                "DELETE FROM fact_stock_changes WHERE data_date < ?",
+                "DELETE FROM fact_stock_movement WHERE data_date < ?",
                 (stock_cutoff_str,),
             )
-            result["stock_changes"] = changes_count
+            result["stock_movement"] = changes_count
             logger.info(
-                f"Deleted {changes_count} stock change records older than {stock_cutoff_str}"
+                f"Deleted {changes_count} stock movement records older than {stock_cutoff_str}"
             )
 
         # Clean up price data
-        prices_count_result = dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_prices WHERE data_date < ?",
-            (sales_cutoff_str,),
-            fetchall=False
-        )
-        prices_count = prices_count_result["count"] if prices_count_result else 0
-
-        if prices_count > 0:
-            dal.execute_raw_query(
-                "DELETE FROM fact_prices WHERE data_date < ?", (sales_cutoff_str,)
-            )
-            result["prices"] = prices_count
-            logger.info(
-                f"Deleted {prices_count} price records older than {sales_cutoff_str}"
-            )
+        # Code removed due to fact_prices table made time-agnostic
 
         return result
 

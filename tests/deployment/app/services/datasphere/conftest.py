@@ -410,7 +410,7 @@ def cleanup_with_retry(path, max_retries=3):
 @pytest.fixture(autouse=True, scope='function')
 def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
     """
-    Заполняет fact_sales, fact_stock, fact_stock_changes минимум 13 уникальными датами для lags=12.
+    Заполняет fact_sales, fact_stock, fact_stock_movement минимум 13 уникальными датами для lags=12.
     Использует dal из in_memory_db.
     """
     today = datetime.today().date()
@@ -433,12 +433,6 @@ def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
     # Генерируем 13 месяцев назад от текущего месяца
     base_date = today.replace(day=1) - relativedelta(months=13)
 
-    # Generate stock data for only the very first month (base_date)
-    stock_date_str = base_date.strftime("%Y-%m-01")
-    stock_rows = [
-        (multiindex_id, stock_date_str, 100)
-    ] # Single data point for stock
-
     # Generate sales and changes data starting from the month after base_date
     sales_rows = []
     changes_rows = []
@@ -457,16 +451,12 @@ def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
     def create_df(data):
         df = pd.DataFrame(data, columns=["multiindex_id", "data_date", "value"])
         df["data_date"] = pd.to_datetime(df["data_date"])
-        pivot_df = df.pivot_table(index="data_date", columns="multiindex_id", values="value")
-
+        
         from deployment.app.db.schema import MULTIINDEX_NAMES
         # Create a mapping from multiindex_id to the full multiindex tuple
         multiindex_id_to_tuple = {}
-        for multiindex_id_val in pivot_df.columns:
-            # Retrieve the full multiindex tuple from the DAL
-            # Assuming dal.get_multiindex_mapping_by_id exists or can be mocked
-            # For now, create a dummy tuple that matches the expected structure
-            # In a real scenario, you'd fetch this from the DB or ensure it's created
+        for multiindex_id_val in df["multiindex_id"].unique():
+            # Create a dummy tuple that matches the expected structure
             multiindex_tuple = (
                 str(multiindex_id_val), # barcode
                 base_artist, # artist
@@ -481,16 +471,19 @@ def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
             )
             multiindex_id_to_tuple[multiindex_id_val] = multiindex_tuple
 
-        # Map the pivot_df columns (multiindex_ids) to the full multiindex tuples
-        pivot_df.columns = pd.MultiIndex.from_tuples(
-            [multiindex_id_to_tuple[col] for col in pivot_df.columns],
+        # Create the correct format: MultiIndex in index, DatetimeIndex in columns
+        # First, create a pivot table with multiindex_id as index and data_date as columns
+        pivot_df = df.pivot_table(index="multiindex_id", columns="data_date", values="value")
+        
+        # Map the pivot_df index (multiindex_ids) to the full multiindex tuples
+        pivot_df.index = pd.MultiIndex.from_tuples(
+            [multiindex_id_to_tuple[col] for col in pivot_df.index],
             names=MULTIINDEX_NAMES
         )
         return pivot_df
 
     feature_store.save_features({"sales": create_df(sales_rows)})
-    feature_store.save_features({"stock": create_df(stock_rows)})
-    feature_store.save_features({"change": create_df(changes_rows)})
+    feature_store.save_features({"movement": create_df(changes_rows)})
 
 @pytest.fixture
 def mock_init_db():

@@ -154,7 +154,7 @@ class TestHistoricalDataCleanupEndpoint:
         mock_cleanup_old_historical_data.return_value = {
             "sales": 10,
             "stock": 5,
-            "stock_changes": 3,
+            "stock_movement": 3,
             "prices": 7,
         }
 
@@ -188,7 +188,7 @@ class TestHistoricalDataCleanupEndpoint:
         mock_cleanup_old_historical_data.return_value = {
             "sales": 8,
             "stock": 6,
-            "stock_changes": 4,
+            "stock_movement": 4,
             "prices": 2,
         }
 

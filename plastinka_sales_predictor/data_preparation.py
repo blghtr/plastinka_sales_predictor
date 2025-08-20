@@ -1,4 +1,4 @@
-from collections import OrderedDict, defaultdict
+﻿from collections import OrderedDict, defaultdict
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from datetime import datetime
@@ -13,6 +13,7 @@ from darts.utils.data.torch_datasets.training_dataset import TorchTrainingDatase
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MultiLabelBinarizer, OrdinalEncoder, minmax_scale
 from typing_extensions import Self
+
 
 COLTYPES = {
     "Штрихкод": str,
@@ -33,17 +34,47 @@ COLTYPES = {
     "precise_record_year": "int64",
 }
 
+COLUMN_MAPPING = {
+    "Штрихкод": "barcode",
+    "Исполнитель": "artist",
+    "Альбом": "album",
+    "Конверт": "cover_type",
+    "Ценовая категория": "price_category",
+    "Тип": "release_type",
+    "Год записи": "recording_decade",
+    "Год выпуска": "release_decade",
+    "Стиль": "style",
+    "precise_record_year": "record_year",
+    "Дата создания": "created_date",
+    "Дата продажи": "sold_date",
+}
+
 GROUP_KEYS = [
-    "Штрихкод",
-    "Исполнитель",
-    "Альбом",
-    "Конверт",
-    "Ценовая категория",
-    "Тип",
-    "Год записи",
-    "Год выпуска",
-    "Стиль",
-    "precise_record_year",
+    "barcode",
+    "artist",
+    "album",
+    "cover_type",
+    "price_category",
+    "release_type",
+    "recording_decade",
+    "release_decade",
+    "style",
+    "record_year",
+]
+
+
+# hardcoded for now
+BASE_FEATURES_DEFAULT = [
+    "sales",
+    "movement"
+]
+
+REPORT_FEATURES_DEFAULT = [
+    "availability",
+    "confidence",
+    "lost_sales",
+    "masked_mean_sales_items",
+    "masked_mean_sales_rub"
 ]
 
 
@@ -270,14 +301,14 @@ class PlastinkaBaseTSDataset:
             window = (0, self._n_time_steps) if window is None else window
             start, end = window
             if start < 0 or end > self._n_time_steps:
-                raise ValueError(f"Invalid boundaries: start={start}, end={end}. \n"
+                raise ValueError(f"Invalid boundaries: start={start}, end={end}. \n" 
                                  f"start must be >= 0 and end must be <= {self._n_time_steps}")
             if input_chunk_length and output_chunk_length:
                 if input_chunk_length < self.minimum_sales_months or output_chunk_length <= 0:
-                    raise ValueError(f"Invalid length: input_chunk_length={input_chunk_length}, output_chunk_length={output_chunk_length}. \n"
+                    raise ValueError(f"Invalid length: input_chunk_length={input_chunk_length}, output_chunk_length={output_chunk_length}. \n" 
                                      f"input_chunk_length must be >= {self.minimum_sales_months} and output_chunk_length must be > 0")
                 if (end - start) < input_chunk_length + output_chunk_length:
-                    raise ValueError(f"Invalid boundaries: start={start}, end={end}, input_chunk_length={input_chunk_length}, output_chunk_length={output_chunk_length}. \n"
+                    raise ValueError(f"Invalid boundaries: start={start}, end={end}, input_chunk_length={input_chunk_length}, output_chunk_length={output_chunk_length}. \n" 
                                      f"window length {end - start} must be >= input_chunk_length + output_chunk_length")
             return True
 
@@ -341,7 +372,8 @@ class PlastinkaBaseTSDataset:
                     item_sales > 0.0  # scaled zero
                 ].shape[0]
             )
-            >= self.minimum_sales_months
+            >=
+            self.minimum_sales_months
         )
 
         target_stock = self.stock_features[-self.output_chunk_length :, :, index]
@@ -373,18 +405,19 @@ class PlastinkaBaseTSDataset:
         end_index_safe = end_index if end_index is not None else self._n_time_steps
 
         series_item = np.expand_dims(
-            self.monthly_sales[start_index:end_index, array_index], axis=1
+            self.monthly_sales[start_index:end_index_safe, array_index], axis=1
         )
         item_multiidx = self._idx2multiidx[array_index]
         # Renamed for clarity as per user's suggestion
-        historic_future_covariates_item = self.get_future_covariates(item_multiidx)[
+        future_covariates_item = self.get_future_covariates(item_multiidx)
+        historic_future_covariates_item = future_covariates_item[
             start_index: end_index_safe - self.output_chunk_length
         ]
-        future_covariates_item_output_chunk = self.get_future_covariates(item_multiidx)[
-            end_index_safe - self.output_chunk_length: end_index
+        future_covariates_item_output_chunk = future_covariates_item[
+            end_index_safe - self.output_chunk_length: end_index_safe
         ]
         past_covariates_item = self.get_past_covariates(item_multiidx)[
-            start_index:end_index
+            start_index:end_index_safe
         ]
 
         static_covariates_item = None
@@ -424,7 +457,9 @@ class PlastinkaBaseTSDataset:
         length = self.input_chunk_length + self.output_chunk_length
         start_index = index % self.outputs_per_array
         end_index = (
-            (start_index + length)
+            (
+                start_index + length
+            )
             if (start_index + length) < self._n_time_steps
             else None
         )
@@ -552,13 +587,8 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
         )
         self._time_index = self._time_index.append(new_dates)
 
-        self.setup_dataset(
-            window=(self._n_time_steps - (
-                self.input_chunk_length + self.output_chunk_length
-            ), self._n_time_steps),
-            copy=False,
-            reindex=True,
-        )
+        self.reset_window()
+
         if self.save_dir is not None:
             self.save(self.save_dir, self.dataset_name)
 
@@ -610,6 +640,20 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
             pred_time, # pred_time
         )
         return output
+
+    def reset_window(self):
+        if self._n_time_steps:
+            self.setup_dataset(
+                window=(self._n_time_steps - (
+                    self.input_chunk_length + self.output_chunk_length
+                ), self._n_time_steps),
+                copy=False,
+                reindex=True,
+            )
+
+    def _set_length(self, input_chunk_length, output_chunk_length):
+        super()._set_length(input_chunk_length, output_chunk_length)
+        self.reset_window()
 
 
 class MultiColumnLabelBinarizer(BaseEstimator, TransformerMixin):
@@ -743,11 +787,11 @@ class GlobalLogMinMaxScaler(BaseEstimator, TransformerMixin):
         return self.global_min_ is not None and self.global_max_ is not None
 
 
-def validate_date_columns(df: pd.DataFrame) -> pd.DataFrame:
+def validate_feature_date_columns(df: pd.DataFrame) -> pd.DataFrame:
     def fill_partial_years_np_where(series):
         try:
             is_not_20 = ~series.str.startswith("2")
-            valid_str = series.str.extract(r"(^\d+)")[0]
+            valid_str = series.str.extract(r"(^\\d+)")[0]
             padding_9 = (4 - valid_str.str.len().astype(int)).map(lambda x: "9" * x)
             padding_1 = (4 - valid_str.str.len().astype(int)).map(lambda x: "1" * x)
             return np.where(is_not_20, valid_str + padding_9, valid_str + padding_1)
@@ -765,7 +809,7 @@ def validate_date_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     uncert_rerelease_year_idxs = ~validated["Год выпуска"].fillna("1234").astype(
         str
-    ).str.match(r"^(\d{4}|[^0-9]*)$")
+    ).str.match(r"^(\\d{4}|[^0-9]*)$")
     unvalid_rereleases = validated.loc[
         uncert_rerelease_year_idxs, "Год выпуска"
     ].astype(str)
@@ -814,6 +858,37 @@ def validate_date_columns(df: pd.DataFrame) -> pd.DataFrame:
     return validated
 
 
+def validate_date_columns(
+        df: pd.DataFrame, 
+        datecols: Sequence[str], 
+    ) -> pd.DataFrame:
+     
+    validated = df.copy()
+
+    if len(datecols) == 2:
+        idx = validated["Дата создания"] > validated["Дата продажи"]
+        validated.loc[idx, "Дата создания"] = validated.loc[idx, "Дата продажи"]
+
+        dominant_month_period = (
+            validated["Дата продажи"]
+            .dt
+            .to_period('M')
+            .mode()[0]
+        )
+        outlier_mask = (
+            validated["Дата продажи"]
+            .dt
+            .to_period('M') != dominant_month_period
+        )
+        validated.loc[outlier_mask, "Дата продажи"] = None
+        validated["Дата продажи"] = validated["Дата продажи"].dt.floor("D")
+
+    validated = validated.dropna(subset=datecols)
+    validated["Дата создания"] = validated["Дата создания"].dt.floor("D")
+    
+    return validated
+
+
 def validate_categories(df: pd.DataFrame) -> pd.DataFrame:
     validated = df.copy()
     nan_idx = validated["Конверт"].isna()
@@ -850,7 +925,6 @@ def validate_categories(df: pd.DataFrame) -> pd.DataFrame:
     )
     return validated
 
-
 def validate_styles(df: pd.DataFrame) -> pd.DataFrame:
     validated = df.copy()
     validated = validated.fillna({"Стиль": "None"})
@@ -872,8 +946,8 @@ def validate_styles(df: pd.DataFrame) -> pd.DataFrame:
 
     return validated
 
-
 def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
+    
     rename = {}
     if "Штрихкод" not in df.columns:
         rename["Barcode"] = "Штрихкод"
@@ -901,7 +975,7 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
     ).astype("int64")
 
     validated, bins = categorize_prices(validated, bins)
-    validated = validate_date_columns(validated)
+    validated = validate_feature_date_columns(validated)
     validated = validate_categories(validated)
     if "precise_record_year" not in validated.columns:
         validated = validated.assign(precise_record_year=validated["Год записи"])
@@ -910,27 +984,42 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
 
     coltypes = dict(filter(lambda x: x[0] in validated.columns, COLTYPES.items()))
     datecols = [col for col in validated.columns if col.startswith("Дата")]
+    
+    # Ensure 'Конверт' is always included if it exists in the original df
+    if "Конверт" in df.columns and "Конверт" not in coltypes:
+        coltypes["Конверт"] = str
+
     validated = validated[list(coltypes.keys())]
     validated = validated.dropna()
+    
+    # Validate that we have data after processing
+    if validated.empty:
+        raise ValueError(
+            f"All data was filtered out during processing. "
+            f"Original shape: {df.shape}, "
+            f"After dropna: {validated.shape}. "
+            f"Check input data quality and required columns."
+        )
 
     for col in datecols:
-        temp_date_col = pd.to_datetime(validated[col], dayfirst=True, errors="coerce")
+        temp_date_col = pd.to_datetime(
+            validated[col], 
+            dayfirst=True, 
+            errors="coerce"
+        )
         temp_date_col[temp_date_col.isna()] = pd.to_datetime(
-            validated.loc[temp_date_col.isna(), col], unit="s", errors="coerce"
+            validated.loc[temp_date_col.isna(), col], 
+            unit="s", errors="coerce"
         )
         validated[col] = temp_date_col
-
     validated = validated.astype(coltypes)
-    if len(datecols) == 2:
-        idx = validated["Дата создания"] > validated["Дата продажи"]
-        validated.loc[idx, "Дата создания"] = validated.loc[idx, "Дата продажи"]
 
-    if "Дата продажи" in validated.columns:
-        validated["Дата продажи"] = validated["Дата продажи"].dt.floor("D")
-    validated["Дата создания"] = validated["Дата создания"].dt.floor("D")
+    validated = validate_date_columns(validated, datecols)
 
-    return validated, bins
+    # Rename columns to match DB schema
+    validated = validated.rename(columns=COLUMN_MAPPING)
 
+    return validated
 
 def categorize_dates(df: pd.DataFrame) -> pd.DataFrame:
     validated = df.copy()
@@ -938,26 +1027,29 @@ def categorize_dates(df: pd.DataFrame) -> pd.DataFrame:
         validated[col] = pd.cut(
             validated[col],
             bins=[-np.inf]
-            + list(
+            +
+            list(
                 range(
                     1950,
                     (int(datetime.now().year) - int(datetime.now().year) % 10) + 1,
                     10,
                 )
             )
-            + [np.inf],
+            +
+            [np.inf],
             labels=["<1950"]
-            + [
+            +
+            [
                 f"{decade}s"
                 for decade in range(
                     1950, (int(datetime.now().year) - int(datetime.now().year) % 10), 10
                 )
             ]
-            + [f">{(int(datetime.now().year) - int(datetime.now().year) % 10)}"],
+            +
+            [f">{(int(datetime.now().year) - int(datetime.now().year) % 10)}"],
         )
 
     return validated
-
 
 def categorize_prices(
     df: pd.DataFrame, bins=None, q=(0.05, 0.3, 0.5, 0.75, 0.9, 0.95, 0.99)
@@ -966,324 +1058,640 @@ def categorize_prices(
     prices = df["Цена, руб."]
 
     if bins is None:
-        df["Ценовая категория"], bins = pd.qcut(prices, q=q, retbins=True)
-
+        try:
+            df["Ценовая категория"], bins = pd.qcut(prices, q=q, retbins=True, duplicates='drop')
+        except ValueError as e:
+            if "Bin edges must be unique" in str(e) or "Too many duplicate edges" in str(e):
+                raise ValueError(
+                    f"Недостаточно уникальных цен для создания категорий. "
+                    f"Требуется минимум {len(q) + 1} уникальных цен, "
+                    f"но найдено только {prices.nunique()}. "
+                    f"Уникальные цены: {sorted(prices.unique())}"
+                )
+            else:
+                raise e
     else:
         df["Ценовая категория"] = pd.cut(prices, bins=bins, include_lowest=True)
 
     return df, bins
 
-
 def filter_by_date(
-    df: pd.DataFrame, cutoff_date: str | None, cut_before=False
+    df: pd.DataFrame | pd.Series,
+    cutoff_date: pd.Timestamp | None,
 ) -> pd.DataFrame:
     if cutoff_date is None:
         return df
-
     cutoff_date = pd.to_datetime(cutoff_date, dayfirst=True)
-    df["Дата создания"] = pd.to_datetime(df["Дата создания"], dayfirst=True)
-    idx = (
-        df["Дата создания"] > cutoff_date
-        if cut_before
-        else df["Дата создания"] <= cutoff_date
-    )
-    filtered_df = df[idx]
 
-    return filtered_df.reset_index(drop=True)
-
-
-def get_preprocessed_df(
-    df: pd.DataFrame, group_keys: Sequence[str], transform_fn: Callable, bins=None
-) -> Sequence:
-    validated_df, bins = process_raw(df, bins)
-
-    group_keys = [k for k in group_keys if k in validated_df.columns]
-    preprocessed_df = (
-        validated_df.groupby(group_keys).apply(transform_fn)
-    ).reset_index()
-
-    return preprocessed_df, bins
-
-
-def process_data(
-    stock_path: str, sales_path: str, cutoff_date: str, bins: pd.IntervalIndex | None = None
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    keys_no_dates = GROUP_KEYS
-    all_keys = ["Дата создания", "Дата продажи", *GROUP_KEYS]
-
-    # Define transform functions for different use cases
-    def process_stock(group):
-        """Sum 'Экземпляры' field in a group for stock calculation"""
-        return pd.Series(
-            {
-                "count": group["Экземпляры"].astype("int64").sum(),
-                "mean_price": group["Цена, руб."].astype("float64").mean(),
-            }
-        )
-
-    def process_movements(group):
-        """
-        Count the number of rows in a group and calculate the mean price
-        for stock change calculation
-        """
-        return pd.Series(
-            {
-                "count": len(group),
-                "mean_price": (group["Цена, руб."].astype("float64").mean()),
-            }
-        )
-
-    def _process_stock(preprocessed_df, keys_no_dates):
-        # Fork for stock (everything before cutoff)
-        filtered_df = filter_by_date(preprocessed_df, cutoff_date, cut_before=False)
-
-        # Group by non-date keys for monthly sales counting
-        monthly_df = filtered_df.groupby(keys_no_dates).agg(
-            count=("count", "sum"), mean_price=("mean_price", "mean")
-        )
-
-        monthly_stock, monthly_prices = (
-            monthly_df.loc[:, "count"],
-            monthly_df.loc[:, "mean_price"],
-        )
-
-        return monthly_stock, monthly_prices
-
-    def _process_sales(preprocessed_df, all_keys, keys_no_dates):
-        sales = filter_by_date(preprocessed_df, cutoff_date, cut_before=True)
-
-        prices = sales.groupby(keys_no_dates).agg(mean_price=("mean_price", "mean"))
-
-        # Prepare grouping keys for sold / arrived ensuring presence in dataframe
-        sold_keys = [
-            k for k in all_keys if k != "Дата создания" and k in sales.columns
-        ]
-        arrived_keys = [
-            k for k in all_keys if k != "Дата продажи" and k in sales.columns
-        ]
-
-        # Process movements for stock history
-        sold = sales.groupby(sold_keys).agg(outflow=("count", "sum")) * -1
-
-        arrived = sales.groupby(arrived_keys).agg(inflow=("count", "sum"))
-
-        arrived.rename_axis(index={"Дата создания": "_date"}, inplace=True)
-
-        sold.rename_axis(index={"Дата продажи": "_date"}, inplace=True)
-
-        sales = (
-            pd.concat([arrived, sold], axis=1)
-            .fillna(0)
-            .assign(change=lambda x: x["inflow"] + x["outflow"])
-        )
-
-        sales, change = (sales.loc[:, "outflow"], sales.loc[:, "change"])
-        return sales, change, prices
-
-    def _concat_series(
-        series_list: list[pd.Series], agg_fn: str, column_name: str, sort: bool = True
-    ) -> pd.DataFrame:
-        df = pd.DataFrame(
-            pd.concat(series_list, axis=1).agg(agg_fn, axis=1), columns=[column_name]
-        )
-        if sort:
-            df = df.sort_index(level="_date")
-
+    created_date = None
+    if isinstance(df, pd.DataFrame) and "created_date" in df.columns:
+        created_date = pd.to_datetime(df["created_date"])
+    elif "created_date" in df.index.names:
+        created_date = df.index.get_level_values("created_date")
+    else:
+        print("ERROR: filter_by_date - created_date not in df.columns or df.index.names")
         return df
+    
+    mask = pd.IndexSlice[:] if created_date is None else created_date > cutoff_date
+    filtered_df = df.loc[mask]
 
-    # Process actual stock data
-    stock_df = pd.read_excel(stock_path, dtype="str")
-    preprocessed_stock_df, _ = get_preprocessed_df(
-        stock_df, all_keys, transform_fn=process_stock, bins=bins
+    return filtered_df
+
+def process_stock(df):
+    """Sum 'Экземпляры' field in a group for stock calculation"""
+    return pd.Series({
+        "count": df["Экземпляры"].astype("int64").sum(),
+        "price": df["Цена, руб."].astype("float64").mean()
+    })
+
+def process_movements(df):
+    """
+    Count the number of rows in a group and calculate the mean price
+    for stock movement calculation
+    """
+    return pd.Series(
+        {
+            "count": len(df),
+            "price": (df["Цена, руб."].astype("float64").mean()),
+        }
     )
 
+def _process_stock(
+        preprocessed_df: pd.DataFrame, 
+        keys_no_dates: Sequence[str], 
+        cutoff_date: str | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Process stock data to create stock and prices DataFrames."""
+    
+    # Use all data without filtering
+    filtered_df = filter_by_date(preprocessed_df, cutoff_date)
+
+    # Group by non-date keys for monthly sales counting
+    monthly_df = filtered_df.groupby(keys_no_dates).agg(
+        count=("count", "sum"), price=("price", "mean")
+    )
+
+    monthly_stock, monthly_prices = (
+        monthly_df.loc[:, "count"],
+        monthly_df.loc[:, "price"],
+    )
+
+    monthly_stock = monthly_stock.rename("stock").to_frame()
+
+
+    return monthly_stock, monthly_prices
+
+def _init_stock(
+    stock_path: str,
+    all_keys: Sequence[str],
+    cutoff_date: pd.Timestamp | None = None,
+    bins: pd.IntervalIndex | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    stock_df = read_data_file(stock_path)
+
+    preprocessed_stock_df = process_raw(stock_df, bins=bins)
+
+    filtered_stock_df = filter_by_date(preprocessed_stock_df, cutoff_date)
+    
+    grouped_stock_df = _get_grouped_df(filtered_stock_df, all_keys)
+
+    # Fork for stock (everything before cutoff)
+    keys_no_dates = [
+        k for k in all_keys if k not in {"created_date", "sold_date"}
+    ]
+    
     stock, prices_from_stock = _process_stock(
-        preprocessed_stock_df,
-        keys_no_dates
+        grouped_stock_df,
+        keys_no_dates,
+        cutoff_date
     )
+    
+    
+    return stock, prices_from_stock
 
-    # Prepare for stock history
-    features = defaultdict(list)
-    features["stock"].append(stock)
-    features["prices"].append(prices_from_stock)
-    # ------------------------------------------------------------------
-    # Collect sales files (support both directory with Excel files and a
-    # single file path that may point to .xlsx/.xls or .csv). This makes
-    # the function compatible with unit-tests that supply a mocked CSV
-    # path (see ``test_process_data_success``).
-    # ------------------------------------------------------------------
+def _get_sales_files_paths(sales_path: str) -> list[Path]:
     sales_files: list[Path] = []
-
     sales_path_str = str(sales_path)
-    # If explicit file extension provided – treat as single file even if the
-    # physical file may be absent (unit-tests rely on mocked I/O).
     if sales_path_str.lower().endswith((".csv", ".xlsx", ".xls")):
         sales_files.append(Path(sales_path))
-    # Otherwise, if the path exists and is a file
     elif Path(sales_path).is_file():
         raise ValueError("Sales path is an unsupported file, not a directory")
-    # If the path exists and is a directory, find supported files within it
     elif Path(sales_path).is_dir():
         sales_files.extend(Path(sales_path).glob("*.xls*"))
         sales_files.extend(Path(sales_path).glob("*.xlsx"))
         sales_files.extend(Path(sales_path).glob("*.csv"))
-
     else:
         raise ValueError("Sales path does not lead to a valid file or directory.")
+    return sales_files
 
-    # Process sales files
-    file_df = pd.DataFrame()
-    for p in sales_files:
-        try:
-            if str(p).lower().endswith(".csv"):
-                # Always use read_csv for CSV files (including mocked tests)
-                file_df = pd.read_csv(
-                    p,
-                    dtype="str",
-                    index_col=None
-                )
-            else:
-                # Use read_excel for Excel files
-                file_df = pd.read_excel(
-                    p,
-                    dtype="str",
-                    index_col=None
-                )
+def read_data_file(path: Path) -> pd.DataFrame:
+    if not isinstance(path, Path):
+        path = Path(path)
+    if path.suffix == ".csv":
+        return pd.read_csv(path, dtype="str")
+    elif path.suffix in [".xlsx", ".xls"]:
+        return pd.read_excel(path, dtype="str")
+    else:
+        raise ValueError(f"Unsupported file extension: {path.suffix}")
 
-        except Exception as e:
-            print(f"Warning: Could not read file {p}: {e}")
-            continue
-
-        if not file_df.empty:
-            preprocessed_df, _ = get_preprocessed_df(
-                file_df, all_keys, transform_fn=process_movements, bins=bins
+def _preprocess_sort_sales(sales_files_paths: list[Path], bins: pd.IntervalIndex) -> OrderedDict:
+    monthly_dfs = {}
+    for path in sales_files_paths:
+        df = process_raw(read_data_file(path), bins=bins)
+        if not df.empty and "sold_date" in df.columns:
+            month = pd.to_datetime(
+                df["sold_date"]
+                .mode()[0]
+                .to_period('M')
+                .start_time
             )
+            monthly_dfs[month] = df
+    return OrderedDict(sorted(monthly_dfs.items(), reverse=True))  # reverse=True для обработки от позднего к раннему
 
-            stock, prices_from_stock = _process_stock(
-                preprocessed_df,
-                keys_no_dates
-            )
-
-            sales, change, prices_from_sales = _process_sales(
-                preprocessed_df, all_keys, keys_no_dates
-            )
-
-            prices = pd.concat(
-                [prices_from_stock, prices_from_sales],
-                axis=1
-            ).mean(axis=1)
-
-            features["stock"].append(stock)
-            features["prices"].append(prices)
-            features["sales"].append(sales)
-            features["change"].append(change)
-
-    for feature in features:
-        if features[feature]:
-            sort_index = feature in ("sales", "change")
-            fn = "mean" if feature == "prices" else "sum"
-            features[feature] = _concat_series(
-                features[feature], fn, feature, sort=sort_index
-            )
-
-        else:
-            features[feature] = pd.DataFrame()
-
-    # Унификация формата: даты в индексе, мультииндексы в колонках
-    if not features["stock"].empty:
-        # Для stock нужно создать DatetimeIndex с cutoff_date
-        cutoff_date_ts = pd.to_datetime(cutoff_date, dayfirst=True)
-        # Транспонируем: multiindex теперь в колонках
-        stock_transposed = features["stock"].T
-        # Создаем DatetimeIndex для stock
-        date_index = pd.Index([cutoff_date_ts], name='_date')
-        stock_transposed.index = date_index
-        features["stock"] = stock_transposed
-
-    if not features["prices"].empty:
-        # Добавляем дату к prices и транспонируем
-        cutoff_date_ts = pd.to_datetime(cutoff_date, dayfirst=True)
-        # Создаем временной индекс для prices
-        date_index = pd.Index([cutoff_date_ts], name='_date')
-        # Транспонируем: multiindex теперь в колонках
-        prices_with_date = features["prices"].T
-        prices_with_date.index = date_index
-        features["prices"] = prices_with_date
-
-    # Для sales и change тоже нужно преобразовать в единый формат
-    if not features["sales"].empty:
-        # sales уже имеет дату в индексе (_date) и multiindex в индексе
-        # Нужно переместить multiindex в колонки
-        sales_df = features["sales"]
-        if isinstance(sales_df.index, pd.MultiIndex):
-            # Преобразуем MultiIndex в формат: дата в индексе, multiindex в колонках
-            sales_unstacked = sales_df.unstack(level=list(range(1, sales_df.index.nlevels)))
-            # Убираем лишний уровень колонок если есть
-            if isinstance(sales_unstacked.columns, pd.MultiIndex):
-                sales_unstacked.columns = sales_unstacked.columns.droplevel(0)
-            features["sales"] = sales_unstacked
-
-    if not features["change"].empty:
-        # change аналогично sales
-        change_df = features["change"]
-        if isinstance(change_df.index, pd.MultiIndex):
-            # Преобразуем MultiIndex в формат: дата в индексе, multiindex в колонках
-            change_unstacked = change_df.unstack(level=list(range(1, change_df.index.nlevels)))
-            # Убираем лишний уровень колонок если есть
-            if isinstance(change_unstacked.columns, pd.MultiIndex):
-                change_unstacked.columns = change_unstacked.columns.droplevel(0)
-            features["change"] = change_unstacked
-
-    return features
-
-
-def get_stock_features(
-    stock: pd.DataFrame,
-    daily_movements: pd.DataFrame,
+def _get_grouped_df(
+    processed_df: pd.DataFrame,
+    group_keys: Sequence[str],
 ) -> pd.DataFrame:
-    # Проверка формата stock и адаптация при необходимости
-    # Если stock приходит в новом формате (даты в индексе), транспонируем
-    # для совместимости с существующей логикой функции
-    if isinstance(stock.index, pd.DatetimeIndex):
-        stock = stock.T  # Транспонируем для совместимости с логикой функции
-
-    if isinstance(daily_movements.columns, pd.DatetimeIndex):
-        daily_movements = daily_movements.T
-
-    stock_features = defaultdict(list)
-    groups = daily_movements.groupby(
-        daily_movements.index.get_level_values("_date").to_period("M")
+    
+    group_keys = [k for k in group_keys if k in processed_df.columns]
+    preprocessed_df = (
+        processed_df
+        .groupby(group_keys)
+        .apply(process_movements)
+        .sort_index(axis=1, ascending=False)
     )
-    for month, daily_data in groups:
-        stock = stock.join(
-            daily_data.T,
-            how="outer"
-        ).fillna(0).cumsum(axis=1)
 
-        stock = stock.sort_index(axis=1)
+    return preprocessed_df
 
-        conf = stock.clip(0, 5) / 5
-        month_conf = conf.iloc[:, 1:].mean(1).rename(month)
+def _process_grouped_df(
+        grouped_df: pd.DataFrame, 
+        all_keys: Sequence[str], 
+        keys_no_dates: Sequence[str],
+        cutoff_date: pd.Timestamp | None = None
+    ):
+    """Process sales data to create sales, movement, and prices DataFrames."""
 
-        in_stock = stock.clip(0, 1)
-        in_stock_frac = in_stock.iloc[:, 1:].mean(1).rename(month)
+    def _prune_arrival_dates(
+            arrived: pd.DataFrame, 
+            sold: pd.DataFrame
+    ) -> pd.DataFrame:
+        """Prune arrival dates that are before the sold dates."""
+        return arrived.loc[
+            arrived
+            .index
+            .get_level_values('_date')
+            .to_series()
+            .ge(
+                sold
+                .index
+                .get_level_values('_date')
+                .min()
+            )
+            .values
+        ]
 
-        stock_features["availability"].append(in_stock_frac)
-        stock_features["confidence"].append(month_conf)
-
-        stock = stock.iloc[:, -1:]
-
-    for k, v in stock_features.items():
-        k_df = pd.concat(v, axis=1).fillna(0).T
-        k_df = k_df.set_index(k_df.index.to_timestamp("ms"))
-        stock_features[k] = k_df
-
-    stock_features = pd.concat(
-        [stock_features["availability"], stock_features["confidence"]],
-        axis=1,
-        keys=["availability", "confidence"],
+    prices = grouped_df.groupby(
+        keys_no_dates
+    ).agg(
+        price=("price", "mean")
     )
-    return stock_features
+
+    # Prepare grouping keys for sold / arrived ensuring presence in dataframe
+    sold_keys = [
+        k for k in all_keys if k != "created_date" and k in grouped_df.index.names
+    ]
+    arrived_keys = [
+        k for k in all_keys if k != "sold_date" and k in grouped_df.index.names
+    ]
+
+    # Process movements for stock history
+    sold = grouped_df.groupby(
+        sold_keys
+    ).agg(
+        outflow=(
+            "count", 
+            "sum"
+        )
+    ).squeeze()
+
+    arrived = (
+        grouped_df
+        .pipe(
+            (filter_by_date, 'df'), 
+            cutoff_date=cutoff_date
+        ).groupby(
+            arrived_keys
+        ).agg(
+            inflow=(
+                "count", 
+                "sum"
+            )
+        ).squeeze())
+
+    arrived.rename_axis(index={"created_date": "_date"}, inplace=True)
+    sold.rename_axis(index={"sold_date": "_date"}, inplace=True)
+
+    arrived = _prune_arrival_dates(arrived, sold)
+
+    sales, arrived = sold.align(
+        arrived,
+        join='outer',
+        axis=0
+    )
+
+    movements = (
+        sales
+        .fillna(0)
+        .mul(-1)
+        .add(
+            arrived.fillna(0)
+        )
+        .rename('movement')
+    )
+
+    sales_pivot = sales.unstack(
+        level='_date'
+    ).fillna(0).astype(int)
+    
+    movement_pivot = movements.unstack(
+        level='_date'
+    ).fillna(0).astype(int)
+
+    return sales_pivot, movement_pivot, prices
+
+def _combine_prices(prices_from_stock: pd.DataFrame, prices_from_sales: pd.DataFrame) -> pd.DataFrame:
+    """Combine prices from stock and sales sources using mean."""
+    
+    prices = pd.concat(
+        [prices_from_stock, prices_from_sales],
+        axis=1, sort=True
+    ).mean(axis=1)
+    
+    return prices
+
+def _calculate_cumulative_stock(stock: pd.DataFrame, movement: pd.DataFrame):
+    """Joins previous stock with monthly movement and calculates the cumulative sum in reverse order."""
+
+    # For reverse calculation: invert signs and reverse cumsum direction
+    inverted_movement = -movement  # Invert signs for reverse calculation
+    reversed_movement = inverted_movement.sort_index(axis=1, ascending=False)
+
+    if not isinstance(stock.columns, pd.DatetimeIndex):
+        latest_date = reversed_movement.columns[0]
+        stock_date = latest_date + pd.Timedelta(days=1)
+        stock = stock.rename(columns={stock.columns[0]: stock_date})
+
+    cumulative_stock = stock.join(reversed_movement, how="outer").fillna(0)
+    # Apply cumsum in reverse direction (from right to left)
+    cumulative_stock = cumulative_stock.cumsum(axis=1)
+
+
+    return cumulative_stock
+
+def _split_stock(cumulative_stock):
+    """Splits the stock into the current month's view and the end-of-month carry-over stock."""
+    # немного неочевидно с датами: cumulative_stock содержит остатки на конец каждого дня,
+    # крайне правое значение - первое число предыдущего месяца,
+    # поэтому для получения остатков на конец месяца нужно взять крайне правое значение
+    # и для получения остатков за фактический месяц нужно взять все значения, кроме крайне правого
+    # хоть это по дате и часть месяца
+    
+    # сдвинем на один день вперед, чтобы получить остатки на начало каждого дня
+    last_stock = cumulative_stock.iloc[:, -1:]
+    monthly_stock = cumulative_stock.iloc[:, :-1]
+    monthly_stock.columns = monthly_stock.columns - pd.Timedelta(days=1)
+
+    # гарантируем, что last_stock указывает на начало месяца
+    last_stock.columns = last_stock.columns.to_period('M').start_time
+
+    
+    return last_stock, monthly_stock
+
+def _calculate_availability_and_confidence(monthly_stock: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
+    """Рассчитывает долю наличия и уверенность в данных, возвращая Series."""
+    
+    in_stock = monthly_stock.clip(0, 1)
+    availability = in_stock.mean(1)
+    confidence = (monthly_stock.clip(0, 5) / 5).mean(1)
+    availability_mask = in_stock > 0
+    
+    
+    return availability, confidence, availability_mask
+
+def _calculate_masked_sales(
+        sales: pd.DataFrame, 
+        availability_mask: pd.DataFrame, 
+        prices: pd.DataFrame
+    ) -> tuple[pd.Series, pd.Series]:
+    """Рассчитывает средние продажи с учетом наличия и их стоимость, возвращая Series."""
+    
+    availability_mask = availability_mask.reindex(sales.index)
+    masked_mean_sales_items = (
+        sales
+        .where(availability_mask)
+        .mean(axis=1, skipna=True)
+        .fillna(0)
+    )
+    try:
+        prices_for_index = prices.loc[masked_mean_sales_items.index]
+    except KeyError:
+        prices_for_index = pd.Series(0, index=masked_mean_sales_items.index)
+
+    masked_mean_sales_rub = (
+        masked_mean_sales_items
+        .mul(prices_for_index, axis=0)
+        .fillna(0)
+        .astype(int)
+    )
+    
+    
+    return masked_mean_sales_items, masked_mean_sales_rub
+
+def _calculate_lost_sales(
+        availability_mask: pd.DataFrame, 
+        masked_mean_sales_rub: pd.Series
+    ) -> pd.Series:
+    """Рассчитывает упущенные продажи, возвращая Series."""
+    
+    availability_mask = availability_mask.reindex(
+        masked_mean_sales_rub.index
+    )
+    lost_sales = (
+        (~availability_mask)
+        .astype(int)
+        .sum(axis=1, skipna=True)
+        .mul(
+            masked_mean_sales_rub
+            .squeeze()
+        )
+        .fillna(0)
+    )
+    
+    return lost_sales
+
+def _gather_base_features(
+        base_features_lists: dict[str, list[pd.Series | pd.DataFrame]],
+    ) -> dict[str, pd.Series | pd.DataFrame]:
+    """Gather base features from artifact pool."""
+    
+    def _process_is_time_agnostic(
+        _feature_df: pd.Series | pd.DataFrame
+    ) -> pd.Series | pd.DataFrame:
+        return _feature_df.mean(axis=1).fillna(0).astype(int)
+    
+    def _process_time_dependent(
+        _feature_df: pd.Series | pd.DataFrame
+    ) -> pd.Series | pd.DataFrame:
+        return (
+            _feature_df
+            .groupby(
+                _feature_df
+                .columns
+                .to_period('M')
+                .start_time, 
+                axis=1
+            )
+            .agg('sum')
+            .fillna(0)
+        )
+    
+    def _get_correct_processing_fn(
+        feature_df: pd.Series | pd.DataFrame
+    ) -> Callable:
+        if isinstance(
+            feature_df.columns, pd.DatetimeIndex
+        ):
+            return _process_time_dependent
+        else:
+            return _process_is_time_agnostic
+    
+    base_features_dict = {}
+    for feature_name, feature_list in base_features_lists.items():
+        if feature_list:
+            feature_df = pd.concat(
+                feature_list, 
+                axis=1
+            )
+            processing_fn = _get_correct_processing_fn(feature_df)
+            base_features_dict[feature_name] = processing_fn(feature_df)
+    return base_features_dict
+
+def run_data_processing_pipeline(config: dict, initial_inputs: dict) -> dict:
+    """ 
+    Runs a declarative, three-stage data processing pipeline with built-in logic 
+    for base and report feature aggregation.
+    """
+    artifact_pool = initial_inputs.copy()
+    base_features_names = artifact_pool.get('base_features_names', [])
+    report_features_names = artifact_pool.get('report_features_names', [])
+    base_features_lists = {f: [] for f in base_features_names}
+    artifact_pool['base_features_lists'] = base_features_lists
+    artifact_pool['pipeline_outputs'] = None
+    monthly_reports_list = []
+
+    def _apply_step(step_config: dict):
+        func = step_config['func']
+        inputs = {key: artifact_pool.get(key) for key in step_config.get('inputs', [])}
+        output_names = step_config.get('outputs', [])
+        results = func(**inputs)
+        if not isinstance(results, tuple):
+            results = (results,)
+        for name, value in zip(output_names, results):
+            artifact_pool[name] = value
+
+    # --- 1. Init Stage ---
+    print("=== INIT STAGE ===")
+    for step_name, step_config in config.get('init_steps', {}).items():
+        print(f"Running init step: {step_name}")
+        _apply_step(step_config)
+
+    # --- 2. Iterative Steps Stage ---
+    print("=== ITERATIVE STEPS STAGE ===")
+    sorted_sales_dfs = artifact_pool.get('sorted_sales_dfs', {})
+    
+    for month_date, processed_df in sorted_sales_dfs.items():
+        print(f"Processing month: {month_date}")
+        artifact_pool['processed_df'] = processed_df
+        artifact_pool['month_date'] = month_date
+        
+        for step_name, step_config in config.get('steps', {}).items():
+            print(f"Running step: {step_name}")
+            _apply_step(step_config)
+
+        # --- Built-in Aggregation Logic ---
+        for key in base_features_names:
+            if key in artifact_pool:
+                base_features_lists[key].append(
+                    artifact_pool[key]
+                )
+
+        series_list = [
+            artifact_pool[name].rename(name) 
+            for name in report_features_names 
+            if name in artifact_pool 
+            and isinstance(artifact_pool[name], pd.Series)
+        ]
+        if series_list:
+            monthly_report_df = pd.concat(series_list, axis=1)
+            monthly_report_df = monthly_report_df.assign(_date=month_date)
+            monthly_reports_list.append(monthly_report_df.reset_index())
+
+    # --- 3. Closure Stage ---
+    print("=== CLOSURE STAGE ===")
+    # --- Built-in Report Aggregation Logic ---
+    report_features_df = None
+    if monthly_reports_list:
+        report_features_df = pd.concat(
+            monthly_reports_list, 
+            axis=0, 
+            ignore_index=True
+        )
+        final_index_cols = ['_date'] + [
+            key for key in GROUP_KEYS 
+            if key in report_features_df.columns
+        ]
+        report_features_df = report_features_df.set_index(
+            final_index_cols
+        ).fillna(0).abs()
+    artifact_pool['report_features'] = report_features_df
+
+    # --- Built-in Base Features Aggregation Logic ---
+    artifact_pool['base_features_dict'] = _gather_base_features(
+        base_features_lists
+    )
+
+    # --- Dynamic closure Logic ---
+    for step_name, step_config in config.get('closure', {}).items():
+        print(f"Running closure step: {step_name}")
+        _apply_step(step_config)
+        
+    return artifact_pool.get('pipeline_outputs')
+
+def process_data(
+    stock_path: str, 
+    sales_path: str, 
+    bins: pd.IntervalIndex | None = None,
+    base_features_names: list[str] = [],
+    report_features_names: list[str] = []
+) -> dict[str, pd.DataFrame]:
+    
+    if not base_features_names:
+        base_features_names = BASE_FEATURES_DEFAULT
+    if not report_features_names:
+        report_features_names = REPORT_FEATURES_DEFAULT
+    
+    initial_inputs = {
+        'stock_path': stock_path,
+        'sales_path': sales_path,
+        'bins': bins,
+        'all_keys': ["created_date", "sold_date", *GROUP_KEYS],
+        'group_keys': ["created_date", "sold_date", *GROUP_KEYS],
+        'keys_no_dates': GROUP_KEYS,
+        'base_features_names': base_features_names,
+        'report_features_names': report_features_names,
+    }
+    
+    final_artifacts = run_data_processing_pipeline(UNIFIED_PIPELINE_CONFIG, initial_inputs)
+    
+    base_features_dict = final_artifacts.get('base_features_dict', {})
+    report_features = final_artifacts.get('report_features', None)
+
+    if base_features_dict:
+        for feature_name, df_pivot in base_features_dict.items():
+            if isinstance(df_pivot, pd.DataFrame):
+                df_pivot.columns.name = '_date'
+                base_features_dict[feature_name] = df_pivot
+
+    return {
+        **base_features_dict,
+        'report_features': report_features
+    }
+
+
+UNIFIED_PIPELINE_CONFIG = {
+    'init_steps': OrderedDict([
+        ('_get_sales_files_paths', {
+            'func': _get_sales_files_paths,
+            'inputs': ['sales_path'],
+            'outputs': ['sales_files_paths']
+        }),
+        ('_preprocess_sort_sales', {
+            'func': _preprocess_sort_sales,
+            'inputs': ['sales_files_paths', 'bins'],
+            'outputs': ['sorted_sales_dfs']
+        }),
+        ('_extract_cutoff_date', {
+            'func': (
+                lambda sorted_sales_dfs: 
+                list(
+                    sorted_sales_dfs.keys()
+                )[-1]
+                .to_period('M')
+                .start_time
+                .floor("D") - pd.Timedelta(days=1)
+            ),
+            'inputs': ['sorted_sales_dfs'],
+            'outputs': ['cutoff_date']
+        }),
+        ('_init_stock', {
+            'func': _init_stock,
+            'inputs': ['stock_path', 'all_keys', 'cutoff_date', 'bins'],
+            'outputs': ['stock', 'prices_from_stock']
+        }),
+    ]),
+    'steps': OrderedDict([
+        ('_get_grouped_df', {
+            'func': _get_grouped_df,
+            'inputs': ['processed_df', 'group_keys'],
+            'outputs': ['grouped_df']
+        }),
+        ('_process_grouped_df', {
+            'func': _process_grouped_df,
+            'inputs': ['grouped_df', 'all_keys', 'keys_no_dates', 'cutoff_date'],
+            'outputs': ['sales', 'movement', 'prices_from_sales']
+        }),
+        ('_combine_prices', {
+            'func': _combine_prices,
+            'inputs': ['prices_from_stock', 'prices_from_sales'],
+            'outputs': ['prices']
+        }),
+        ('_calculate_cumulative_stock', {
+            'func': _calculate_cumulative_stock,
+            'inputs': ['stock', 'movement'],
+            'outputs': ['cumulative_stock']
+        }),
+        ('_split_stock', {
+            'func': _split_stock,
+            'inputs': ['cumulative_stock'],
+            'outputs': ['stock', 'monthly_stock']
+        }),
+        ('_calculate_availability_confidence', {
+            'func': _calculate_availability_and_confidence,
+            'inputs': ['monthly_stock'],
+            'outputs': ['availability', 'confidence', 'availability_mask']
+        }),
+        ('_calculate_masked_sales', {
+            'func': _calculate_masked_sales,
+            'inputs': ['sales', 'availability_mask', 'prices'],
+            'outputs': ['masked_mean_sales_items', 'masked_mean_sales_rub']
+        }),
+        ('_calculate_lost_sales', {
+            'func': _calculate_lost_sales,
+            'inputs': ['availability_mask', 'masked_mean_sales_rub'],
+            'outputs': ['lost_sales']
+        }),
+    ]),
+    'closure': OrderedDict([
+        ('package_outputs', {
+            'func': lambda base_features_dict, report_features: {
+                'base_features_dict': base_features_dict,
+                'report_features': report_features
+            },
+            'inputs': ['base_features_dict', 'report_features'],
+            'outputs': ['pipeline_outputs']
+        })
+    ])
+}
 
 
 def ensure_monthly_regular_index(df):
@@ -1302,7 +1710,6 @@ def transform_months(series):
 
     return msin, mcos
 
-
 def get_monthly_sales_pivot(monthly_sales_df):
     monthly_sales_pivot = monthly_sales_df.groupby(
         monthly_sales_df.index.get_level_values("_date").to_period("M")
@@ -1311,7 +1718,6 @@ def get_monthly_sales_pivot(monthly_sales_df):
     monthly_sales_pivot = monthly_sales_pivot.sort_index(axis=1)
 
     return monthly_sales_pivot
-
 
 def get_past_covariates_df(monthly_sales_df, stock_features, feature_list, span):
     boolean_mask = stock_features.T

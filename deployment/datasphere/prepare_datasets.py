@@ -2,15 +2,18 @@ import logging
 from collections.abc import Sequence
 from warnings import warn
 
+import pandas as pd
+
 from deployment.app.config import get_settings
 from deployment.app.db import feature_storage
+from deployment.app.db.data_access_layer import DataAccessLayer
+from deployment.app.db.schema import MULTIINDEX_NAMES
 from plastinka_sales_predictor.data_preparation import (
     GlobalLogMinMaxScaler,
     MultiColumnLabelBinarizer,
     PlastinkaInferenceTSDataset,
     PlastinkaTrainingTSDataset,
     get_monthly_sales_pivot,
-    get_stock_features,
 )
 
 DEFAULT_OUTPUT_DIR = "./datasets/"  # Default location if not specified
@@ -33,7 +36,7 @@ DEFAULT_PAST_COVARIATES_FNAMES = [
 logger = logging.getLogger(__name__)
 
 
-def load_data(start_date=None, end_date=None, feature_types=None, connection=None):
+def load_data(start_date=None, end_date=None, feature_types=None, dal=None):
     """
     Loads features using feature_storage.load_features (factory pattern).
 
@@ -51,7 +54,7 @@ def load_data(start_date=None, end_date=None, feature_types=None, connection=Non
 
     try:
         # Ensure we're loading all required feature types
-        required_types = ["sales", "stock", "change", "prices"]
+        required_types = ["sales", "stock", "movement", "prices"]
         if feature_types is None:
             feature_types = required_types
         else:
@@ -67,10 +70,6 @@ def load_data(start_date=None, end_date=None, feature_types=None, connection=Non
             f"Loading with parameters: start_date={start_date}, end_date={end_date}"
         )
         logger.info("About to call feature_storage.load_features...")
-
-        # Create a DAL instance from the connection
-        from deployment.app.db.data_access_layer import DataAccessLayer
-        dal = DataAccessLayer(connection=connection)
 
         features = feature_storage.load_features(
             store_type="sql",
@@ -88,13 +87,11 @@ def load_data(start_date=None, end_date=None, feature_types=None, connection=Non
     return features
 
 
-# type: ignore[override]
 def prepare_datasets(
     raw_features: dict,
-    config: dict | None,
+    stock_features: pd.DataFrame,
     save_directory: str,
     datasets_to_generate: Sequence[str] = ("train", "inference"),
-    bins=None,  # Add bins parameter
 ) -> tuple[PlastinkaTrainingTSDataset | None, PlastinkaInferenceTSDataset | None]:
     """
     Loads data from DB, prepares features, creates full dataset.
@@ -102,7 +99,7 @@ def prepare_datasets(
 
     Args:
         raw_features: Dictionary of raw features loaded from the database.
-        config: Dictionary containing training configuration.
+        stock_features: DataFrame of stock features loaded from the database.
         output_dir: Directory to save the prepared datasets.
         datasets_to_generate: List of dataset types to generate (e.g., ["train", "val", "inference"])
 
@@ -110,12 +107,12 @@ def prepare_datasets(
         Tuple of (train_dataset, val_dataset, inference_dataset)
     """
     logger.info("Starting feature preparation...")
-
+    
     # Validate required raw features exist
     if (
         "sales" not in raw_features
         or "stock" not in raw_features
-        or "change" not in raw_features
+        or "movement" not in raw_features
     ):
         raise ValueError("Missing required raw feature data.")
 
@@ -125,21 +122,15 @@ def prepare_datasets(
     )
 
     try:
-        # 1. Stock Features (using new optimized get_stock_features)
-        features["stock_features"] = get_stock_features(
-            features["stock"], features["change"]
-        )
-        logger.info("Stock features created successfully.")
-
-        # 2. Create Sales Pivot Table
+        # 1. Create Sales Pivot Table
         sales_pivot = get_monthly_sales_pivot(features["sales"])
         logger.info("Sales pivot table created successfully.")
 
-        # 3. Initialize Transformers (as per prepare_datasets.py example)
+        # 2. Initialize Transformers (as per prepare_datasets.py example)
         static_transformer = MultiColumnLabelBinarizer()
         scaler = GlobalLogMinMaxScaler()
 
-        # 4. Create datasets
+        # 3. Create datasets
         output_chunk_length = 1
         dataset_length = sales_pivot.shape[0]
         default_input_chunk_length = dataset_length - output_chunk_length
@@ -152,7 +143,7 @@ def prepare_datasets(
 
         # Common dataset parameters
         dataset_params = {
-            "stock_features": features["stock_features"],
+            "stock_features": stock_features,
             "monthly_sales": sales_pivot,
             "static_transformer": static_transformer,
             "static_features": DEFAULT_STATIC_FEATURES,
@@ -219,26 +210,38 @@ def get_datasets(
     """
     logger.info("get_datasets function started...")
 
+    dal = DataAccessLayer(connection=connection)
     try:
-        # Get bins from config if available
-        settings = get_settings()
-        bins = settings.price_category_interval_index
-    except (ImportError, AttributeError):
-        # Fallback for standalone execution
-        bins = None
+        raw_features = load_data(start_date, end_date, feature_types, dal=dal)
+        logger.info("Raw features loaded successfully.")
+        feature_values = ["availability", "confidence"]
+        stock_features_long = feature_storage.load_report_features(
+            store_type="sql",
+            dal=dal,
+            start_date=config.get("start_date", None),
+            end_date=config.get("end_date", None),
+            prediction_month=config.get("prediction_month", None),
+            feature_subset=feature_values
+        )
+        logger.info("Stock features loaded successfully in long format.")
 
-    try:
-        raw_features = load_data(start_date, end_date, feature_types, connection=connection)
+        # Transform from long to wide format
+        stock_features_long['data_date'] = pd.to_datetime(
+            stock_features_long['data_date']
+        )
+        
+        stock_features_wide = stock_features_long.pivot_table(
+            index='data_date',
+            columns=MULTIINDEX_NAMES,
+            values=feature_values
+        )
+        logger.info(f"Transformed stock features to wide format with shape: {stock_features_wide.shape}")
 
-        logger.info("Raw features loaded, calling prepare_datasets...")
-
-        # Pass the output_dir and datasets_to_generate down to the preparation function
         train_dataset, inference_dataset = prepare_datasets(
             raw_features,
-            config,
+            stock_features_wide, # Pass the transformed wide dataframe
             output_dir,
             datasets_to_generate,
-            bins=bins,  # Pass bins to prepare_datasets
         )
 
         logger.info(

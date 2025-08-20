@@ -75,7 +75,7 @@ async def clean_historical_data(
         "records_removed": {
             "sales": result.get("sales", 0),
             "stock": result.get("stock", 0),
-            "stock_changes": result.get("stock_changes", 0),
+            "stock_movement": result.get("stock_movement", 0),
             "prices": result.get("prices", 0),
             "total": sum(result.values()),
         },

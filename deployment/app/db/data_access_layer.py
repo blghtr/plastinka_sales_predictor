@@ -39,12 +39,14 @@ from deployment.app.db.database import (
     get_effective_config,
     get_features_by_date_range,
     get_job,
+    get_job_params,
+    get_job_prediction_month,
     get_latest_prediction_month,
     get_next_prediction_month,
     get_or_create_multiindex_id,
     get_prediction_result,
     get_prediction_results_by_month,
-    get_predictions_for_jobs,
+    get_predictions,
     get_recent_models,
     get_report_features,
     get_report_result,
@@ -173,8 +175,24 @@ class DataAccessLayer:
         return get_job(job_id, self._connection)
 
     def list_jobs(self, job_type: str = None, status: str = None, limit: int = 100) -> list[dict]:
+        """List jobs with optional filters"""
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return list_jobs(job_type, status, limit, self._connection)
+        return list_jobs(
+            job_type=job_type,
+            status=status,
+            limit=limit,
+            connection=self._connection,
+        )
+
+    def get_job_params(self, job_id: str, param_name: str = None) -> dict[str, Any]:
+        """Get job parameters from the database."""
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return get_job_params(job_id, connection=self._connection, param_name=param_name)
+
+    def get_job_prediction_month(self, job_id: str) -> date:
+        """Get prediction month from job parameters."""
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return get_job_prediction_month(job_id, connection=self._connection)
 
     @transaction_required
     def create_data_upload_result(self, job_id: str, records_processed: int, features_generated: list[str], processing_run_id: int) -> str:
@@ -232,9 +250,9 @@ class DataAccessLayer:
         return delete_model_record_and_file(model_id, self._connection)
 
     @transaction_required
-    def create_training_result(self, job_id: str, model_id: str, config_id: str, metrics: dict[str, Any], config: dict[str, Any], duration: int | None) -> str:
+    def create_training_result(self, job_id: str, model_id: str, config_id: str, metrics: dict[str, Any], duration: int | None) -> str:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return create_training_result(job_id, model_id, config_id, metrics, config, duration, self._connection)
+        return create_training_result(job_id, model_id, config_id, metrics, duration, self._connection)
 
     @transaction_required
     def create_prediction_result(self, job_id: str, model_id: str, output_path: str, summary_metrics: dict[str, Any] | None, prediction_month: date | None = None) -> str:
@@ -263,18 +281,18 @@ class DataAccessLayer:
         prediction_month_str = prediction_month.isoformat() if prediction_month else None
         return get_prediction_results_by_month(prediction_month_str, model_id, self._connection)
 
-    def get_predictions_for_jobs(self, job_ids: list[str], model_id: str | None = None) -> list[dict]:
+    def get_predictions(self, job_ids: list[str], model_id: str | None = None, prediction_month: date | None = None) -> list[dict]:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return get_predictions_for_jobs(job_ids, model_id, self._connection)
+        return get_predictions(job_ids, model_id, prediction_month, self._connection)
 
     def get_report_result(self, result_id: str) -> dict:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_report_result(result_id, self._connection)
 
     @transaction_required
-    def create_processing_run(self, start_time: datetime, status: str, cutoff_date: str, source_files: str, end_time: datetime = None) -> int:
+    def create_processing_run(self, start_time: datetime, status: str, source_files: str, end_time: datetime = None) -> int:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return create_processing_run(start_time, status, cutoff_date, source_files, end_time, self._connection)
+        return create_processing_run(start_time, status, source_files, end_time, self._connection)
 
     @transaction_required
     def update_processing_run(self, run_id: int, status: str, end_time: datetime = None) -> None:
@@ -360,9 +378,23 @@ class DataAccessLayer:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_latest_prediction_month(self._connection)
 
-    def get_report_features(self, prediction_month: date, model_id: str | None = None, filters: dict[str, Any] = None) -> list[dict]:
+    def get_report_features(
+        self,
+        multiidx_ids: list[int] | None = None,
+        prediction_month: date | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        feature_subset: list[str] | None = None,
+    ) -> list[dict]:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return get_report_features(prediction_month, model_id, filters, self._connection)
+        return get_report_features(
+            multiidx_ids=multiidx_ids,
+            prediction_month=prediction_month,
+            start_date=start_date,
+            end_date=end_date,
+            feature_subset=feature_subset,
+            connection=self._connection,
+        )
 
     # Batch utility methods
     def execute_query_with_batching(
@@ -394,14 +426,14 @@ class DataAccessLayer:
         return get_next_prediction_month(self._connection)
 
     @transaction_required
-    def insert_predictions(self, result_id: str, model_id: str, df: pd.DataFrame):
+    def insert_predictions(self, result_id: str, model_id: str, prediction_month: date, df: pd.DataFrame):
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return insert_predictions(result_id, model_id, df, self._connection)
+        return insert_predictions(result_id, model_id, prediction_month, df, self._connection)
 
     @transaction_required
     def delete_features_by_table(self, table: str) -> None:
         """Delete all records from a feature table."""
-        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        self._authorize([UserRoles.ADMIN, UserRoles.SYSTEM])
         return delete_features_by_table(table, self._connection)
 
     @transaction_required
@@ -433,3 +465,10 @@ class DataAccessLayer:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         from deployment.app.db.database import get_multiindex_mapping_by_ids
         return get_multiindex_mapping_by_ids(multiindex_ids, self._connection)
+
+    @transaction_required
+    def insert_report_features(self, features_to_insert: list[tuple]) -> None:
+        """Insert a batch of report features into the report_features table."""
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        from deployment.app.db.database import insert_report_features
+        return insert_report_features(features_to_insert, self._connection)

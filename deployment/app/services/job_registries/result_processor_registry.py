@@ -47,7 +47,6 @@ async def process_training_results(
         # Import functions to avoid circular import
         from deployment.app.services.datasphere_service import (
             _perform_model_cleanup,
-            calculate_and_store_report_features,
             save_model_file_and_db,
             save_predictions_to_db,
         )
@@ -74,31 +73,6 @@ async def process_training_results(
                 logger.info(
                     f"[{job_id}] Saved {prediction_result_info.get('predictions_count', 'N/A')} predictions to database with result_id: {prediction_result_info.get('result_id', 'N/A')}"
                 )
-
-                # --- NEW: Trigger report feature calculation ---
-                job_details = dal.get_job(job_id)
-                if job_details and job_details.get("parameters"):
-                    try:
-                        # Handle both string and dict parameters
-                        if isinstance(job_details["parameters"], str):
-                            params = json.loads(job_details["parameters"])
-                        else:
-                            params = job_details["parameters"]
-                        
-                        prediction_month_str = params.get("prediction_month")
-                        if prediction_month_str:
-                            prediction_month = date.fromisoformat(prediction_month_str)
-                            logger.info(f"[{job_id}] Triggering report feature calculation for {prediction_month}.")
-                            await calculate_and_store_report_features(
-                                prediction_month,
-                                dal
-                            )
-                        else:
-                            logger.warning(f"[{job_id}] No prediction_month in job parameters, cannot calculate report features.")
-                    except (json.JSONDecodeError, ValueError, AttributeError) as e:
-                        logger.warning(f"[{job_id}] Could not parse job parameters for report feature calculation: {e}")
-                        logger.warning(f"[{job_id}] Parameters value: {job_details['parameters']}")
-
             else:
                 logger.warning(
                     f"[{job_id}] No predictions file found, cannot save predictions to DB."
@@ -119,7 +93,6 @@ async def process_training_results(
                 metrics=metrics_data,
                 model_id=model_id_for_status,
                 duration=int(polls * poll_interval),
-                config=config.model_dump(),
             )
             logger.info(
                 f"[{job_id}] Training result record created: {training_result_id}"

@@ -202,8 +202,8 @@ def file_based_db():
         # --- Результаты тренировки (для метрик) ---
         metrics_data_1 = {"mape": 9.9, "val_loss": 0.08}
         metrics_data_2 = {"mape": 9.8, "val_loss": 0.03}
-        dal.create_training_result(job_id, model_id_1, config_id_1, metrics_data_1, config_data_1, None)
-        dal.create_training_result(job_id, model_id_2, config_id_2, metrics_data_2, config_data_2, None)
+        dal.create_training_result(job_id, model_id_1, config_id_1, metrics_data_1, None)
+        dal.create_training_result(job_id, model_id_2, config_id_2, metrics_data_2, None)
 
         # --- Запись о job ---
         dal.create_job(job_id, "training", "completed")
@@ -423,17 +423,20 @@ def db_with_sales_data(in_memory_db):
         {"data_date": "2023-10-31", "value": 10},
         {"data_date": "2023-11-01", "value": 5},
         {"data_date": "2023-11-02", "value": 5},
+        {"data_date": "2023-11-30", "value": 5},  # Add data for end of November to make it complete
     ]
 
-    # Create a DataFrame with a DatetimeIndex and MultiIndex columns
+    # Create a DataFrame with MultiIndex in index and DatetimeIndex in columns
+    # This matches the expected format for _save_feature
     df_sales = pd.DataFrame(sales_data_list)
     df_sales["data_date"] = pd.to_datetime(df_sales["data_date"])
-    df_sales.set_index("data_date", inplace=True)
-
-    # Create the MultiIndex column with the correct format
-    pivot_df = pd.DataFrame(df_sales["value"].values,
-                           index=df_sales.index,
-                           columns=pd.MultiIndex.from_tuples([multiindex_tuple], names=MULTIINDEX_NAMES))
+    
+    # Create the correct format: MultiIndex in index, DatetimeIndex in columns
+    pivot_df = pd.DataFrame(
+        data=df_sales["value"].values.reshape(1, -1),
+        index=pd.MultiIndex.from_tuples([multiindex_tuple], names=MULTIINDEX_NAMES),
+        columns=df_sales["data_date"]
+    )
 
     # Use SQLFeatureStore to save the features
     feature_store = SQLFeatureStore(dal=dal)

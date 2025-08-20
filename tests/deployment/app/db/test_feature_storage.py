@@ -42,16 +42,14 @@ def feature_store_env():
     """)
 
     cursor.execute("""
-    INSERT INTO processing_runs (run_id, start_time, status, cutoff_date, source_files)
-    VALUES (1, '2023-01-01T00:00:00', 'fixture_setup', '2023-01-01', 'fixture_files.csv')
+    INSERT INTO processing_runs (run_id, start_time, status, source_files)
+    VALUES (1, '2023-01-01T00:00:00', 'fixture_setup', 'fixture_files.csv')
     """)
     conn.commit()
 
     # Clean fact tables before each test
-    cursor.execute("DELETE FROM fact_stock")
-    cursor.execute("DELETE FROM fact_prices")
     cursor.execute("DELETE FROM fact_sales")
-    cursor.execute("DELETE FROM fact_stock_changes")
+    cursor.execute("DELETE FROM fact_stock_movement")
     conn.commit()
 
     yield {
@@ -100,41 +98,32 @@ def test_convert_to_float(feature_store_env):
         assert store._convert_to_float(np.nan, default=-1.5) == -1.5
 
 
-def test_convert_to_date_str(feature_store_env):
-    """Test the _convert_to_date_str helper method."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    dal = DataAccessLayer(connection=conn)
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        test_date = datetime(2023, 1, 15)
-        assert store._convert_to_date_str(test_date) == "2023-01-15"
-        assert store._convert_to_date_str("2023-01-15") == "2023-01-15"
-        assert store._convert_to_date_str("invalid-date") == "invalid-date"
-        assert store._convert_to_date_str(123) == "123"
 
 
-def test_save_stock_feature_with_mixed_types(feature_store_env):
-    """Test saving stock feature with mixed data types."""
+
+def test_save_report_features(feature_store_env):
+    """Test saving report features to the database."""
     conn = feature_store_env["conn"]
     dal = DataAccessLayer(connection=conn)
     cursor = feature_store_env["cursor"]
 
-    dal = DataAccessLayer(connection=conn)
     with SQLFeatureStore(dal=dal, run_id=1) as store:
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        index = pd.MultiIndex.from_tuples(
-            [idx_tuple],
+        # 1. Prepare mock data in the correct format
+        products = pd.MultiIndex.from_tuples(
+            [
+                (
+                    "1234567890",
+                    "Test Artist",
+                    "Test Album",
+                    "CD",
+                    "Standard",
+                    "Studio",
+                    "2010s",
+                    "2010s",
+                    "Rock",
+                    2015,
+                )
+            ],
             names=[
                 "barcode",
                 "artist",
@@ -149,160 +138,113 @@ def test_save_stock_feature_with_mixed_types(feature_store_env):
             ],
         )
 
-        today = datetime.now().date()
-        yesterday = (datetime.now() - timedelta(days=1)).date()
+        # Create individual feature DataFrames (as they would be after the pipeline)
+        # Note: These are not used in the new test format, but kept for reference
 
-        # Используем унифицированный формат: дата в индексе, multiindex в колонках
-        data_to_save = {
-            today: 10,
-            yesterday: 15.7,
-            pd.to_datetime("2023-01-01").date(): 20,
-            # Убираем NaN, так как он не сохраняется
+        # Создаем широкий DataFrame с MultiIndex в индексе и названиями фич в колонках
+        # Каждая строка - это один продукт, каждая колонка - одна фича
+        report_features_df = pd.DataFrame({
+            'availability': [0.9],
+            'confidence': [0.8],
+            'lost_sales': [100.0],
+            'masked_mean_sales_items': [10.0],
+            'masked_mean_sales_rub': [1000.0]
+        }, index=products)
+        report_features_df['_date'] = pd.to_datetime('2024-01-01')
+        report_features_df = report_features_df.set_index(['_date'], append=True)
+
+        features_to_save = {
+            "sales": pd.DataFrame(index=pd.MultiIndex.from_tuples([], names=[
+                "barcode", "artist", "album", "cover_type", "price_category", 
+                "release_type", "recording_decade", "release_decade", "style", "record_year"
+            ])),
         }
 
-        for i, (date_val, value) in enumerate(data_to_save.items()):
-            # Создаем DataFrame с датой в индексе и multiindex в колонках
-            date_ts = pd.to_datetime(date_val)
-            df_single_date = pd.DataFrame([[value]], index=[date_ts], columns=index)
+        # 2. Call the save_features method with report_features included in features dict
+        features_to_save["report_features"] = report_features_df
+        store.save_features(features_to_save)
 
-            # Первый вызов без append (очищает таблицу), остальные с append=True
-            append_mode = i > 0
-            store._save_feature("stock", df_single_date, append=append_mode)
-
-        query = "SELECT data_date, value FROM fact_stock WHERE multiindex_id = 1 ORDER BY data_date"
-        cursor.execute(query)
+        # 3. Verify the data in the database
+        cursor.execute(
+            "SELECT * FROM report_features WHERE multiindex_id = 1 ORDER BY data_date"
+        )
         results = cursor.fetchall()
 
-        assert len(results) == 3
-        assert results[0]["data_date"] == "2023-01-01"
-        assert results[0]["value"] == 20
-        assert results[1]["data_date"] == yesterday.strftime("%Y-%m-%d")
-        assert results[1]["value"] == 15.7
-        assert results[2]["data_date"] == today.strftime("%Y-%m-%d")
-        assert results[2]["value"] == 10
+        assert len(results) == 1
 
+        # Check the saved data
+        result = results[0]
+        assert result["multiindex_id"] == 1
+        assert result["availability"] == 0.9
+        assert result["confidence"] == 0.8
+        assert result["lost_sales"] == 100.0
+        assert result["masked_mean_sales_items"] == 10.0
+        assert result["masked_mean_sales_rub"] == 1000.0
 
-def test_save_prices_replaces_by_multiindex(feature_store_env):
-    """Test that saving prices replaces records based on multiindex_id."""
+def test_load_report_features(feature_store_env):
+    """Test loading report features from the database."""
     conn = feature_store_env["conn"]
     dal = DataAccessLayer(connection=conn)
     cursor = feature_store_env["cursor"]
 
-    idx_tuple = (
-        "1234567890", "Test Artist", "Test Album", "CD", "Standard",
-        "Studio", "2010s", "2010s", "Rock", 2015,
+    # 1. Insert test data directly into the report_features table
+    test_data = [
+        (
+            "2024-01-01",
+            1,
+            0.9,
+            0.8,
+            10.0,
+            1000.0,
+            50.0,
+            datetime.now().isoformat(),
+        ),
+        (
+            "2024-02-01",
+            1,
+            0.95,
+            0.85,
+            12.0,
+            1200.0,
+            75.0,
+            datetime.now().isoformat(),
+        ),
+    ]
+    cursor.executemany(
+        """INSERT INTO report_features (data_date, multiindex_id, availability, confidence, masked_mean_sales_items, masked_mean_sales_rub, lost_sales, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        test_data,
     )
-    index = pd.MultiIndex.from_tuples(
-        [idx_tuple],
-        names=[
-            "barcode", "artist", "album", "cover_type", "price_category",
-            "release_type", "recording_decade", "release_decade", "style", "record_year",
-        ],
-    )
+    conn.commit()
 
-    date1 = pd.to_datetime("2023-08-01")
-    df1 = pd.DataFrame([[1000.0]], index=[date1], columns=index)
+    # 2. Call the load_report_features method
+    with SQLFeatureStore(dal=dal) as store:
+        # Test loading all features for a specific month
+        loaded_df_jan = store.load_report_features(
+            start_date=datetime(2024, 1, 1).date(),
+            end_date=datetime(2024, 1, 1).date()
+        )
 
-    date2 = pd.to_datetime("2023-09-01")
-    df2 = pd.DataFrame([[1200.0]], index=[date2], columns=index)
+        assert isinstance(loaded_df_jan, pd.DataFrame)
+        assert not loaded_df_jan.empty
+        assert len(loaded_df_jan) == 1
+        assert loaded_df_jan.iloc[0]["availability"] == 0.9
+        assert loaded_df_jan.iloc[0]["artist"] == "Test Artist"
 
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        # Save initial price
-        store._save_feature("prices", df1)
+        # Test loading a subset of features for a date range
+        loaded_df_range = store.load_report_features(
+            start_date=datetime(2024, 1, 1).date(),
+            end_date=datetime(2024, 2, 28).date(),
+            feature_subset=["lost_sales", "confidence"],
+        )
 
-        cursor.execute("SELECT data_date, value FROM fact_prices WHERE multiindex_id = 1")
-        result1 = cursor.fetchone()
-        assert result1["data_date"] == "2023-08-01"
-        assert result1["value"] == 1000.0
-
-        # Save new price for the same multiindex, should replace the old one
-        store._save_feature("prices", df2, append=True)
-
-        cursor.execute("SELECT data_date, value FROM fact_prices WHERE multiindex_id = 1")
-        results = cursor.fetchall()
-        assert len(results) == 1  # Should be only one record
-
-        final_result = results[0]
-        assert final_result["data_date"] == "2023-09-01"  # Date should be updated
-        assert final_result["value"] == 1200.0  # Value should be updated
+        assert isinstance(loaded_df_range, pd.DataFrame)
+        assert len(loaded_df_range) == 2
+        assert "lost_sales" in loaded_df_range.columns
+        assert "confidence" in loaded_df_range.columns
+        assert "availability" not in loaded_df_range.columns  # Check that subset works
 
 
-def test_save_stock_ignores_duplicates(feature_store_env):
-    """Test that saving stock data ignores duplicates for the same (multiindex_id, data_date)."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    cursor = feature_store_env["cursor"]
-
-    idx_tuple = (
-        "1234567890", "Test Artist", "Test Album", "CD", "Standard",
-        "Studio", "2010s", "2010s", "Rock", 2015,
-    )
-    index = pd.MultiIndex.from_tuples(
-        [idx_tuple],
-        names=[
-            "barcode", "artist", "album", "cover_type", "price_category",
-            "release_type", "recording_decade", "release_decade", "style", "record_year",
-        ],
-    )
-
-    stock_date = pd.to_datetime("2023-08-01")
-    df1 = pd.DataFrame([[10.0]], index=[stock_date], columns=index)
-    df2 = pd.DataFrame([[20.0]], index=[stock_date], columns=index) # Same date, different value
-
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        # Save initial stock
-        store._save_feature("stock", df1)
-
-        cursor.execute("SELECT value FROM fact_stock WHERE multiindex_id = 1 AND data_date = '2023-08-01'")
-        result1 = cursor.fetchone()
-        assert result1["value"] == 10.0
-
-        # Try to save new stock for the same date, it should be ignored
-        store._save_feature("stock", df2, append=True)
-
-        cursor.execute("SELECT value FROM fact_stock WHERE multiindex_id = 1 AND data_date = '2023-08-01'")
-        result2 = cursor.fetchone()
-        assert result2["value"] == 10.0 # Value should NOT be updated
-
-        # Check that there's still only one record
-        cursor.execute("SELECT COUNT(*) as count FROM fact_stock WHERE multiindex_id = 1")
-        assert cursor.fetchone()["count"] == 1
-
-
-def test_load_prices_feature_loads_latest(feature_store_env):
-    """Test loading prices features gets the single, latest value."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-
-    idx_tuple = (
-        "1234567890", "Test Artist", "Test Album", "CD", "Standard",
-        "Studio", "2010s", "2010s", "Rock", 2015,
-    )
-    index = pd.MultiIndex.from_tuples(
-        [idx_tuple],
-        names=[
-            "barcode", "artist", "album", "cover_type", "price_category",
-            "release_type", "recording_decade", "release_decade", "style", "record_year",
-        ],
-    )
-
-    date1 = pd.to_datetime("2023-05-01")
-    date2 = pd.to_datetime("2023-09-01") # This is the latest date
-
-    df_save1 = pd.DataFrame([[1500.50]], index=[date1], columns=index)
-    df_save2 = pd.DataFrame([[1600.00]], index=[date2], columns=index)
-
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        store._save_feature("prices", df_save1)
-        store._save_feature("prices", df_save2, append=True) # This will replace the previous record
-
-        loaded_df = store._load_feature("prices")
-
-    assert isinstance(loaded_df, pd.DataFrame)
-    assert not loaded_df.empty
-    assert len(loaded_df) == 1 # Should only load one row
-    assert loaded_df.index[0] == date2 # Index should be the latest date
-    assert loaded_df.loc[date2, idx_tuple] == 1600.00
 
 
 
@@ -435,18 +377,17 @@ def test_create_and_complete_run(feature_store_env):
     cursor = feature_store_env["cursor"]
 
     with SQLFeatureStore(dal=dal) as store:  # No run_id, will create new
-        run_id = store.create_run(cutoff_date="2023-02-01", source_files="run_test.csv")
+        run_id = store.create_run(source_files="run_test.csv")
         assert run_id is not None
         assert store.run_id == run_id
 
         cursor.execute(
-            "SELECT status, cutoff_date, source_files FROM processing_runs WHERE run_id = ?",
+            "SELECT status, source_files FROM processing_runs WHERE run_id = ?",
             (run_id,),
         )
         run_data = cursor.fetchone()
         assert run_data is not None
         assert run_data["status"] == "running"
-        assert run_data["cutoff_date"] == "2023-02-01"
         assert run_data["source_files"] == "run_test.csv"
 
         store.complete_run(status="success")
@@ -498,8 +439,8 @@ def test_save_sales_feature(feature_store_env):
             ],
         )
 
-        # Используем унифицированный формат: дата в индексе, multiindex в колонках
-        df = pd.DataFrame([[5.0], [3.0]], index=[date1, date2], columns=index)
+        # Используем правильный формат: multiindex в индексе, дата в колонках
+        df = pd.DataFrame([[5.0, 3.0]], index=index, columns=[date1, date2])
         store._save_feature("sales", df)
 
         cursor.execute(
@@ -514,8 +455,8 @@ def test_save_sales_feature(feature_store_env):
         assert results[1]["value"] == 3.0
 
 
-def test_save_change_feature(feature_store_env):
-    """Test saving stock change feature data."""
+def test_save_movement_feature(feature_store_env):
+    """Test saving stock movement feature data."""
     conn = feature_store_env["conn"]
     dal = DataAccessLayer(connection=conn)
     cursor = feature_store_env["cursor"]
@@ -552,12 +493,12 @@ def test_save_change_feature(feature_store_env):
             ],
         )
 
-        # Используем унифицированный формат: дата в индексе, multiindex в колонках
-        df = pd.DataFrame([[-2.0], [1.0]], index=[date1, date2], columns=index)
-        store._save_feature("change", df)
+        # Используем правильный формат: multiindex в индексе, дата в колонках
+        df = pd.DataFrame([[-2.0, 1.0]], index=index, columns=[date1, date2])
+        store._save_feature("movement", df)
 
         cursor.execute(
-            "SELECT data_date, value FROM fact_stock_changes WHERE multiindex_id = 1 ORDER BY data_date"
+            "SELECT data_date, value FROM fact_stock_movement WHERE multiindex_id = 1 ORDER BY data_date"
         )
         results = cursor.fetchall()
 
@@ -658,116 +599,8 @@ def test_build_multiindex_from_mapping(feature_store_env):
 
 
 def test_load_stock_feature(feature_store_env):
-    """Test loading stock features."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        index = pd.MultiIndex.from_tuples(
-            [idx_tuple],
-            names=[
-                "barcode",
-                "artist",
-                "album",
-                "cover_type",
-                "price_category",
-                "release_type",
-                "recording_decade",
-                "release_decade",
-                "style",
-                "record_year",
-            ],
-        )
-        date1 = pd.to_datetime("2023-05-01")
-        date2 = pd.to_datetime("2023-05-02")
-
-        # Создаем DataFrame в унифицированном формате: дата в индексе, multiindex в колонках
-        df_save1 = pd.DataFrame([[10]], index=[date1], columns=index)
-        df_save2 = pd.DataFrame([[12]], index=[date2], columns=index)
-        store._save_feature("stock", df_save1)
-        store._save_feature("stock", df_save2, append=True)  # append=True для второго вызова
-
-        loaded_df = store._load_feature("stock")
-
-        assert isinstance(loaded_df, pd.DataFrame)
-        assert len(loaded_df) == 2
-        assert loaded_df.loc[date1, idx_tuple] == 10
-        assert loaded_df.loc[date2, idx_tuple] == 12
-
-
-def test_load_prices_feature(feature_store_env):
-    """Test loading prices features with the new unified format."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-
-    # Создаем multiindex для колонок
-    idx_tuple = (
-        "1234567890",
-        "Test Artist",
-        "Test Album",
-        "CD",
-        "Standard",
-        "Studio",
-        "2010s",
-        "2010s",
-        "Rock",
-        2015,
-    )
-    index = pd.MultiIndex.from_tuples(
-        [idx_tuple],
-        names=[
-            "barcode",
-            "artist",
-            "album",
-            "cover_type",
-            "price_category",
-            "release_type",
-            "recording_decade",
-            "release_decade",
-            "style",
-            "record_year",
-        ],
-    )
-
-    # Создаем DataFrame с датой в индексе для prices
-    date1 = pd.to_datetime("2023-05-01")
-    date2 = pd.to_datetime("2023-05-02")
-
-    # В новом формате: дата в индексе, multiindex в колонках
-    df_save1 = pd.DataFrame([[1500.50]], index=[date1], columns=index)
-    df_save2 = pd.DataFrame([[1600.00]], index=[date2], columns=index)
-
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        store._save_feature("prices", df_save1)
-        store._save_feature("prices", df_save2, append=True)
-        loaded_df = store._load_feature("prices")
-
-    assert isinstance(loaded_df, pd.DataFrame)
-    assert loaded_df.index.name == "_date"
-    assert len(loaded_df.columns) == 1  # Один multiindex в колонках
-    assert loaded_df.columns[0] == idx_tuple
-
-    # Проверяем значения
-    # Prices should only have one value per multiindex_id (the latest one)
-    assert len(loaded_df) == 1  # Should only load one row
-    assert loaded_df.index[0] == date2  # Index should be the latest date
-    assert loaded_df.loc[date2, idx_tuple] == 1600.00
-
-    conn.execute("DELETE FROM fact_prices")
-    conn.commit()
-    loaded_empty = store._load_feature("prices")
-    assert loaded_empty is None
+    """Test loading stock features - SKIPPED because stock type is no longer supported."""
+    pytest.skip("Stock feature type is no longer supported after refactoring")
 
 
 def test_load_sales_feature(feature_store_env):
@@ -806,7 +639,7 @@ def test_load_sales_feature(feature_store_env):
                 "record_year",
             ],
         )
-        df_to_save = pd.DataFrame([[10.0], [12.0]], index=[date1, date2], columns=index)
+        df_to_save = pd.DataFrame([[10.0, 12.0]], index=index, columns=[date1, date2])
         store._save_feature("sales", df_to_save)
 
         loaded_df = store._load_feature("sales")
@@ -836,8 +669,8 @@ def test_load_sales_feature(feature_store_env):
         assert loaded_empty is None
 
 
-def test_load_change_feature(feature_store_env):
-    """Test loading change features."""
+def test_load_movement_feature(feature_store_env):
+    """Test loading movement features."""
     conn = feature_store_env["conn"]
     dal = DataAccessLayer(connection=conn)
     with SQLFeatureStore(dal=dal, run_id=1) as store:
@@ -872,10 +705,10 @@ def test_load_change_feature(feature_store_env):
                 "record_year",
             ],
         )
-        df_to_save = pd.DataFrame([[-5.0], [3.0]], index=[date1, date2], columns=index)
-        store._save_feature("change", df_to_save)
+        df_to_save = pd.DataFrame([[-5.0, 3.0]], index=index, columns=[date1, date2])
+        store._save_feature("movement", df_to_save)
 
-        loaded_df = store._load_feature("change")
+        loaded_df = store._load_feature("movement")
         assert isinstance(loaded_df, pd.DataFrame)
 
         # Проверяем формат
@@ -924,56 +757,36 @@ def test_load_features_all_types(feature_store_env):
     )
 
     # Даты для тестов
-    stock_date = pd.to_datetime("2023-08-01")
     sales_date = pd.to_datetime("2023-08-02")
-    change_date = pd.to_datetime("2023-08-03")
-    prices_date = pd.to_datetime("2023-08-04")
+    movement_date = pd.to_datetime("2023-08-03")
 
     with SQLFeatureStore(dal=dal, run_id=1) as store:
         # Все features в унифицированном формате: даты в индексе, multiindex в колонках
 
-        # Stock
-        stock_df = pd.DataFrame([[float(100)]], index=[stock_date], columns=index)
-        store._save_feature("stock", stock_df)
-
-        # Prices
-        prices_df = pd.DataFrame([[25.99]], index=[prices_date], columns=index)
-        store._save_feature("prices", prices_df)
-
         # Sales
-        sales_df = pd.DataFrame([[5]], index=[sales_date], columns=index)
+        sales_df = pd.DataFrame([[5]], index=index, columns=[sales_date])
         store._save_feature("sales", sales_df)
 
-        # Change
-        change_df = pd.DataFrame([[-2]], index=[change_date], columns=index)
-        store._save_feature("change", change_df)
+        # movement
+        movement_df = pd.DataFrame([[-2]], index=index, columns=[movement_date])
+        store._save_feature("movement", movement_df)
 
         # Загружаем все features
         all_features = store.load_features()
 
     # Проверяем, что все features загрузились в правильном формате
-    assert "stock" in all_features
-    assert not all_features["stock"].empty
-    assert all_features["stock"].index.name == "_date"
-    assert all_features["stock"].loc[stock_date, idx_tuple] == 100.0
-
-    assert "prices" in all_features
-    assert not all_features["prices"].empty
-    assert all_features["prices"].index.name == "_date"
-    assert all_features["prices"].loc[prices_date, idx_tuple] == 25.99
-
     assert "sales" in all_features
     assert not all_features["sales"].empty
     assert all_features["sales"].index.name == "_date"
     assert all_features["sales"].loc[sales_date, idx_tuple] == 5.0
 
-    assert "change" in all_features
-    assert not all_features["change"].empty
-    assert all_features["change"].index.name == "_date"
-    assert all_features["change"].loc[change_date, idx_tuple] == -2.0
+    assert "movement" in all_features
+    assert not all_features["movement"].empty
+    assert all_features["movement"].index.name == "_date"
+    assert all_features["movement"].loc[movement_date, idx_tuple] == -2.0
 
 
-# Tests for factory and helper functions (should not need much change as they mock SQLFeatureStore)
+# Tests for factory and helper functions (should not need much movement as they mock SQLFeatureStore)
 
 
 def test_get_store_sql(feature_store_env):
@@ -1020,14 +833,12 @@ def test_save_features_helper_creates_store_and_calls_methods(
 
     conn_param = feature_store_env["conn"]
     features_dict = {"sales": pd.DataFrame({"A": [1]})}
-    cutoff = "2023-01-01"
     sources = "file.csv"
 
     # Call the helper function
     dal_param = DataAccessLayer(connection=conn_param)
     returned_run_id = save_features(
         features_dict,
-        cutoff_date=cutoff,
         source_files=sources,
         store_type="sql",
         dal=dal_param,
@@ -1047,8 +858,7 @@ def test_save_features_helper_creates_store_and_calls_methods(
     # Example: mock_get_store.call_args.kwargs['run_id'] would be KeyError or None depending on factory.
     # For this specific factory, run_id is a direct param, so it's not in kwargs if not passed.
 
-    mock_store_instance.create_run.assert_called_once_with(cutoff, sources)
-    mock_store_instance.save_features.assert_called_once_with(features_dict)
+    mock_store_instance.save_features.assert_called_once_with(features_dict, append=True)
     mock_store_instance.complete_run.assert_called_once()
     assert returned_run_id == 123
 
