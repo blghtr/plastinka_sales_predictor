@@ -4,12 +4,12 @@ A comprehensive machine learning system for predicting vinyl record sales using 
 
 ## 🎯 Overview
 
-Plastinka Sales Predictor is a production-ready ML system designed to provide accurate vinyl record sales forecasts. It combines:
+Plastinka Sales Predictor is a production-ready ML system designed to provide accurate vinyl sales forecasts. It combines:
 
-- **🧠 Advanced ML Models**: Utilizing state-of-the-art time-series forecasting models.
-- **☁️ Cloud Integration**: Seamless integration with cloud platforms for scalable model training and deployment.
+- **🧠 Advanced ML Models**: Utilizing state-of-the-art time-series forecasting models (TiDE).
+- **☁️ Cloud Integration**: Seamless integration with Yandex DataSphere for scalable model training and deployment.
 - **🚀 Production API**: A robust FastAPI-based REST API for interacting with the forecasting system.
-- **🏗️ Infrastructure as Code**: Automated infrastructure management for consistent and reproducible deployments.
+- **🏗️ Infrastructure as Code**: Automated infrastructure management with Terraform for consistent and reproducible deployments.
 
 ## 🏗️ System Architecture
 
@@ -19,11 +19,11 @@ Plastinka Sales Predictor is a production-ready ML system designed to provide ac
 │                                                                             │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐          │
 │  │   ML Module     │    │   FastAPI App   │    │  Infrastructure │          │
-│  │                 │    │                 │    │                 │          │
+│  │ (ML Code)       │    │ (Orchestrator)  │    │ (IaC)           │          │
 │  │ • TiDE Model    │    │ • REST API      │    │ • Terraform     │          │
 │  │ • Data Prep     │    │ • Job Queue     │    │ • DataSphere    │          │
-│  │ • Metrics       │    │ • Database      │    │ • Service Acc   │          │
-│  │ • Training      │    │ • File Storage  │    │ • Monitoring    │          │
+│  │ • Metrics       │    │ • Database      │    │ • Monitoring    │          │
+│  │ • Training      │    │ • File Storage  │    │                 │          │
 │  └─────────────────┘    └─────────────────┘    └─────────────────┘          │
 │           │                       │                       │                 │
 │           └───────────────────────┼───────────────────────┘                 │
@@ -40,121 +40,109 @@ Plastinka Sales Predictor is a production-ready ML system designed to provide ac
                         └───────────────────────┘
 ```
 
-## 🔧 Key Components
+### Компоненты и их взаимодействие
 
-### 1. ML Module (`plastinka_sales_predictor/`)
-- **TiDE Architecture**: State-of-the-art time-series dense encoder for forecasting
-- **Custom Metrics**: MIWS (Mean Interval Width Score) and MIC (Mean Interval Coverage) for specialized evaluation
-- **Data Processing**: Advanced preprocessing for vinyl sales data with intermittent demand patterns
-- **Quantile Regression**: Probabilistic forecasts with confidence intervals
-- **Hyperparameter Tuning**: Ray Tune integration for automated optimization
+-   **FastAPI App (`deployment/`)**: Центральный компонент-оркестратор. Он предоставляет REST API для взаимодействия с пользователем, управляет базой данных (метаданные, задачи, результаты) и инициирует задачи (тренировка, тюнинг) в Yandex DataSphere.
+-   **ML Module (`plastinka_sales_predictor/`)**: Это не отдельный сервис, а Python-пакет, содержащий всю логику машинного обучения (подготовка данных, архитектура модели TiDE, метрики). Этот код упаковывается и выполняется непосредственно в облачной среде Yandex DataSphere.
+-   **Infrastructure (`deployment/infrastructure/`)**: Инфраструктура как код (IaC) на базе Terraform. Эти конфигурации описывают и создают все необходимые облачные ресурсы в Yandex Cloud, включая проект DataSphere и права доступа. Это компонент этапа развертывания.
 
-### 2. FastAPI Application (`deployment/`)
-- **Asynchronous API**: Non-blocking job processing with status tracking
-- **Database Integration**: SQLite with star schema for efficient data storage
-- **File Management**: Excel upload processing and model artifact storage
-- **Cloud Integration**: Seamless DataSphere job submission and monitoring
-- **Error Handling**: Comprehensive retry logic and failure recovery
+---
 
-### 3. Infrastructure (`deployment/infrastructure/`)
-- **Terraform Modules**: Reusable infrastructure components
-- **DataSphere Projects**: Automated ML compute environment setup
-- **Service Accounts**: Proper IAM configuration for cloud access
-- **Resource Management**: Cost-effective resource allocation and cleanup
+## 🚀 Getting Started
 
-## 🏗️ Project Structure
+This guide provides the steps to set up the project from scratch.
 
+### 1. Prerequisites
+
+- **Python & `uv`**: Ensure you have Python 3.x installed. This project uses `uv` for package management. Install it with:
+  ```bash
+  # macOS / Linux
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  # Windows
+  powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+- **Terraform / OpenTofu**: Install either [Terraform](https://developer.hashicorp.com/terraform/install) or [OpenTofu](https://opentofu.org/docs/intro/install/) to manage cloud infrastructure.
+- **Yandex Cloud Account**: You need a Yandex Cloud account with an organization and folder.
+
+### 2. Set Up Infrastructure
+
+Terraform automatically creates the cloud resources and a `.env` file in the project root with the necessary API keys.
+
+```bash
+# 1. Navigate to the infrastructure configuration directory
+cd deployment/infrastructure/envs/prod
+
+# 2. Create a variables file from the example
+cp terraform.tfvars.example terraform.tfvars
+
+# 3. Edit terraform.tfvars with your Yandex Cloud IDs
+# (yc_cloud_id, yc_folder_id, yc_organization_id)
+
+# 4. Set your Yandex Cloud OAuth token as an environment variable
+export TF_VAR_yc_token="your-yc-oauth-token"
+
+# 5. Initialize and apply the Terraform configuration
+terraform init
+terraform apply
 ```
-plastinka_sales_predictor/
-├── plastinka_sales_predictor/          # Core ML module
-│   ├── __init__.py                     # Module exports
-│   ├── data_preparation.py             # Data processing & dataset creation
-│   ├── model.py                        # TiDE model implementation
-│   ├── metrics.py                      # Custom MIWS/MIC metrics
-│   ├── training_utils.py               # Training orchestration
-│   ├── tuning_utils.py                 # Hyperparameter optimization
-│   └── datasphere_job/                 # DataSphere execution scripts
-│       ├── train_and_predict.py        # Main training script
-│       └── config.yaml                 # DataSphere job configuration
-├── deployment/                         # FastAPI application
-│   ├── app/                           # Application core
-│   │   ├── api/                       # REST API endpoints
-│   │   ├── db/                        # Database schema & operations
-│   │   ├── services/                  # Business logic services
-│   │   └── utils/                     # Utility functions
-│   ├── datasphere/                    # DataSphere integration
-│   ├── infrastructure/                # Terraform IaC
-│   └── scripts/                       # Deployment utilities
-├── tests/                             # Comprehensive test suite
+This will create the necessary DataSphere resources and populate the `.env` file at the project root.
+
+### 3. Install Dependencies
+
+Once the infrastructure is ready, install the Python dependencies.
+
+```bash
+# From the project root
+uv sync
 ```
 
-## 📊 Key Features
+### 4. Run the Application
 
-### Advanced Metrics
-- **MIWS (Mean Interval Width Score)**: Measures prediction interval efficiency
-- **MIC (Mean Interval Coverage)**: Evaluates interval coverage accuracy
-- **Zero-Inflation Handling**: Specialized metrics for intermittent demand patterns
+Start the FastAPI server:
 
-### Model Architecture
-- **TiDE (Time-series Dense Encoder)**: Cutting-edge architecture for time-series forecasting
-- **Quantile Regression**: Full distribution predictions with uncertainty quantification
-- **Multi-variate Features**: Integration of stock levels, pricing, and categorical features
+```bash
+python deployment/run.py
+```
+The API will be available at `http://127.0.0.1:8000`, and the documentation can be found at `http://127.0.0.1:8000/docs`.
 
-### Production Features
-- **Asynchronous Processing**: Non-blocking job execution with status tracking
-- **Automatic Scaling**: Cloud-based compute with on-demand resource allocation
-- **Data Retention**: Configurable cleanup policies for production data management
-- **Monitoring**: Comprehensive logging and health monitoring
+---
 
+## 🔄 Core Workflow
+
+The system is designed around a monthly operational cycle. This workflow is the primary use case for the API.
+
+1.  **Upload Data**: At the beginning of a new month, upload the sales data for the past month and the current stock levels.
+    - `POST /api/v1/jobs/data-upload`
+2.  **Monitor Upload Job**: Track the status of the data processing job.
+    - `GET /api/v1/jobs/{job_id}`
+3.  **Check System Health (Optional but Recommended)**: Verify that the data is consistent and the system is ready for training.
+    - `GET /health`
+4.  **Trigger Model Training**: Start a new training job in Yandex DataSphere. This process trains the model on the complete, updated dataset and generates predictions for the next period.
+    - `POST /api/v1/jobs/training`
+5.  **Monitor Training Job**: Track the training process, which can take a significant amount of time (e.g., ~2 hours).
+    - `GET /api/v1/jobs/{job_id}`
+6.  **Trigger Hyperparameter Tuning (If Needed)**: If the model performance degrades over time (indicated by the `/health` endpoint), run a tuning job to find better hyperparameters. After tuning, you must re-run the training job (Step 4).
+    - `POST /api/v1/jobs/tuning`
+7.  **Retrieve Report**: Once training is complete, fetch the prediction report.
+    - `POST /api/v1/jobs/reports`
+
+---
 
 ## 📚 Documentation
 
-This project is composed of several key components, each with its own detailed documentation:
+This project is composed of several key components, each with its own detailed documentation.
 
-- **ML Module (`plastinka_sales_predictor/`)**: Contains the core machine learning logic, including data preparation, model implementation, metrics, and training utilities.
-- **FastAPI Application (`deployment/`)**: Provides the API endpoints for data ingestion, model training, prediction, and reporting. For detailed information on API usage, data flow, and application-specific troubleshooting, refer to the [Deployment README](deployment/README.md).
-- **Infrastructure (`deployment/infrastructure/`)**: Describes the Terraform configurations for managing cloud resources, including DataSphere projects. For comprehensive guidance on setting up and managing the cloud infrastructure, refer to the [Infrastructure README](deployment/infrastructure/README.md).
-
-## 📦 Installation
-
-1.  **Install `uv`**:
-    This project uses `uv` for Python package management. Follow the official instructions to install it:
-    ```bash
-    # macOS / Linux
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-
-    # Windows
-    powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-    ```
-
-2.  **Install Infrastructure Tools**:
-    You will need either OpenTofu or Terraform to manage the cloud infrastructure.
-    - **OpenTofu**: Follow the installation guide at [https://opentofu.org/docs/intro/install/](https://opentofu.org/docs/intro/install/).
-    - **Terraform**: Follow the installation guide at [https://developer.hashicorp.com/terraform/install](https://developer.hashicorp.com/terraform/install).
-
-3.  **Sync Project Dependencies**:
-    Once `uv` is installed, create a virtual environment and sync the dependencies defined in `pyproject.toml`:
-    ```bash
-    uv sync
-    ```
-
-4.  **Set Up Infrastructure**:
-    For detailed instructions on configuring and deploying the cloud infrastructure, please refer to the **[Infrastructure README](deployment/infrastructure/README.md)**.
-
-## 🚀 Usage
-
-For detailed instructions on using the core ML functionalities or the FastAPI application, please refer to the respective component documentation:
-
-- **[Deployment README](deployment/README.md)**: For API setup and usage.
-- **[Infrastructure README](deployment/infrastructure/README.md)**: For cloud infrastructure setup.
+- **[Deployment README](deployment/README.md)**: **(START HERE FOR API USAGE)** Detailed guide on the FastAPI application, including API endpoints, data requirements, business logic, and practical examples.
+- **[Infrastructure README](deployment/infrastructure/README.md)**: Comprehensive guide on setting up and managing the cloud infrastructure with Terraform.
+- **ML Module (`plastinka_sales_predictor/`)**: The core Python package containing the ML code (model, data processing, etc.). The code is the primary documentation.
 
 ## 🧪 Testing
 
-Comprehensive test suites are available for both the ML module and the FastAPI application. Refer to the individual component documentation for instructions on running tests.
+To run the test suite:
+```bash
+pytest
+```
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
-
-
-
+This project is licensed under the [CC BY-NC-SA 4.0 License](LICENSE).

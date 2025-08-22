@@ -2,36 +2,66 @@
 
 A FastAPI application for predicting vinyl record sales using time series forecasting, with cloud-based computation via Yandex DataSphere.
 
-## 📚 Documentation
+## 📚 High-Level Documentation
 
-This API is a core component of the Plastinka Sales Predictor system. For a high-level overview of the entire project, including its ML module and infrastructure, please refer to the [main project README](../README.md).
+This document focuses specifically on the API application. For a high-level overview of the entire project, the system architecture, and a getting started guide, please refer to the **[main project README](../README.md)**.
 
-This document focuses specifically on the API application, its usage, and internal architecture.
+---
 
-## Data Flow
+## ⚙️ API Usage and Business Logic
 
-1. **Data Upload**:
-   - Upload Excel (.xlsx, .xls) or CSV files with stock and sales data
-   - Automatic file format detection and encoding handling (UTF-8, Windows-1251, CP1252)
-   - Automatic CSV separator detection (comma, semicolon)
-   - Data is validated, processed, and stored in SQLite database
-   - Records are mapped to multi-index structure for time series analysis
+This section describes the core principles and workflow for interacting with the API.
 
-2. **Training & Prediction** (Combined process):
-   - Data is prepared and uploaded directly to Yandex DataSphere project storage
-   - Training job is submitted to Yandex DataSphere
-   - TiDE model is trained with two-phase approach:
-     1. First training with early stopping to determine optimal epochs
-     2. Final training on full dataset with optimized parameters
-   - Predictions are generated immediately after training
-   - Both model and predictions are downloaded to the local server
-   - Model file is stored locally and metadata in the database
-   - Predictions are stored in the database for later reporting
-   - No separate prediction API call is needed
-   - DataSphere project storage automatically cleans up temporary files
+### Data Requirements
 
-3. **Reporting**:
-   - Uses stored prediction data to generate HTML reports
+Correct and efficient system operation depends on the quality of the input data.
+
+-   **File Format**: All uploaded files must be in `.xlsx` or `.csv` format. The system automatically handles various encodings (UTF-8, Windows-1251) and CSV separators (comma, semicolon).
+-   **`stock_file`**: This file must contain current stock levels. **Crucially**, it must be generated for the date immediately following the last transaction date in the `sales_files`. For example, if the last sale occurred on March 25, 2025, the stock file must reflect the state at the beginning of March 26, 2025.
+-   **`sales_files`**: These files should contain all transactions that the business considers a sale and that affect stock levels. The file order during upload does not matter.
+
+### The Three Laws of Data Management
+
+To ensure data integrity, the system operates on three core principles:
+
+1.  **The Law of Global Monotonicity**: The database must contain a complete, unbroken sequence of monthly data. There should be no "gaps" between the first and last month of data. The `GET /health` endpoint helps diagnose violations of this law.
+2.  **The Law of Local Monotonicity**: Data uploaded in a single `POST /api/v1/jobs/data-upload` request must also be monotonic, with months following each other without gaps.
+3.  **The Law of Snapshot Coherence**: The `stock_file` must always represent the stock state *after* all transactions from the accompanying `sales_files` have occurred.
+
+### Standard Monthly Workflow (API Interaction)
+
+This is the primary sequence of API calls for the monthly forecasting cycle.
+
+1.  **Upload Data (`POST /api/v1/jobs/data-upload`)**
+    -   Send `stock_file` and one or more `sales_files` as `multipart/form-data`.
+    -   The call returns a `job_id`.
+
+2.  **Monitor Data Processing (`GET /api/v1/jobs/{job_id}`)**
+    -   Poll this endpoint until the job `status` is `completed`. This usually takes about 10 seconds. If it's `failed`, check the `error` field.
+
+3.  **Check System Health (`GET /health`)**
+    -   After data upload, call this endpoint.
+    -   Ensure `database` status is not `unhealthy` (which would indicate a violation of Global Monotonicity).
+    -   Check `active_model_metric` status. If `degraded`, consider running a tuning job.
+
+4.  **Run Training (`POST /api/v1/jobs/training`)**
+    -   This initiates a training and prediction job in Yandex DataSphere. It's a long-running process (~2 hours).
+    -   The call returns a new `job_id` for the training task.
+
+5.  **Monitor Training (`GET /api/v1/jobs/{job_id}`)**
+    -   Poll this endpoint to track the training progress.
+
+6.  **Run Tuning (Optional, `POST /api/v1/jobs/tuning`)**
+    -   If model metrics are degraded, run this job to find better hyperparameters.
+    -   This is a very long-running process (1-5+ hours).
+    -   After successful tuning, you **must** run a new training job (Step 4) to apply the new parameters.
+
+7.  **Get Report (`POST /api/v1/jobs/reports`)**
+    -   Once training is complete, you can request a forecast report.
+    -   Specify `report_type` and `prediction_month` in the JSON body.
+    -   The API returns the report data directly in the response.
+
+---
 
 ## Directory Structure
 
@@ -39,65 +69,16 @@ This document focuses specifically on the API application, its usage, and intern
 deployment/
 ├── app/
 │   ├── api/                  # API routes and request/response models
-│   │   ├── admin.py          # Admin endpoints (system info, cleanup)
-│   │   ├── health.py         # Health check endpoints
-│   │   ├── jobs.py           # Job management endpoints
-│   │   └── models_configs.py # Model parameter management
-│   ├── db/                   # Database schema, operations, and data retention logic
-│   │   ├── database.py       # Core database operations
-│   │   ├── schema.py         # Database table definitions
-│   │   ├── data_retention.py # Automated data cleanup
-│   │   └── feature_storage.py # Feature engineering data storage
+│   ├── db/                   # Database schema, operations, and data retention
 │   ├── services/             # Business logic services
-│   │   ├── auth.py           # Authentication service
-│   │   ├── data_processor.py # Data processing and validation
-│   │   ├── datasphere_service.py # Yandex DataSphere integration
-│   │   └── report_service.py # Report generation service
-│   ├── utils/                # Utility functions
-│   │   ├── error_handling.py # Error handling and retry logic
-│   │   ├── file_validation.py # File upload validation
-│   │   ├── retry.py          # Retry mechanisms
-│   │   └── validation.py     # Data validation utilities
-│   ├── config.py             # Configuration management (Pydantic settings)
-│   ├── logger_config.py      # Centralized logging configuration
-│   └── main.py               # FastAPI application setup and main entry point
+│   └── utils/                # Utility functions
 ├── datasphere/
-│   ├── client.py             # Yandex DataSphere client for API interactions
-│   └── prepare_datasets.py   # Scripts for preparing datasets for DataSphere jobs
-├── infrastructure/           # Terraform infrastructure as code
-│   ├── modules/              # Reusable Terraform modules
-│   │   ├── datasphere_community/ # DataSphere community setup
-│   │   ├── datasphere_project/   # DataSphere project configuration
-│   └── envs/
-│       └── prod/             # Production environment configuration
-├── scripts/                  # Deployment and utility scripts
-│   └── check_environment.py  # Script to validate environment setup
+│   ├── client.py             # Yandex DataSphere client
+│   └── prepare_datasets.py   # Scripts for preparing datasets for jobs
+├── infrastructure/           # Terraform IaC
 └── run.py                    # Main runner script for the API application
 ```
 
-**Data Storage Structure** (created at runtime based on `DATA_ROOT_DIR`):
-```
-~/.plastinka_sales_predictor/    # Default data root directory
-├── database/
-│   └── plastinka.db            # SQLite database file
-├── models/                     # Storage for trained model artifacts (e.g., .onnx files)
-├── datasphere_input/           # Prepared datasets for DataSphere jobs
-├── datasphere_output/          # Downloaded results from DataSphere
-├── predictions/                # Saved prediction outputs
-├── reports/                    # Generated reports
-├── logs/                       # Application logs
-```
+## Data Storage
 
-
-
-## 📚 Documentation
-
-This API is a core component of the Plastinka Sales Predictor system. For a high-level overview of the entire project, including its ML module and infrastructure, please refer to the [main project README](../README.md).
-
-This document focuses specifically on the API application, its usage, and internal architecture.
-
-#
-
-## Troubleshooting
-
-For general troubleshooting steps, common issues, and logging information, please refer to the [main project README](../README.md).
+The application creates a local data storage directory (default: `~/.plastinka_sales_predictor/`) to store the SQLite database, trained models, logs, and other artifacts.
