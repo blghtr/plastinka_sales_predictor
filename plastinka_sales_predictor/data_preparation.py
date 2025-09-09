@@ -1,4 +1,5 @@
-﻿from collections import OrderedDict, defaultdict
+﻿import logging
+from collections import OrderedDict, defaultdict
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from datetime import datetime
@@ -14,6 +15,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MultiLabelBinarizer, OrdinalEncoder, minmax_scale
 from typing_extensions import Self
 
+logger = logging.getLogger(__name__)
 
 COLTYPES = {
     "Штрихкод": str,
@@ -104,6 +106,7 @@ class PlastinkaBaseTSDataset:
         minimum_sales_months: int = 1,
     ):
         super().__init__()
+        logger.info("Initializing PlastinkaBaseTSDataset...")
         # --- Регуляризация временного индекса ---
         monthly_sales = ensure_monthly_regular_index(monthly_sales)
         stock_features = ensure_monthly_regular_index(stock_features)
@@ -146,7 +149,9 @@ class PlastinkaBaseTSDataset:
         self.dataset_name = dataset_name
 
         if save_dir is not None:
+            logger.info(f"Saving dataset to {save_dir}/{dataset_name}.dill")
             self.save(save_dir, dataset_name)
+        logger.info("PlastinkaBaseTSDataset initialized.")
 
     @classmethod
     def from_dill(cls, dill_path: str | Path):
@@ -348,9 +353,17 @@ class PlastinkaBaseTSDataset:
                 return ds
 
         except Exception as e:
-            print(f"Error setting up dataset: {e}")
-            print('--------------------------------DEBUG--------------------------------')
-            print(f"Window: {window}, input_chunk_length: {input_chunk_length}, output_chunk_length: {output_chunk_length}, span: {span}, weights_alpha: {weights_alpha}, scaler: {scaler}, transformer: {transformer}, static_features: {static_features}, copy: {copy}, reindex: {reindex}")
+            logger.error(f"Error setting up dataset: {e}", exc_info=True)
+            logger.debug(
+                '--------------------------------DEBUG--------------------------------'
+            )
+            logger.debug(
+                f"Window: {window}, input_chunk_length: {input_chunk_length}, "
+                f"output_chunk_length: {output_chunk_length}, span: {span}, "
+                f"weights_alpha: {weights_alpha}, scaler: {scaler}, "
+                f"transformer: {transformer}, static_features: {static_features}, "
+                f"copy: {copy}, reindex: {reindex}"
+            )
             raise e
 
     def _build_index_mapping(self):
@@ -590,6 +603,7 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
         self.reset_window()
 
         if self.save_dir is not None:
+            logger.info(f"Saving inference dataset to {self.save_dir}/{self.dataset_name}.dill")
             self.save(self.save_dir, self.dataset_name)
 
     def __getitem__(self, idx):
@@ -797,9 +811,10 @@ def validate_feature_date_columns(df: pd.DataFrame) -> pd.DataFrame:
             return np.where(is_not_20, valid_str + padding_9, valid_str + padding_1)
 
         except Exception as e:
-            import logging
-
-            logging.warning(f"Error in fill_partial_years_np_where: {e}")
+            
+            logger.warning(
+                f"Error in fill_partial_years_np_where: {e}", exc_info=True
+            )
             return series  # Return original series on error instead of silently failing
 
     validated = df.copy()
@@ -911,9 +926,8 @@ def validate_categories(df: pd.DataFrame) -> pd.DataFrame:
                     )
                 else:
                     # If no mode found (all values unique or other edge case), use the first value
-                    import logging
-
-                    logging.warning(
+                    
+                    logger.warning(
                         "No mode found for 'Конверт' in group. Using first value if available."
                     )
                     if len(g_known) > 0:
@@ -1089,7 +1103,9 @@ def filter_by_date(
     elif "created_date" in df.index.names:
         created_date = df.index.get_level_values("created_date")
     else:
-        print("ERROR: filter_by_date - created_date not in df.columns or df.index.names")
+        logger.error(
+            "filter_by_date - created_date not in df.columns or df.index.names"
+        )
         return df
     
     mask = pd.IndexSlice[:] if created_date is None else created_date > cutoff_date
@@ -1500,22 +1516,22 @@ def run_data_processing_pipeline(config: dict, initial_inputs: dict) -> dict:
             artifact_pool[name] = value
 
     # --- 1. Init Stage ---
-    print("=== INIT STAGE ===")
+    logger.info("=== INIT STAGE ===")
     for step_name, step_config in config.get('init_steps', {}).items():
-        print(f"Running init step: {step_name}")
+        logger.info(f"Running init step: {step_name}")
         _apply_step(step_config)
 
     # --- 2. Iterative Steps Stage ---
-    print("=== ITERATIVE STEPS STAGE ===")
+    logger.info("=== ITERATIVE STEPS STAGE ===")
     sorted_sales_dfs = artifact_pool.get('sorted_sales_dfs', {})
     
     for month_date, processed_df in sorted_sales_dfs.items():
-        print(f"Processing month: {month_date}")
+        logger.info(f"Processing month: {month_date}")
         artifact_pool['processed_df'] = processed_df
         artifact_pool['month_date'] = month_date
         
         for step_name, step_config in config.get('steps', {}).items():
-            print(f"Running step: {step_name}")
+            logger.info(f"Running step: {step_name}")
             _apply_step(step_config)
 
         # --- Built-in Aggregation Logic ---
@@ -1537,7 +1553,7 @@ def run_data_processing_pipeline(config: dict, initial_inputs: dict) -> dict:
             monthly_reports_list.append(monthly_report_df.reset_index())
 
     # --- 3. Closure Stage ---
-    print("=== CLOSURE STAGE ===")
+    logger.info("=== CLOSURE STAGE ===")
     # --- Built-in Report Aggregation Logic ---
     report_features_df = None
     if monthly_reports_list:
@@ -1562,7 +1578,7 @@ def run_data_processing_pipeline(config: dict, initial_inputs: dict) -> dict:
 
     # --- Dynamic closure Logic ---
     for step_name, step_config in config.get('closure', {}).items():
-        print(f"Running closure step: {step_name}")
+        logger.info(f"Running closure step: {step_name}")
         _apply_step(step_config)
         
     return artifact_pool.get('pipeline_outputs')

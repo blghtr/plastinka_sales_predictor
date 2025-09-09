@@ -53,7 +53,7 @@ def train_model(
     if "nn_model_config" in config:
         config["model_config"] = config.pop("nn_model_config")
 
-    config["model_config"]["n_epochs"] = 200  # hardcoded for now
+    config["model_config"]["n_epochs"] = 1  # hardcoded for now
     metrics_dict = {}
 
     # Train the model
