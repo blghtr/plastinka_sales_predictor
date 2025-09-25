@@ -597,6 +597,16 @@ class AppSettings(BaseSettings):
         description="Maximum number of variables in SQLite queries (safe limit below 999)",
     )
 
+    # Refractory period configuration
+    job_refractory_seconds_default: int = Field(
+        default=300,
+        description="Default refractory period in seconds between submissions of the same job type",
+    )
+    job_refractory_seconds_map: dict[str, int] = Field(
+        default_factory=dict,
+        description="Optional per-job-type overrides for refractory period (e.g., {'training': 600})",
+    )
+
     price_category_bins: list[float] = Field(
         default=[
             0.0,
@@ -846,6 +856,15 @@ class AppSettings(BaseSettings):
     def datasphere_job_dir(self) -> str:
         """Alias for datasphere_jobs_base_dir for backward compatibility."""
         return self.datasphere_jobs_base_dir
+
+    def get_job_refractory_seconds(self, job_type: str) -> int:
+        """Return refractory seconds for a given job type using overrides or default."""
+        try:
+            # Normalize key to match how job_type is stored (enum values are lower_snake)
+            key = (job_type or "").lower()
+            return int(self.job_refractory_seconds_map.get(key, self.job_refractory_seconds_default))
+        except Exception:
+            return self.job_refractory_seconds_default
 
 
 # Create a global instance of the settings

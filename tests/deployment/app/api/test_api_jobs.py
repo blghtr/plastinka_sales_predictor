@@ -34,6 +34,7 @@ from pyfakefs.fake_file import FakeFileWrapper
 from deployment.app.config import get_settings
 from deployment.app.db.database import DatabaseError
 from deployment.app.models.api_models import JobStatus, JobType
+from fastapi import status as fastapi_status
 
 
 # Helper for pyfakefs aiofiles compatibility
@@ -152,6 +153,109 @@ class TestDataUploadEndpoint:
         assert job_from_db["job_id"] == job_id
 
         mock_add_task.assert_called_once()
+
+    def test_create_data_upload_job_refractory_period_active(
+        self, api_client, in_memory_db, monkeypatch
+    ):
+        """Test data upload job returns 429 when refractory period is active."""
+        # Arrange
+        # Mock the lock acquisition to return False (not acquired)
+        monkeypatch.setattr(
+            in_memory_db,
+            "try_acquire_job_submission_lock",
+            MagicMock(return_value=(False, 180))  # (acquired=False, retry_after=180)
+        )
+
+        # Mock other dependencies to avoid side effects
+        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x: (True, "2022-09-30"))
+        monkeypatch.setattr("deployment.app.api.jobs.validate_data_file_upload", AsyncMock())
+        monkeypatch.setattr("deployment.app.api.jobs.validate_stock_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.api.jobs.validate_sales_file", lambda x, y: (True, None))
+
+        files = [
+            (
+                "stock_file",
+                ("stock.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ),
+            (
+                "sales_files",
+                ("sales.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ),
+        ]
+
+        # Act
+        response = api_client.post(
+            "/api/v1/jobs/data-upload",
+            files=files,
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
+
+        # Assert
+        assert response.status_code == fastapi_status.HTTP_429_TOO_MANY_REQUESTS
+        assert "Retry-After" in response.headers
+        assert response.headers["Retry-After"] == "180"
+
+        resp_data = response.json()
+        assert resp_data["error"]["details"]["original_detail"]["code"] == "job_refractory_active"
+        assert "similar data_upload job was submitted recently" in resp_data["error"]["details"]["original_detail"]["message"]
+        assert resp_data["error"]["details"]["original_detail"]["retry_after_seconds"] == 180
+
+        # Verify lock acquisition was called with correct parameters
+        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
+        call_args = in_memory_db.try_acquire_job_submission_lock.call_args
+        assert call_args[0][0] == JobType.DATA_UPLOAD.value  # job_type
+        assert "stock_file" in call_args[0][1]  # parameters dict
+        assert "sales_files" in call_args[0][1]
+
+    def test_create_data_upload_job_refractory_period_acquired(
+        self, api_client, in_memory_db, monkeypatch
+    ):
+        """Test data upload job succeeds when lock is acquired."""
+        # Arrange
+        # Mock the lock acquisition to return True (acquired)
+        monkeypatch.setattr(
+            in_memory_db, 
+            "try_acquire_job_submission_lock", 
+            MagicMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
+        )
+
+        # Mock other dependencies
+        mock_add_task = MagicMock()
+        monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
+        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x: (True, "2022-09-30"))
+        monkeypatch.setattr("deployment.app.api.jobs.validate_data_file_upload", AsyncMock())
+        monkeypatch.setattr("deployment.app.api.jobs.validate_stock_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.api.jobs.validate_sales_file", lambda x, y: (True, None))
+
+        mock_save_file = AsyncMock(return_value=Path("/fake/path"))
+        monkeypatch.setattr("deployment.app.api.jobs._save_uploaded_file", mock_save_file)
+
+        files = [
+            (
+                "stock_file",
+                ("stock.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ),
+            (
+                "sales_files",
+                ("sales.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ),
+        ]
+
+        # Act
+        response = api_client.post(
+            "/api/v1/jobs/data-upload",
+            files=files,
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
+
+        # Assert
+        assert response.status_code == 200
+        resp_data = response.json()
+        assert "job_id" in resp_data
+        assert resp_data["status"] == JobStatus.PENDING.value
+
+        # Verify lock acquisition was called
+        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
 
     def test_create_data_upload_job_invalid_date(
         self, api_client, monkeypatch
@@ -325,7 +429,117 @@ class TestTrainingJobEndpoint:
         assert "Start date must be before or equal to end date" in response.text
         assert "value_error" in response.text
 
+    def test_create_training_job_refractory_period_active(
+        self, api_client, in_memory_db, monkeypatch
+    ):
+        """Test training job returns 429 when refractory period is active."""
+        # Arrange
+        # Create an active config first
+        config_data = {
+            "nn_model_config": {
+                "num_encoder_layers": 1, "num_decoder_layers": 1, "decoder_output_dim": 1,
+                "temporal_width_past": 1, "temporal_width_future": 1, "temporal_hidden_size_past": 1,
+                "temporal_hidden_size_future": 1, "temporal_decoder_hidden": 1, "batch_size": 1,
+                "dropout": 0.1, "use_reversible_instance_norm": False, "use_layer_norm": False
+            },
+            "optimizer_config": {"lr": 0.01, "weight_decay": 0.01},
+            "lr_shed_config": {"T_0": 1, "T_mult": 1},
+            "train_ds_config": {"alpha": 0.1, "span": 1},
+            "lags": 1
+        }
+        in_memory_db.create_or_get_config(config_data, is_active=True)
 
+        # Mock the lock acquisition to return False (not acquired)
+        monkeypatch.setattr(
+            in_memory_db, 
+            "try_acquire_job_submission_lock", 
+            MagicMock(return_value=(False, 300))  # (acquired=False, retry_after=300)
+        )
+
+        # Act
+        response = api_client.post(
+            "/api/v1/jobs/training",
+            json={
+                "dataset_start_date": "2022-01-01",
+                "dataset_end_date": "2023-01-31",
+            },
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
+
+        # Assert
+        assert response.status_code == fastapi_status.HTTP_429_TOO_MANY_REQUESTS
+        assert "Retry-After" in response.headers
+        assert response.headers["Retry-After"] == "300"
+
+        resp_data = response.json()
+        assert resp_data["error"]["details"]["original_detail"]["code"] == "job_refractory_active"
+        assert "similar training job was submitted recently" in resp_data["error"]["details"]["original_detail"]["message"]
+        assert resp_data["error"]["details"]["original_detail"]["retry_after_seconds"] == 300
+
+        # Verify lock acquisition was called with correct parameters
+        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
+        call_args = in_memory_db.try_acquire_job_submission_lock.call_args
+        assert call_args[0][0] == JobType.TRAINING.value  # job_type
+        assert "config_id" in call_args[0][1]  # parameters dict
+        assert "dataset_start_date" in call_args[0][1]
+        assert "dataset_end_date" in call_args[0][1]
+
+    def test_create_training_job_refractory_period_acquired(
+        self, api_client, in_memory_db, monkeypatch
+    ):
+        """Test training job succeeds when lock is acquired."""
+        # Arrange
+        # Create an active config first
+        config_data = {
+            "nn_model_config": {
+                "num_encoder_layers": 1, "num_decoder_layers": 1, "decoder_output_dim": 1,
+                "temporal_width_past": 1, "temporal_width_future": 1, "temporal_hidden_size_past": 1,
+                "temporal_hidden_size_future": 1, "temporal_decoder_hidden": 1, "batch_size": 1,
+                "dropout": 0.1, "use_reversible_instance_norm": False, "use_layer_norm": False
+            },
+            "optimizer_config": {"lr": 0.01, "weight_decay": 0.01},
+            "lr_shed_config": {"T_0": 1, "T_mult": 1},
+            "train_ds_config": {"alpha": 0.1, "span": 1},
+            "lags": 1
+        }
+        config_id = in_memory_db.create_or_get_config(config_data, is_active=True)
+
+        # Mock the lock acquisition to return True (acquired)
+        monkeypatch.setattr(
+            in_memory_db, 
+            "try_acquire_job_submission_lock", 
+            MagicMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
+        )
+
+        # Mock background task
+        mock_add_task = MagicMock()
+        monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
+
+        # Act
+        response = api_client.post(
+            "/api/v1/jobs/training",
+            json={
+                "dataset_start_date": "2022-01-01",
+                "dataset_end_date": "2023-01-31",
+            },
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
+
+        # Assert
+        assert response.status_code == 200
+        resp_data = response.json()
+        job_id = resp_data["job_id"]
+        assert resp_data["status"] == JobStatus.PENDING.value
+
+        # Verify job creation in DB
+        job_from_db = in_memory_db.get_job(job_id)
+        assert job_from_db is not None
+        job_from_db_params = json.loads(job_from_db["parameters"])
+        assert job_from_db_params["config_id"] == config_id
+
+        # Verify lock acquisition was called
+        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
+        mock_add_task.assert_called_once()
 
 
 class TestReportJobEndpoint:
@@ -411,6 +625,209 @@ class TestReportJobEndpoint:
         # Assert
         assert response.status_code == 404
         assert_detail(response, expected_code="no_predictions_found", expect_type=dict)
+
+
+class TestTuningJobEndpoint:
+    """Test suite for /api/v1/jobs/tuning endpoint."""
+
+    def test_create_tuning_job_refractory_period_active(
+        self, api_client, in_memory_db, monkeypatch
+    ):
+        """Test tuning job returns 429 when refractory period is active."""
+        # Arrange
+        # Mock the lock acquisition to return False (not acquired)
+        monkeypatch.setattr(
+            in_memory_db,
+            "try_acquire_job_submission_lock",
+            MagicMock(return_value=(False, 600))  # (acquired=False, retry_after=600)
+        )
+        
+        # Mock get_effective_config to return a valid config
+        mock_config = {
+            "config_id": "test-config-123",
+            "config": {"test": "config"}
+        }
+        monkeypatch.setattr(
+            in_memory_db,
+            "get_effective_config",
+            MagicMock(return_value=mock_config)
+        )
+        
+        # Mock adjust_dataset_boundaries to return a valid date
+        from datetime import date
+        monkeypatch.setattr(
+            in_memory_db,
+            "adjust_dataset_boundaries",
+            MagicMock(return_value=date(2023, 1, 31))
+        )
+
+        # Act
+        response = api_client.post(
+            "/api/v1/jobs/tuning",
+            json={
+                "mode": "lite",
+                "dataset_start_date": "2022-01-01",
+                "dataset_end_date": "2023-01-31",
+            },
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
+
+        # Assert
+        assert response.status_code == fastapi_status.HTTP_429_TOO_MANY_REQUESTS
+        assert "Retry-After" in response.headers
+        assert response.headers["Retry-After"] == "600"
+
+        resp_data = response.json()
+        assert resp_data["error"]["details"]["original_detail"]["code"] == "job_refractory_active"
+        assert "similar tuning job was submitted recently" in resp_data["error"]["details"]["original_detail"]["message"]
+        assert resp_data["error"]["details"]["original_detail"]["retry_after_seconds"] == 600
+
+        # Verify lock acquisition was called with correct parameters
+        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
+        call_args = in_memory_db.try_acquire_job_submission_lock.call_args
+        assert call_args[0][0] == JobType.TUNING.value  # job_type
+        assert "mode" in call_args[0][1]  # parameters dict
+        assert call_args[0][1]["mode"] == "lite"
+        assert "dataset_start_date" in call_args[0][1]
+        assert "dataset_end_date" in call_args[0][1]
+
+    def test_create_tuning_job_refractory_period_acquired(
+        self, api_client, in_memory_db, monkeypatch
+    ):
+        """Test tuning job succeeds when lock is acquired."""
+        # Arrange
+        # Mock the lock acquisition to return True (acquired)
+        monkeypatch.setattr(
+            in_memory_db, 
+            "try_acquire_job_submission_lock", 
+            MagicMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
+        )
+
+        # Mock get_effective_config to return a valid config
+        mock_config = {
+            "config_id": "test-config-123",
+            "config": {"test": "config"}
+        }
+        monkeypatch.setattr(
+            in_memory_db,
+            "get_effective_config",
+            MagicMock(return_value=mock_config)
+        )
+        
+        # Mock adjust_dataset_boundaries to return a valid date
+        from datetime import date
+        monkeypatch.setattr(
+            in_memory_db,
+            "adjust_dataset_boundaries",
+            MagicMock(return_value=date(2023, 1, 31))
+        )
+
+        # Mock background task
+        mock_add_task = MagicMock()
+        monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
+
+        # Act
+        response = api_client.post(
+            "/api/v1/jobs/tuning",
+            json={
+                "mode": "full",
+                "dataset_start_date": "2022-01-01",
+                "dataset_end_date": "2023-01-31",
+            },
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
+
+        # Assert
+        assert response.status_code == 200
+        resp_data = response.json()
+        job_id = resp_data["job_id"]
+        assert resp_data["status"] == JobStatus.PENDING.value
+
+        # Verify job creation in DB
+        job_from_db = in_memory_db.get_job(job_id)
+        assert job_from_db is not None
+        job_from_db_params = json.loads(job_from_db["parameters"])
+        assert job_from_db_params["mode"] == "full"
+
+        # Verify lock acquisition was called
+        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
+        mock_add_task.assert_called_once()
+
+    def test_create_tuning_job_different_parameters_different_locks(
+        self, api_client, in_memory_db, monkeypatch
+    ):
+        """Test that different tuning parameters create different locks."""
+        # Arrange
+        # Mock the lock acquisition to return True for both calls (different parameters)
+        monkeypatch.setattr(
+            in_memory_db, 
+            "try_acquire_job_submission_lock", 
+            MagicMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
+        )
+
+        # Mock get_effective_config to return a valid config
+        mock_config = {
+            "config_id": "test-config-123",
+            "config": {"test": "config"}
+        }
+        monkeypatch.setattr(
+            in_memory_db,
+            "get_effective_config",
+            MagicMock(return_value=mock_config)
+        )
+        
+        # Mock adjust_dataset_boundaries to return a valid date
+        from datetime import date
+        monkeypatch.setattr(
+            in_memory_db,
+            "adjust_dataset_boundaries",
+            MagicMock(return_value=date(2023, 1, 31))
+        )
+
+        # Mock background task
+        mock_add_task = MagicMock()
+        monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
+
+        # Act - First request with lite mode
+        response1 = api_client.post(
+            "/api/v1/jobs/tuning",
+            json={
+                "mode": "lite",
+                "dataset_start_date": "2022-01-01",
+                "dataset_end_date": "2022-06-30",
+            },
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
+
+        # Act - Second request with full mode (different parameters)
+        response2 = api_client.post(
+            "/api/v1/jobs/tuning",
+            json={
+                "mode": "full",
+                "dataset_start_date": "2022-07-01",
+                "dataset_end_date": "2022-12-31",
+            },
+            headers={"X-API-Key": TEST_X_API_KEY},
+        )
+
+        # Assert
+        assert response1.status_code == 200
+        assert response2.status_code == 200
+
+        # Verify both calls were made (different parameter hashes)
+        assert in_memory_db.try_acquire_job_submission_lock.call_count == 2
+        
+        # Verify different parameters were passed
+        calls = in_memory_db.try_acquire_job_submission_lock.call_args_list
+        assert calls[0][0][0] == JobType.TUNING.value  # job_type
+        assert calls[1][0][0] == JobType.TUNING.value  # job_type
+        
+        # Parameters should be different
+        params1 = calls[0][0][1]
+        params2 = calls[1][0][1]
+        assert params1["mode"] == "lite"
+        assert params2["mode"] == "full"
+        assert params1["dataset_start_date"] != params2["dataset_start_date"]
 
 
 class TestJobStatusEndpoint:

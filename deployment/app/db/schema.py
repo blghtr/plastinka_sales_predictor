@@ -178,6 +178,14 @@ CREATE TABLE IF NOT EXISTS tuning_results (
     FOREIGN KEY (config_id) REFERENCES configs(config_id)
 );
 
+-- Submission locks for refractory period per job_type + parameter hash
+CREATE TABLE IF NOT EXISTS job_submission_locks (
+    job_type TEXT NOT NULL,
+    param_hash TEXT NOT NULL,
+    lock_until TIMESTAMP NOT NULL,
+    PRIMARY KEY (job_type, param_hash)
+);
+
 
 CREATE TABLE IF NOT EXISTS report_features (
     data_date DATE NOT NULL,
@@ -252,6 +260,9 @@ CREATE INDEX IF NOT EXISTS idx_tuning_results_created ON tuning_results(created_
 
 CREATE INDEX IF NOT EXISTS idx_retry_events_op ON retry_events(component, operation);
 CREATE INDEX IF NOT EXISTS idx_retry_events_time ON retry_events(timestamp);
+
+-- Index to help cleanups of stale locks
+CREATE INDEX IF NOT EXISTS idx_job_submission_locks_until ON job_submission_locks(lock_until);
 """
 
 MULTIINDEX_NAMES = [

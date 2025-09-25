@@ -989,7 +989,7 @@ async def run_job(
     """
     Runs a DataSphere training job pipeline: setup, execution, monitoring, result processing, cleanup.
     """
-    import debugpy; debugpy.listen(5678); print("Waiting for debugger to attach..."); debugpy.wait_for_client()
+    #import debugpy; debugpy.listen(5678); print("Waiting for debugger to attach..."); debugpy.wait_for_client()
 
     ds_job_id: str | None = None
     client: DataSphereClient | None = None

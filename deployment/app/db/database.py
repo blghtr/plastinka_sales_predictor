@@ -328,6 +328,129 @@ def create_job(
     return job_id
 
 
+def _compute_param_hash(parameters: dict | None) -> str:
+    """
+    Compute a stable hash for job parameters to segment locks by job_type+parameters.
+    """
+    try:
+        payload = json.dumps(parameters or {}, sort_keys=True, default=json_default_serializer)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    except Exception:
+        # Fallback: hash of string repr
+        return hashlib.sha256(str(parameters).encode("utf-8")).hexdigest()
+
+
+def _get_refractory_seconds(job_type: str) -> int:
+    """Fetch refractory seconds from settings (per-type override or default)."""
+    try:
+        settings = get_settings()
+        return settings.get_job_refractory_seconds(job_type)
+    except Exception:
+        return 300
+
+
+def try_acquire_job_submission_lock(
+    job_type: str,
+    parameters: dict | None,
+    connection: sqlite3.Connection,
+) -> tuple[bool, int]:
+    """
+    Attempt to acquire submission lock for a (job_type, parameters) pair.
+
+    Returns (acquired, retry_after_seconds).
+    If acquired is False, retry_after_seconds indicates how long to wait before retrying.
+    """
+    now_iso = datetime.now().isoformat()
+    refractory_seconds = _get_refractory_seconds(job_type)
+    param_hash = _compute_param_hash(parameters)
+
+    # 1) Try to update existing lock if expired
+    updated = execute_query(
+        query=(
+            "UPDATE job_submission_locks "
+            "SET lock_until = ? "
+            "WHERE job_type = ? AND param_hash = ? AND lock_until <= ?"
+        ),
+        connection=connection,
+        params=(
+            (datetime.now()).isoformat(timespec="seconds"),
+            job_type,
+            param_hash,
+            now_iso,
+        ),
+    )
+
+    # 2) If no row updated, try to insert new lock
+    if updated is None:  # UPDATE returns None in our execute_query abstraction
+        pass
+    
+    # Select to see if lock was updated
+    row = execute_query(
+        query="SELECT lock_until FROM job_submission_locks WHERE job_type = ? AND param_hash = ?",
+        connection=connection,
+        params=(job_type, param_hash),
+    )
+
+    now_dt = datetime.now()
+
+    if not row:
+        # insert new lock row
+        new_until = (now_dt + timedelta(seconds=refractory_seconds)).isoformat()
+        try:
+            execute_query(
+                query=(
+                    "INSERT INTO job_submission_locks (job_type, param_hash, lock_until) VALUES (?, ?, ?)"
+                ),
+                connection=connection,
+                params=(job_type, param_hash, new_until),
+            )
+            return True, 0
+        except DatabaseError:
+            # Could be raced by another inserter; fall through to check
+            row = execute_query(
+                query="SELECT lock_until FROM job_submission_locks WHERE job_type = ? AND param_hash = ?",
+                connection=connection,
+                params=(job_type, param_hash),
+            )
+
+    if row:
+        lock_until = row.get("lock_until")
+        try:
+            lock_until_dt = datetime.fromisoformat(lock_until)
+        except Exception:
+            # If stored without full ISO format, try best effort
+            lock_until_dt = datetime.fromisoformat(str(lock_until))
+
+        if lock_until_dt <= now_dt:
+            # Expired but our UPDATE didn't win; try one more UPDATE to extend
+            new_until = (now_dt + timedelta(seconds=refractory_seconds)).isoformat()
+            execute_query(
+                query=(
+                    "UPDATE job_submission_locks SET lock_until = ? WHERE job_type = ? AND param_hash = ? AND lock_until <= ?"
+                ),
+                connection=connection,
+                params=(new_until, job_type, param_hash, now_dt.isoformat()),
+            )
+            # Consider acquired regardless of rowcount; another contender may have acquired it
+            # Re-check state
+            row2 = execute_query(
+                query="SELECT lock_until FROM job_submission_locks WHERE job_type = ? AND param_hash = ?",
+                connection=connection,
+                params=(job_type, param_hash),
+            )
+            lock_until2_dt = datetime.fromisoformat(row2["lock_until"]) if row2 else now_dt
+            if lock_until2_dt > now_dt:
+                return True, 0
+            return True, 0
+        else:
+            # Not expired: compute retry_after
+            retry_after = max(0, int((lock_until_dt - now_dt).total_seconds()))
+            return False, retry_after
+
+    # Fallback acquire
+    return True, 0
+
+
 def update_job_status(
     job_id: str,
     status: str,

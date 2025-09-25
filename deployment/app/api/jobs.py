@@ -136,6 +136,29 @@ async def create_data_upload_job(
     job_id = None
     temp_job_dir = None
     
+    # Prepare parameters for lock hashing and job creation
+    prospective_params = {
+        "stock_file": stock_file.filename,
+        "sales_files": [f.filename for f in sales_files],
+        "overwrite": params.overwrite,
+    }
+
+    # Enforce refractory: job_type + parameter hash (before any processing)
+    acquired, retry_after = dal.try_acquire_job_submission_lock(
+        JobType.DATA_UPLOAD.value, prospective_params
+    )
+    if not acquired:
+        detail = {
+            "message": "A similar data_upload job was submitted recently. Please retry later.",
+            "code": "job_refractory_active",
+            "retry_after_seconds": retry_after,
+        }
+        raise HTTPException(
+            status_code=fastapi_status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=detail,
+            headers={"Retry-After": str(retry_after)},
+        )
+    
     stock_file_content = io.BytesIO(await stock_file.read())
     try:
         # Validate stock file content
@@ -169,14 +192,10 @@ async def create_data_upload_job(
             # Reset file position
             await sales_file.seek(0)
 
-        # Create a new job *before* creating the temp directory
+        # Create a new job *after* lock acquisition
         job_id = dal.create_job(
             JobType.DATA_UPLOAD,
-            parameters={
-                "stock_file": stock_file.filename,
-                "sales_files": [f.filename for f in sales_files],
-                "overwrite": params.overwrite
-            },
+            parameters=prospective_params,
         )
 
         # Создаем уникальную временную директорию для этого задания
@@ -376,13 +395,26 @@ async def create_training_job(
             )
         logger.info(f"Using configuration: {config['config_id']}")
 
-        # 3. Create the job record in the database
+        # 3. Prepare job parameters for refractory check
         job_params = {"config_id": config["config_id"]}
         if dataset_start_date:
             job_params["dataset_start_date"] = dataset_start_date
         if dataset_end_date:
             job_params["dataset_end_date"] = dataset_end_date
             job_params["prediction_month"] = get_next_month(dataset_end_date)
+
+        # Enforce refractory: job_type + parameter hash (after config validation)
+        acquired, retry_after = dal.try_acquire_job_submission_lock(JobType.TRAINING.value, job_params)
+        if not acquired:
+            raise HTTPException(
+                status_code=fastapi_status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "message": "A similar training job was submitted recently. Please retry later.",
+                    "code": "job_refractory_active",
+                    "retry_after_seconds": retry_after,
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
 
         job_id = dal.create_job(JobType.TRAINING, parameters=job_params)
         logger.info(f"Job record created with ID: {job_id}")
@@ -454,6 +486,7 @@ async def create_tuning_job(
     logger.info("Received request to create tuning job")
     if params is None:
         params = TuningParams()
+    
     try:
         # Determine adjusted training end date automatically
         dataset_start_date = params.dataset_start_date
@@ -488,6 +521,19 @@ async def create_tuning_job(
             job_params["dataset_start_date"] = dataset_start_date
         if dataset_end_date:
             job_params["dataset_end_date"] = dataset_end_date
+
+        # Enforce refractory: job_type + parameter hash (after config validation)
+        acquired, retry_after = dal.try_acquire_job_submission_lock(JobType.TUNING.value, job_params)
+        if not acquired:
+            raise HTTPException(
+                status_code=fastapi_status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "message": "A similar tuning job was submitted recently. Please retry later.",
+                    "code": "job_refractory_active",
+                    "retry_after_seconds": retry_after,
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
 
         # 3. Создание задания в БД
         job_id = dal.create_job(JobType.TUNING, parameters=job_params)

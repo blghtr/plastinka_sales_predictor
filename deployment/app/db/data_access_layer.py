@@ -56,6 +56,7 @@ from deployment.app.db.database import (
     get_tuning_results,
     insert_predictions,
     list_jobs,
+    try_acquire_job_submission_lock,
     set_config_active,
     set_model_active,
     update_job_status,
@@ -175,6 +176,15 @@ class DataAccessLayer:
     def create_job(self, job_type: str, parameters: dict[str, Any] = None, status: str = "pending") -> str:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return create_job(job_type, parameters, self._connection, status)
+
+    @transaction_required
+    def try_acquire_job_submission_lock(self, job_type: str, parameters: dict[str, Any] | None) -> tuple[bool, int]:
+        """Expose submission lock acquisition through DAL.
+
+        Returns (acquired, retry_after_seconds).
+        """
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return try_acquire_job_submission_lock(job_type, parameters, self._connection)
 
     @transaction_required
     def update_job_status(self, job_id: str, status: str, progress: float = None, result_id: str = None, error_message: str = None, status_message: str = None) -> None:
