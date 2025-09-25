@@ -110,10 +110,11 @@ class TestDataUploadEndpoint:
         # Mock background task and other dependencies
         mock_add_task = MagicMock()
         monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
-        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x: (True, "2022-09-30"))
-        monkeypatch.setattr("deployment.app.api.jobs.validate_data_file_upload", AsyncMock())
-        monkeypatch.setattr("deployment.app.api.jobs.validate_stock_file", lambda x, y: (True, None))
-        monkeypatch.setattr("deployment.app.api.jobs.validate_sales_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x, y: (True, "2022-09-30"))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_data_file_upload", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_data_file_content", lambda x, y, z: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_stock_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_sales_file", lambda x, y: (True, None))
 
         # Mock file saving
         mock_save_file = AsyncMock(return_value=Path("/fake/path"))
@@ -167,10 +168,11 @@ class TestDataUploadEndpoint:
         )
 
         # Mock other dependencies to avoid side effects
-        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x: (True, "2022-09-30"))
-        monkeypatch.setattr("deployment.app.api.jobs.validate_data_file_upload", AsyncMock())
-        monkeypatch.setattr("deployment.app.api.jobs.validate_stock_file", lambda x, y: (True, None))
-        monkeypatch.setattr("deployment.app.api.jobs.validate_sales_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x, y: (True, "2022-09-30"))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_data_file_upload", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_data_file_content", lambda x, y, z: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_stock_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_sales_file", lambda x, y: (True, None))
 
         files = [
             (
@@ -222,10 +224,11 @@ class TestDataUploadEndpoint:
         # Mock other dependencies
         mock_add_task = MagicMock()
         monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
-        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x: (True, "2022-09-30"))
-        monkeypatch.setattr("deployment.app.api.jobs.validate_data_file_upload", AsyncMock())
-        monkeypatch.setattr("deployment.app.api.jobs.validate_stock_file", lambda x, y: (True, None))
-        monkeypatch.setattr("deployment.app.api.jobs.validate_sales_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x, y: (True, "2022-09-30"))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_data_file_upload", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_data_file_content", lambda x, y, z: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_stock_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_sales_file", lambda x, y: (True, None))
 
         mock_save_file = AsyncMock(return_value=Path("/fake/path"))
         monkeypatch.setattr("deployment.app.api.jobs._save_uploaded_file", mock_save_file)
@@ -1014,10 +1017,11 @@ class TestAuthenticationScenarios:
         # Arrange
         mock_add_task = MagicMock()
         monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
-        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x: (True, "2022-09-30"))
-        monkeypatch.setattr("deployment.app.api.jobs.validate_data_file_upload", AsyncMock())
-        monkeypatch.setattr("deployment.app.api.jobs.validate_stock_file", lambda x, y: (True, None))
-        monkeypatch.setattr("deployment.app.api.jobs.validate_sales_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_date_format", lambda x, y: (True, "2022-09-30"))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_data_file_upload", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_data_file_content", lambda x, y, z: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_stock_file", lambda x, y: (True, None))
+        monkeypatch.setattr("deployment.app.utils.validation.validate_sales_file", lambda x, y: (True, None))
 
         mock_save_file = AsyncMock(return_value=Path("/fake/path"))
         monkeypatch.setattr("deployment.app.api.jobs._save_uploaded_file", mock_save_file)
