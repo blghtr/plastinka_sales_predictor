@@ -563,16 +563,15 @@ class RetryMonitor:
     # ---------------------------------------------------------------------
 
     def _fetch_recent_events_db(self) -> list[dict[str, Any]]:
-        """Fetch recent retry_events rows up to self._capacity."""
+        """Fetch recent retry_events rows up to self._capacity using DAL."""
+        
         try:
-            # Local import to break circular dependency
-            from deployment.app.db.data_access_layer import fetch_recent_retry_events
             from deployment.app.db.database import get_db_connection
-            conn = get_db_connection(db_path_override=self._db_path)
-            try:
-                return fetch_recent_retry_events(limit=self._capacity, connection=conn)
-            finally:
-                conn.close()
+            from deployment.app.dependencies import get_dal_system_sync
+
+            with get_db_connection(db_path_override=self._db_path) as conn:
+                dal = get_dal_system_sync(connection=conn)
+                return dal.fetch_recent_retry_events(limit=self._capacity)
         except Exception as e:
             logger.error("Failed to fetch retry events from DB: %s", e, exc_info=True)
             return []
@@ -639,16 +638,20 @@ class RetryMonitor:
                 self._retry_events = original_events
 
     def _insert_event_db(self, event_data: dict[str, Any], connection) -> None:
-        """Internal: Inserts a single event into the DB."""
-        if self._db_path:
-            try:
-                # Local import to break circular dependency
-                from deployment.app.db.database import insert_retry_event
-                insert_retry_event(event_data, connection=connection)
-            except Exception as e:
-                logger.error(f"[RetryMonitor._insert_event_db] Failed to insert retry event into DB: {e}", exc_info=True)
-        else:
-            pass  # DB path not configured, skipping event persistence
+        """Internal: Inserts a single event into the DB via DAL."""
+        if not self._db_path:
+            return  # DB path not configured, skipping event persistence
+
+        try:
+            from deployment.app.dependencies import get_dal_system_sync
+
+            dal = get_dal_system_sync(connection=connection)
+            dal.insert_retry_event(event_data)
+        except Exception as e:
+            logger.error(
+                f"[RetryMonitor._insert_event_db] Failed to insert retry event into DB: {e}",
+                exc_info=True,
+            )
 
 
 # -------------------- Global singleton instance -----------------------------------

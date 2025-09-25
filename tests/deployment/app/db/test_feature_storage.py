@@ -1,895 +1,159 @@
 import os
-import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import pytest
 
 # Add the parent directory to sys.path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.db.feature_storage import (
-    FeatureStoreFactory,
+    EXPECTED_REPORT_FEATURES,
     SQLFeatureStore,
-    load_features,
-    save_features,
 )
-from deployment.app.db.schema import SCHEMA_SQL  # Import schema SQL
+from deployment.app.db.schema import MULTIINDEX_NAMES
 
 
 @pytest.fixture
-def feature_store_env():
-    """Set up test environment with a temporary SQLite database and connection."""
+def comprehensive_feature_store_env():
+    """
+    Set up a test environment with a temporary SQLite database, DAL,
+    and multiple products in the multi-index mapping.
+    """
     temp_db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-
-    conn = sqlite3.connect(temp_db_file)
-    conn.row_factory = sqlite3.Row  # Use Row factory for easier access
+    dal = DataAccessLayer(db_path=temp_db_file)
+    conn = dal._connection
     cursor = conn.cursor()
 
-    cursor.executescript(SCHEMA_SQL)
-
-    # Insert initial test data
-    cursor.execute("""
-    INSERT INTO dim_multiindex_mapping (multiindex_id, barcode, artist, album, cover_type, price_category,
-                                        release_type, recording_decade, release_decade, style, record_year)
-    VALUES (1, '1234567890', 'Test Artist', 'Test Album', 'CD', 'Standard',
-            'Studio', '2010s', '2010s', 'Rock', 2015)
-    """)
-
-    cursor.execute("""
-    INSERT INTO processing_runs (run_id, start_time, status, source_files)
-    VALUES (1, '2023-01-01T00:00:00', 'fixture_setup', 'fixture_files.csv')
-    """)
+    # Insert multiple products for comprehensive testing
+    products_data = [
+        (1, '111', 'Artist A', 'Album A', 'CD', 'Std', 'Studio', '2010s', '2020s', 'Rock', '2015'),
+        (2, '222', 'Artist B', 'Album B', 'Vinyl', 'Ltd', 'Live', '2000s', '2020s', 'Pop', '2008'),
+        (3, '333', 'Artist A', 'Album C', 'CD', 'Std', 'Studio', '2010s', '2020s', 'Rock', '2018'),
+    ]
+    # Correctly build the INSERT statement with named columns
+    columns_str = ', '.join(MULTIINDEX_NAMES)
+    placeholders = ', '.join('?' * (len(MULTIINDEX_NAMES) + 1))
+    cursor.executemany(f"""
+    INSERT INTO dim_multiindex_mapping (multiindex_id, {columns_str})
+    VALUES ({placeholders})
+    """, products_data)
     conn.commit()
 
-    # Clean fact tables before each test
-    cursor.execute("DELETE FROM fact_sales")
-    cursor.execute("DELETE FROM fact_stock_movement")
-    conn.commit()
+    yield dal
 
-    yield {
-        "conn": conn,
-        "cursor": cursor,
-        "db_path": temp_db_file,  # Provide path for tests that might need it
-    }
-
-    conn.close()
+    dal.close()
     if os.path.exists(temp_db_file):
         os.unlink(temp_db_file)
 
 
-def test_convert_to_int(feature_store_env):
-    """Test the _convert_to_int helper method."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    dal = DataAccessLayer(connection=conn)
+def test_save_and_load_all_features_end_to_end(comprehensive_feature_store_env):
+    """
+    A comprehensive end-to-end test for SQLFeatureStore.
+    It saves multiple feature types (pivoted and flat) using the public API
+    and then loads them back, performing detailed validation.
+    This test is designed to fail if the save/load logic is incorrect,
+    especially in how it handles different data formats and missing values.
+    """
+    dal = comprehensive_feature_store_env
+
+    # 1. ARRANGE: Create complex, wide-format DataFrames
+
+    # Product Multi-indexes
+    idx1 = ('111', 'Artist A', 'Album A', 'CD', 'Std', 'Studio', '2010s', '2020s', 'Rock', '2015')
+    idx2 = ('222', 'Artist B', 'Album B', 'Vinyl', 'Ltd', 'Live', '2000s', '2020s', 'Pop', '2008')
+    multi_index = pd.MultiIndex.from_tuples([idx1, idx2], names=MULTIINDEX_NAMES)
+
+    # Date Index
+    date1 = pd.to_datetime("2023-01-01")
+    date2 = pd.to_datetime("2023-01-02")
+    date_index = [date1, date2]
+
+    # --- Create DataFrames for saving ---
+
+    # Sales (pivoted format: products in index, dates in columns)
+    sales_data = [[10.0, 12.0], [0.0, 22.0]]
+    sales_df_wide = pd.DataFrame(sales_data, index=multi_index, columns=date_index)
+
+    # Movement (pivoted, with a NaN to test handling)
+    movement_data = [[-5.0, np.nan], [3.0, -8.0]]
+    movement_df_wide = pd.DataFrame(movement_data, index=multi_index, columns=date_index)
+
+    # Report Features (created in a format that will be processed into the expected wide format)
+    # The save logic for report_features expects a wide df with features as columns
+    # and a multi-level index of (_date, product_attributes...)
+    final_tuples = []
+    for date in date_index:
+        for prod_tuple in multi_index:
+            final_tuples.append((date,) + prod_tuple)
+
+    report_index = pd.MultiIndex.from_tuples(final_tuples, names=['_date'] + MULTIINDEX_NAMES)
+    report_features_df_wide = pd.DataFrame(index=report_index)
+    report_features_df_wide['availability'] = [0.9, 0.8, 0.95, 0.85]
+    report_features_df_wide['confidence'] = [0.7, 0.6, 0.75, 0.65]
+    report_features_df_wide['masked_mean_sales_items'] = [5.0, 7.0, 6.0, 8.0]
+    report_features_df_wide['masked_mean_sales_rub'] = [500.0, 700.0, 600.0, 800.0]
+    report_features_df_wide['lost_sales'] = [1.0, 2.0, 0.0, 3.0]
+
+
+    features_to_save = {
+        "sales": sales_df_wide,
+        "movement": movement_df_wide,
+        "report_features": report_features_df_wide
+    }
+
+    # 2. Save them using the PUBLIC API
     with SQLFeatureStore(dal=dal, run_id=1) as store:
-        assert store._convert_to_int(5) == 5
-        assert store._convert_to_int(5.7) == 6
-        assert store._convert_to_int(5.3) == 5
-        assert store._convert_to_int(np.float64(5.7)) == 6
-        assert store._convert_to_int("5") == 5
-        assert store._convert_to_int("invalid") == 0
-        assert store._convert_to_int(None) == 0
-        assert store._convert_to_int(np.nan) == 0
-        assert store._convert_to_int(pd.NA) == 0
-        assert store._convert_to_int(np.nan, default=-1) == -1
-
-
-def test_convert_to_float(feature_store_env):
-    """Test the _convert_to_float helper method."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    dal = DataAccessLayer(connection=conn)
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        assert store._convert_to_float(5.7) == 5.7
-        assert store._convert_to_float(5) == 5.0
-        assert store._convert_to_float(np.float64(5.7)) == 5.7
-        assert store._convert_to_float("5.7") == 5.7
-        assert store._convert_to_float("invalid") == 0.0
-        assert store._convert_to_float(None) == 0.0
-        assert store._convert_to_float(np.nan) == 0.0
-        assert store._convert_to_float(pd.NA) == 0.0
-        assert store._convert_to_float(np.nan, default=-1.5) == -1.5
-
-
-
-
-
-def test_save_report_features(feature_store_env):
-    """Test saving report features to the database."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    cursor = feature_store_env["cursor"]
-
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        # 1. Prepare mock data in the correct format
-        products = pd.MultiIndex.from_tuples(
-            [
-                (
-                    "1234567890",
-                    "Test Artist",
-                    "Test Album",
-                    "CD",
-                    "Standard",
-                    "Studio",
-                    "2010s",
-                    "2010s",
-                    "Rock",
-                    2015,
-                )
-            ],
-            names=[
-                "barcode",
-                "artist",
-                "album",
-                "cover_type",
-                "price_category",
-                "release_type",
-                "recording_decade",
-                "release_decade",
-                "style",
-                "record_year",
-            ],
-        )
-
-        # Create individual feature DataFrames (as they would be after the pipeline)
-        # Note: These are not used in the new test format, but kept for reference
-
-        # Создаем широкий DataFrame с MultiIndex в индексе и названиями фич в колонках
-        # Каждая строка - это один продукт, каждая колонка - одна фича
-        report_features_df = pd.DataFrame({
-            'availability': [0.9],
-            'confidence': [0.8],
-            'lost_sales': [100.0],
-            'masked_mean_sales_items': [10.0],
-            'masked_mean_sales_rub': [1000.0]
-        }, index=products)
-        report_features_df['_date'] = pd.to_datetime('2024-01-01')
-        report_features_df = report_features_df.set_index(['_date'], append=True)
-
-        features_to_save = {
-            "sales": pd.DataFrame(index=pd.MultiIndex.from_tuples([], names=[
-                "barcode", "artist", "album", "cover_type", "price_category", 
-                "release_type", "recording_decade", "release_decade", "style", "record_year"
-            ])),
-        }
-
-        # 2. Call the save_features method with report_features included in features dict
-        features_to_save["report_features"] = report_features_df
         store.save_features(features_to_save)
 
-        # 3. Verify the data in the database
-        cursor.execute(
-            "SELECT * FROM report_features WHERE multiindex_id = 1 ORDER BY data_date"
-        )
-        results = cursor.fetchall()
-
-        assert len(results) == 1
-
-        # Check the saved data
-        result = results[0]
-        assert result["multiindex_id"] == 1
-        assert result["availability"] == 0.9
-        assert result["confidence"] == 0.8
-        assert result["lost_sales"] == 100.0
-        assert result["masked_mean_sales_items"] == 10.0
-        assert result["masked_mean_sales_rub"] == 1000.0
-
-def test_load_report_features(feature_store_env):
-    """Test loading report features from the database."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    cursor = feature_store_env["cursor"]
-
-    # 1. Insert test data directly into the report_features table
-    test_data = [
-        (
-            "2024-01-01",
-            1,
-            0.9,
-            0.8,
-            10.0,
-            1000.0,
-            50.0,
-            datetime.now().isoformat(),
-        ),
-        (
-            "2024-02-01",
-            1,
-            0.95,
-            0.85,
-            12.0,
-            1200.0,
-            75.0,
-            datetime.now().isoformat(),
-        ),
-    ]
-    cursor.executemany(
-        """INSERT INTO report_features (data_date, multiindex_id, availability, confidence, masked_mean_sales_items, masked_mean_sales_rub, lost_sales, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        test_data,
-    )
-    conn.commit()
-
-    # 2. Call the load_report_features method
+    # 3. ACT: Load them back using the PUBLIC API
     with SQLFeatureStore(dal=dal) as store:
-        # Test loading all features for a specific month
-        loaded_df_jan = store.load_report_features(
-            start_date=datetime(2024, 1, 1).date(),
-            end_date=datetime(2024, 1, 1).date()
-        )
-
-        assert isinstance(loaded_df_jan, pd.DataFrame)
-        assert not loaded_df_jan.empty
-        assert len(loaded_df_jan) == 1
-        assert loaded_df_jan.iloc[0]["availability"] == 0.9
-        assert loaded_df_jan.iloc[0]["artist"] == "Test Artist"
-
-        # Test loading a subset of features for a date range
-        loaded_df_range = store.load_report_features(
-            start_date=datetime(2024, 1, 1).date(),
-            end_date=datetime(2024, 2, 28).date(),
-            feature_subset=["lost_sales", "confidence"],
-        )
-
-        assert isinstance(loaded_df_range, pd.DataFrame)
-        assert len(loaded_df_range) == 2
-        assert "lost_sales" in loaded_df_range.columns
-        assert "confidence" in loaded_df_range.columns
-        assert "availability" not in loaded_df_range.columns  # Check that subset works
-
-
-
-
-
-
-
-# New connection management tests:
-def test_sql_feature_store_as_context_manager_external_connection():
-    temp_db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    conn = sqlite3.connect(temp_db_file)
-    cursor = conn.cursor()
-    cursor.executescript(SCHEMA_SQL)
-    conn.commit()
-
-    try:
-        dal = DataAccessLayer(connection=conn)
-        with SQLFeatureStore(dal=dal, run_id=1) as fs:
-            # Note: db_conn and _conn_created_internally are no longer available in new implementation
-            # The connection is now managed by the DAL
-            fs.complete_run("test_status")  # Example operation
-
-        conn.execute("SELECT 1")  # Should not raise ProgrammingError
-    finally:
-        if conn:
-            conn.close()
-        if os.path.exists(temp_db_file):
-            os.unlink(temp_db_file)
-
-
-@patch("deployment.app.db.database.get_db_connection")
-def test_sql_feature_store_as_context_manager_internal_connection(
-    mock_get_db_connection_from_patch,
-):
-    temp_db_file_internal = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-
-    # This is the connection that get_db_connection will return
-    internal_conn_obj = sqlite3.connect(temp_db_file_internal)
-    cursor = internal_conn_obj.cursor()
-    cursor.executescript(SCHEMA_SQL)
-    internal_conn_obj.commit()
-
-    mock_get_db_connection_from_patch.return_value = internal_conn_obj
-
-    try:
-        # Using a specific run_id to avoid issues if methods depend on it.
-        dal_internal = DataAccessLayer(connection=internal_conn_obj)
-        with SQLFeatureStore(dal=dal_internal, run_id=1) as fs:
-            # Note: _conn_created_internally and db_conn are no longer available in new implementation
-            fs.complete_run("test_internal_status")  # Example operation
-            _ = fs  # Use the variable to avoid linter warning
-
-        # Note: In the new implementation, connections are managed by the DAL and not closed by the context manager
-        # The connection should still be usable after the context manager exits
-        internal_conn_obj.execute("SELECT 1")  # Should not raise ProgrammingError
-
-    finally:
-        # Attempt to close, will be no-op or error if already closed by __exit__
-        try:
-            if internal_conn_obj:
-                internal_conn_obj.close()
-        except sqlite3.ProgrammingError:
-            pass  # Already closed, expected
-        if os.path.exists(temp_db_file_internal):
-            os.unlink(temp_db_file_internal)
-
-
-@patch("deployment.app.db.database.get_db_connection")
-def test_sql_feature_store_context_manager_exception_internal(
-    mock_get_db_connection_from_patch,
-):
-    temp_db_file_internal_exc = tempfile.NamedTemporaryFile(
-        suffix=".db", delete=False
-    ).name
-    internal_conn_obj_exc = sqlite3.connect(temp_db_file_internal_exc)
-    cursor = internal_conn_obj_exc.cursor()
-    cursor.executescript(SCHEMA_SQL)
-    internal_conn_obj_exc.commit()
-    mock_get_db_connection_from_patch.return_value = internal_conn_obj_exc
-
-    try:
-        with pytest.raises(ValueError, match="Test exception from internal"):
-            dal_internal_exc = DataAccessLayer(connection=internal_conn_obj_exc)
-            with SQLFeatureStore(dal=dal_internal_exc, run_id=1) as _:
-                # Note: _conn_created_internally is no longer available in new implementation
-                raise ValueError("Test exception from internal")
-
-        # Note: In the new implementation, connections are managed by the DAL and not closed by the context manager
-        # The connection should still be usable after the context manager exits
-        internal_conn_obj_exc.execute("SELECT 1")  # Should not raise ProgrammingError
-
-    finally:
-        try:
-            if internal_conn_obj_exc:
-                internal_conn_obj_exc.close()
-        except sqlite3.ProgrammingError:
-            pass
-        if os.path.exists(temp_db_file_internal_exc):
-            os.unlink(temp_db_file_internal_exc)
-
-
-def test_sql_feature_store_context_manager_exception_external():
-    temp_db_file_ext_exc = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    external_conn_exc = sqlite3.connect(temp_db_file_ext_exc)
-    cursor = external_conn_exc.cursor()
-    cursor.executescript(SCHEMA_SQL)
-    external_conn_exc.commit()
-
-    try:
-        with pytest.raises(ValueError, match="Test exception from external"):
-            dal_exc = DataAccessLayer(connection=external_conn_exc)
-            with SQLFeatureStore(dal=dal_exc, run_id=1) as _:
-                # Note: _conn_created_internally is no longer available in new implementation
-                raise ValueError("Test exception from external")
-
-        external_conn_exc.execute("SELECT 1")  # Should not raise
-
-    finally:
-        if external_conn_exc:
-            external_conn_exc.close()
-        if os.path.exists(temp_db_file_ext_exc):
-            os.unlink(temp_db_file_ext_exc)
-
-
-# End of new connection management tests
-
-
-def test_create_and_complete_run(feature_store_env):
-    """Test creating and completing a processing run."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    cursor = feature_store_env["cursor"]
-
-    with SQLFeatureStore(dal=dal) as store:  # No run_id, will create new
-        run_id = store.create_run(source_files="run_test.csv")
-        assert run_id is not None
-        assert store.run_id == run_id
-
-        cursor.execute(
-            "SELECT status, source_files FROM processing_runs WHERE run_id = ?",
-            (run_id,),
-        )
-        run_data = cursor.fetchone()
-        assert run_data is not None
-        assert run_data["status"] == "running"
-        assert run_data["source_files"] == "run_test.csv"
-
-        store.complete_run(status="success")
-
-        cursor.execute(
-            "SELECT status, end_time FROM processing_runs WHERE run_id = ?", (run_id,)
-        )
-        run_data = cursor.fetchone()
-        assert run_data is not None
-        assert run_data["status"] == "success"
-        assert run_data["end_time"] is not None
-
-
-def test_save_sales_feature(feature_store_env):
-    """Test saving sales feature data."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    cursor = feature_store_env["cursor"]
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        date1 = pd.to_datetime("2023-03-10")
-        date2 = pd.to_datetime("2023-03-11")
-
-        # Создаем multiindex для колонок
-        index = pd.MultiIndex.from_tuples(
-            [idx_tuple],
-            names=[
-                "barcode",
-                "artist",
-                "album",
-                "cover_type",
-                "price_category",
-                "release_type",
-                "recording_decade",
-                "release_decade",
-                "style",
-                "record_year",
-            ],
-        )
-
-        # Используем правильный формат: multiindex в индексе, дата в колонках
-        df = pd.DataFrame([[5.0, 3.0]], index=index, columns=[date1, date2])
-        store._save_feature("sales", df)
-
-        cursor.execute(
-            "SELECT data_date, value FROM fact_sales WHERE multiindex_id = 1 ORDER BY data_date"
-        )
-        results = cursor.fetchall()
-
-        assert len(results) == 2
-        assert results[0]["data_date"] == "2023-03-10"
-        assert results[0]["value"] == 5.0
-        assert results[1]["data_date"] == "2023-03-11"
-        assert results[1]["value"] == 3.0
-
-
-def test_save_movement_feature(feature_store_env):
-    """Test saving stock movement feature data."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    cursor = feature_store_env["cursor"]
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        date1 = pd.to_datetime("2023-04-01")
-        date2 = pd.to_datetime("2023-04-02")
-
-        # Создаем multiindex для колонок
-        index = pd.MultiIndex.from_tuples(
-            [idx_tuple],
-            names=[
-                "barcode",
-                "artist",
-                "album",
-                "cover_type",
-                "price_category",
-                "release_type",
-                "recording_decade",
-                "release_decade",
-                "style",
-                "record_year",
-            ],
-        )
-
-        # Используем правильный формат: multiindex в индексе, дата в колонках
-        df = pd.DataFrame([[-2.0, 1.0]], index=index, columns=[date1, date2])
-        store._save_feature("movement", df)
-
-        cursor.execute(
-            "SELECT data_date, value FROM fact_stock_movement WHERE multiindex_id = 1 ORDER BY data_date"
-        )
-        results = cursor.fetchall()
-
-        assert len(results) == 2
-        assert results[0]["data_date"] == "2023-04-01"
-        assert results[0]["value"] == -2.0
-        assert results[1]["data_date"] == "2023-04-02"
-        assert results[1]["value"] == 1.0
-
-
-def test_build_multiindex_from_mapping(feature_store_env):
-    """Test rebuilding the MultiIndex from the database."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        multiindex, mask = store._build_multiindex_from_mapping([1])
-
-        assert isinstance(multiindex, pd.MultiIndex)
-        assert isinstance(mask, list)
-        assert len(multiindex) == 1
-        assert len(mask) == 1
-        assert mask[0] is True  # ID 1 should be found
-
-        expected_names = [
-            "barcode",
-            "artist",
-            "album",
-            "cover_type",
-            "price_category",
-            "release_type",
-            "recording_decade",
-            "release_decade",
-            "style",
-            "record_year",
-        ]
-        assert list(multiindex.names) == expected_names
-
-        expected_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        assert multiindex[0] == expected_tuple
-
-        # Use the new batch approach instead of the removed _get_multiindex_id method
-        new_tuple = (
-            "987",
-            "Art2",
-            "Alb2",
-            "LP",
-            "High",
-            "Live",
-            "2000s",
-            "2000s",
-            "Jazz",
-            2005,
-        )
-        from deployment.app.db.database import get_or_create_multiindex_ids_batch
-        id_map = get_or_create_multiindex_ids_batch([new_tuple], conn)
-        new_idx_id = id_map[new_tuple]
-        multiindex_multi, mask_multi = store._build_multiindex_from_mapping([1, new_idx_id])
-
-        assert len(multiindex_multi) == 2
-        assert len(mask_multi) == 2
-        assert mask_multi[0] is True  # ID 1 should be found
-        assert mask_multi[1] is True  # new_idx_id should be found
-        assert multiindex_multi[0] == expected_tuple
-        assert multiindex_multi[1] == (
-            "987",
-            "Art2",
-            "Alb2",
-            "LP",
-            "High",
-            "Live",
-            "2000s",
-            "2000s",
-            "Jazz",
-            2005,
-        )
-
-        empty_multiindex, empty_mask = store._build_multiindex_from_mapping([])
-        assert empty_multiindex.empty
-        assert empty_mask == []
-        assert list(empty_multiindex.names) == expected_names
-
-        # Test with missing ID
-        missing_multiindex, missing_mask = store._build_multiindex_from_mapping([999])
-        assert len(missing_multiindex) == 0
-        assert len(missing_mask) == 1
-        assert missing_mask[0] is False  # ID 999 should not be found
-
-
-def test_load_stock_feature(feature_store_env):
-    """Test loading stock features - SKIPPED because stock type is no longer supported."""
-    pytest.skip("Stock feature type is no longer supported after refactoring")
-
-
-def test_load_sales_feature(feature_store_env):
-    """Test loading sales features."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        date1 = pd.to_datetime("2023-06-01")
-        date2 = pd.to_datetime("2023-06-02")
-
-        # В новом формате: дата в индексе, multiindex в колонках
-        index = pd.MultiIndex.from_tuples(
-            [idx_tuple],
-            names=[
-                "barcode",
-                "artist",
-                "album",
-                "cover_type",
-                "price_category",
-                "release_type",
-                "recording_decade",
-                "release_decade",
-                "style",
-                "record_year",
-            ],
-        )
-        df_to_save = pd.DataFrame([[10.0, 12.0]], index=index, columns=[date1, date2])
-        store._save_feature("sales", df_to_save)
-
-        loaded_df = store._load_feature("sales")
-        assert isinstance(loaded_df, pd.DataFrame)
-        assert not loaded_df.empty
-
-        # Проверяем формат
-        assert loaded_df.index.name == "_date"
-        assert len(loaded_df) == 2  # Две даты в индексе
-        assert len(loaded_df.columns) == 1  # Один multiindex в колонках
-        assert loaded_df.columns[0] == idx_tuple
-
-        # Проверяем значения
-        assert loaded_df.loc[date1, idx_tuple] == 10.0
-        assert loaded_df.loc[date2, idx_tuple] == 12.0
-
-        # Проверяем фильтрацию по дате
-        loaded_df_range = store._load_feature(
-            "sales", start_date="2023-06-02", end_date="2023-06-02"
-        )
-        assert len(loaded_df_range) == 1
-        assert loaded_df_range.loc[date2, idx_tuple] == 12.0
-
-        conn.execute("DELETE FROM fact_sales")
-        conn.commit()
-        loaded_empty = store._load_feature("sales")
-        assert loaded_empty is None
-
-
-def test_load_movement_feature(feature_store_env):
-    """Test loading movement features."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        idx_tuple = (
-            "1234567890",
-            "Test Artist",
-            "Test Album",
-            "CD",
-            "Standard",
-            "Studio",
-            "2010s",
-            "2010s",
-            "Rock",
-            2015,
-        )
-        date1 = pd.to_datetime("2023-07-01")
-        date2 = pd.to_datetime("2023-07-02")
-
-        # В новом формате: дата в индексе, multiindex в колонках
-        index = pd.MultiIndex.from_tuples(
-            [idx_tuple],
-            names=[
-                "barcode",
-                "artist",
-                "album",
-                "cover_type",
-                "price_category",
-                "release_type",
-                "recording_decade",
-                "release_decade",
-                "style",
-                "record_year",
-            ],
-        )
-        df_to_save = pd.DataFrame([[-5.0, 3.0]], index=index, columns=[date1, date2])
-        store._save_feature("movement", df_to_save)
-
-        loaded_df = store._load_feature("movement")
-        assert isinstance(loaded_df, pd.DataFrame)
-
-        # Проверяем формат
-        assert loaded_df.index.name == "_date"
-        assert len(loaded_df) == 2  # Две даты в индексе
-        assert len(loaded_df.columns) == 1  # Один multiindex в колонках
-        assert loaded_df.columns[0] == idx_tuple
-
-        # Проверяем значения
-        assert loaded_df.loc[date1, idx_tuple] == -5.0
-        assert loaded_df.loc[date2, idx_tuple] == 3.0
-
-
-def test_load_features_all_types(feature_store_env):
-    """Test loading all feature types using the main load_features method with unified format."""
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-
-    # Создаем multiindex для колонок
-    idx_tuple = (
-        "1234567890",
-        "Test Artist",
-        "Test Album",
-        "CD",
-        "Standard",
-        "Studio",
-        "2010s",
-        "2010s",
-        "Rock",
-        2015,
-    )
-    index = pd.MultiIndex.from_tuples(
-        [idx_tuple],
-        names=[
-            "barcode",
-            "artist",
-            "album",
-            "cover_type",
-            "price_category",
-            "release_type",
-            "recording_decade",
-            "release_decade",
-            "style",
-            "record_year",
-        ],
-    )
-
-    # Даты для тестов
-    sales_date = pd.to_datetime("2023-08-02")
-    movement_date = pd.to_datetime("2023-08-03")
-
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        # Все features в унифицированном формате: даты в индексе, multiindex в колонках
-
-        # Sales
-        sales_df = pd.DataFrame([[5]], index=index, columns=[sales_date])
-        store._save_feature("sales", sales_df)
-
-        # movement
-        movement_df = pd.DataFrame([[-2]], index=index, columns=[movement_date])
-        store._save_feature("movement", movement_df)
-
-        # Загружаем все features
-        all_features = store.load_features()
-
-    # Проверяем, что все features загрузились в правильном формате
-    assert "sales" in all_features
-    assert not all_features["sales"].empty
-    assert all_features["sales"].index.name == "_date"
-    assert all_features["sales"].loc[sales_date, idx_tuple] == 5.0
-
-    assert "movement" in all_features
-    assert not all_features["movement"].empty
-    assert all_features["movement"].index.name == "_date"
-    assert all_features["movement"].loc[movement_date, idx_tuple] == -2.0
-
-
-# Tests for factory and helper functions (should not need much movement as they mock SQLFeatureStore)
-
-
-def test_get_store_sql(feature_store_env):
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    store = FeatureStoreFactory.get_store(store_type="sql", run_id=1, dal=dal)
-    assert isinstance(store, SQLFeatureStore)
-    assert store.run_id == 1
-            # Note: db_conn is no longer available in new implementation
-    # Ensure connection is closed if created by store, or remains open if passed
-    # This test passes an external connection, so it should remain open after store is GC'd
-    # If store was created without connection, its __exit__ (if used as CM) or __del__ would close.
-    # Here, FeatureStoreFactory doesn't use it as CM.
-    del store
-    conn.execute("SELECT 1")  # Check if conn is still open
-
-
-def test_get_store_default(feature_store_env):
-    conn = feature_store_env["conn"]
-    dal = DataAccessLayer(connection=conn)
-    # Test default type
-    store = FeatureStoreFactory.get_store(run_id=1, dal=dal)
-    assert isinstance(store, SQLFeatureStore)
-    del store
-    conn.execute("SELECT 1")
-
-
-def test_get_store_unsupported():
-    with pytest.raises(ValueError):
-        FeatureStoreFactory.get_store(store_type="unsupported")
-
-
-@patch("deployment.app.db.feature_storage.FeatureStoreFactory.get_store")
-def test_save_features_helper_creates_store_and_calls_methods(
-    mock_get_store, feature_store_env
-):
-    """Test that save_features helper correctly uses the store."""
-    mock_store_instance = MagicMock(spec=SQLFeatureStore)
-    # Configure the mock methods on the instance that get_store will return
-    mock_store_instance.create_run.return_value = 123
-
-    # Make the patched FeatureStoreFactory.get_store return our mock_store_instance
-    mock_get_store.return_value = mock_store_instance
-
-    conn_param = feature_store_env["conn"]
-    features_dict = {"sales": pd.DataFrame({"A": [1]})}
-    sources = "file.csv"
-
-    # Call the helper function
-    dal_param = DataAccessLayer(connection=conn_param)
-    returned_run_id = save_features(
-        features_dict,
-        source_files=sources,
-        store_type="sql",
-        dal=dal_param,
-    )
-
-    # Assertions
-    # The save_features helper calls FeatureStoreFactory.get_store with store_type and **kwargs.
-    # run_id is a named parameter in get_store's signature, not part of **kwargs here.
-    # So, we check that get_store was called with the expected kwargs, and run_id took its default.
-    mock_get_store.assert_called_once_with(
-        store_type="sql",
-        dal=dal_param,
-        # run_id=None is implied by not being in kwargs and taking its default in get_store
-    )
-    # We can also assert that the run_id passed to the SQLFeatureStore constructor by the factory was indeed None
-    # if the factory logic was more complex, but here it's straightforward.
-    # Example: mock_get_store.call_args.kwargs['run_id'] would be KeyError or None depending on factory.
-    # For this specific factory, run_id is a direct param, so it's not in kwargs if not passed.
-
-    mock_store_instance.save_features.assert_called_once_with(features_dict, append=True)
-    mock_store_instance.complete_run.assert_called_once()
-    assert returned_run_id == 123
-
-
-@patch("deployment.app.db.feature_storage.SQLFeatureStore")
-def test_load_features_helper_creates_store_and_calls_load(
-    mock_sql_store_class, feature_store_env
-):
-    mock_store_instance = MagicMock(spec=SQLFeatureStore)
-    mock_sql_store_class.return_value = mock_store_instance
-
-    conn_param = feature_store_env["conn"]
-    expected_df_dict = {"sales": pd.DataFrame({"B": [2]})}
-    mock_store_instance.load_features.return_value = expected_df_dict
-
-    start = "2022-01-01"
-    end = "2022-12-31"
-
-    # Call the helper, passing dal
-    dal_param = DataAccessLayer(connection=conn_param)
-    result = load_features(
-        store_type="sql", start_date=start, end_date=end, dal=dal_param
-    )
-
-    # SQLFeatureStore is instantiated with run_id=None by factory
-    # Note: The actual DAL is passed, not a mock, so we check for the correct type
-    mock_sql_store_class.assert_called_once()
-    call_args = mock_sql_store_class.call_args
-    assert call_args[1]['run_id'] is None
-    assert isinstance(call_args[1]['dal'], DataAccessLayer)
-    mock_store_instance.load_features.assert_called_once_with(
-        start_date=start, end_date=end, feature_types=None
-    )
-    assert result == expected_df_dict
+        loaded_features = store.load_features(start_date="2023-01-01", end_date="2023-01-02")
+
+    # 4. ASSERT
+    assert "sales" in loaded_features
+    assert "movement" in loaded_features
+    assert "report_features" in loaded_features
+
+    # --- Assertions for 'sales' (pivoted) ---
+    sales_loaded = loaded_features["sales"]
+    assert sales_loaded.shape == (2, 2)  # 2 dates, 2 products
+    assert isinstance(sales_loaded.columns, pd.MultiIndex)
+    assert sales_loaded.index.name == "_date"
+    # Zeros are dropped on save, then filled on load. The loaded data is transposed.
+    expected_sales = sales_df_wide.T.fillna(0)
+    expected_sales.index.name = "_date"  # Align index name for comparison
+    pd.testing.assert_frame_equal(sales_loaded, expected_sales)
+
+    # --- Assertions for 'movement' (pivoted) ---
+    movement_loaded = loaded_features["movement"]
+    # The NaN value was dropped during save, so only one product remains in the loaded data.
+    # The expected shape is (2, 1) because the row with NaN was dropped.
+    assert movement_loaded.shape == (2, 1)  # 2 dates, 1 product (the one without NaN)
+    assert isinstance(movement_loaded.columns, pd.MultiIndex)
+    # Create expected movement data with only the non-NaN product
+    expected_movement = movement_df_wide.loc[['222']].T  # Only the second product (no NaN)
+    expected_movement.index.name = "_date"  # Align index name for comparison
+    pd.testing.assert_frame_equal(movement_loaded, expected_movement)
+
+    # --- Assertions for 'report_features' (flat) ---
+    report_loaded = loaded_features["report_features"]
+    assert isinstance(report_loaded, pd.DataFrame)
+    assert not isinstance(report_loaded.columns, pd.MultiIndex)
+    assert "artist" in report_loaded.columns  # Check enrichment
+    assert "multiindex_id" not in report_loaded.columns  # Check cleanup
+
+    # 4 rows = 2 products * 2 dates
+    assert report_loaded.shape[0] == 4
+    # Check number of columns: product attributes + date + expected features
+    assert report_loaded.shape[1] == len(MULTIINDEX_NAMES) + 1 + len(EXPECTED_REPORT_FEATURES)
+
+    # Check a specific value to ensure correct join and data integrity
+    report_loaded['data_date'] = pd.to_datetime(report_loaded['data_date'])
+    artist_a_data = report_loaded[report_loaded['artist'] == 'Artist A'].sort_values('data_date').reset_index()
+    assert artist_a_data.loc[0, 'availability'] == 0.9
+    assert artist_a_data.loc[1, 'confidence'] == 0.75

@@ -19,9 +19,9 @@ CREATE TABLE IF NOT EXISTS dim_multiindex_mapping (
     recording_decade TEXT, -- Год записи
     release_decade TEXT,  -- Год выпуска
     style TEXT,     -- Стиль
-    record_year INTEGER, -- precise_record_year
+    recording_year INTEGER, -- recording_year
     UNIQUE(barcode, artist, album, cover_type, price_category, release_type,
-           recording_decade, release_decade, style, record_year)
+           recording_decade, release_decade, style, recording_year)
 );
 
 -- Fact Tables (with standardized column names)
@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS report_features (
     masked_mean_sales_items REAL,
     masked_mean_sales_rub REAL,
     lost_sales REAL,
-    created_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (data_date, multiindex_id),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
@@ -264,7 +264,7 @@ MULTIINDEX_NAMES = [
     "recording_decade",
     "release_decade",
     "style",
-    "record_year",
+    "recording_year",
 ]
 
 

@@ -1,7 +1,7 @@
 import json
 from datetime import date, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import Form
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -80,32 +80,32 @@ class DataUploadResponse(JobResponse):
 class ModelConfig(BaseModel):
     """Neural network model configuration"""
 
-    num_encoder_layers: int = Field(..., description="Number of encoder layers", gt=0)
-    num_decoder_layers: int = Field(..., description="Number of decoder layers", gt=0)
+    num_encoder_layers: int = Field(2, description="Number of encoder layers", gt=0)
+    num_decoder_layers: int = Field(4, description="Number of decoder layers", gt=0)
     decoder_output_dim: int = Field(
-        ..., description="Output dimension of decoder", gt=0
+        256, description="Output dimension of decoder", gt=0
     )
     temporal_width_past: int = Field(
-        ..., description="Temporal width for past sequences", ge=0
+        1, description="Temporal width for past sequences", ge=0
     )
     temporal_width_future: int = Field(
-        ..., description="Temporal width for future sequences", ge=0
+        0, description="Temporal width for future sequences", ge=0
     )
     temporal_hidden_size_past: int = Field(
-        ..., description="Hidden size for past temporal network", gt=0
+        4, description="Hidden size for past temporal network", gt=0
     )
     temporal_hidden_size_future: int = Field(
-        ..., description="Hidden size for future temporal network", gt=0
+        32, description="Hidden size for future temporal network", gt=0
     )
     temporal_decoder_hidden: int = Field(
-        ..., description="Hidden size for temporal decoder", gt=0
+        32, description="Hidden size for temporal decoder", gt=0
     )
-    batch_size: int = Field(..., description="Batch size for training", gt=0)
-    dropout: float = Field(..., description="Dropout rate", ge=0, lt=1)
+    batch_size: int = Field(256, description="Batch size for training", gt=0)
+    dropout: float = Field(0.498, description="Dropout rate", ge=0, lt=1)
     use_reversible_instance_norm: bool = Field(
-        ..., description="Whether to use reversible instance normalization"
+        False, description="Whether to use reversible instance normalization"
     )
-    use_layer_norm: bool = Field(..., description="Whether to use layer normalization")
+    use_layer_norm: bool = Field(False, description="Whether to use layer normalization")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -113,8 +113,8 @@ class ModelConfig(BaseModel):
 class OptimizerConfig(BaseModel):
     """Optimizer configuration"""
 
-    lr: float = Field(..., description="Learning rate", gt=0)
-    weight_decay: float = Field(..., description="Weight decay (L2 penalty)", ge=0)
+    lr: float = Field(4.616, description="Learning rate", gt=0)
+    weight_decay: float = Field(6.206, description="Weight decay (L2 penalty)", ge=0)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -123,10 +123,10 @@ class LRSchedulerConfig(BaseModel):
     """Learning rate scheduler configuration"""
 
     T_0: int = Field(
-        ..., description="Number of iterations for the first restart", gt=0
+        130, description="Number of iterations for the first restart", gt=0
     )
     T_mult: int = Field(
-        ..., description="Factor by which Ti increases after restart", ge=1
+        3, description="Factor by which Ti increases after restart", ge=1
     )
 
     model_config = ConfigDict(from_attributes=True)
@@ -135,8 +135,8 @@ class LRSchedulerConfig(BaseModel):
 class TrainingDatasetConfig(BaseModel):
     """Training dataset configuration"""
 
-    alpha: float = Field(..., description="Alpha config value for training", gt=0)
-    span: int = Field(..., description="Span config value for training", gt=0)
+    alpha: float = Field(2.556, description="Alpha config value for training", gt=0)
+    span: int = Field(7, description="Span config value for training", gt=0)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -144,9 +144,9 @@ class TrainingDatasetConfig(BaseModel):
 class SWAConfig(BaseModel):
     """Stochastic Weight Averaging configuration"""
 
-    swa_lrs: float = Field(..., description="SWA learning rate", gt=0)
-    swa_epoch_start: float = Field(..., description="Epoch to start SWA", ge=0)
-    annealing_epochs: int = Field(..., description="Number of annealing epochs", gt=0)
+    swa_lrs: float = Field(0.0001, description="SWA learning rate", gt=0)
+    swa_epoch_start: float = Field(65, description="Epoch to start SWA", ge=0)
+    annealing_epochs: int = Field(45, description="Number of annealing epochs", gt=0)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -154,8 +154,8 @@ class SWAConfig(BaseModel):
 class WeightsConfig(BaseModel):
     """Model weights configuration"""
 
-    sigma_left: float = Field(..., description="Left sigma config value", gt=0)
-    sigma_right: float = Field(..., description="Right sigma config value", gt=0)
+    sigma_left: float = Field(0.754, description="Left sigma config value", gt=0)
+    sigma_right: float = Field(1.390, description="Right sigma config value", gt=0)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -164,32 +164,34 @@ class TrainingConfig(BaseModel):
     """Configuration for training job"""
 
     nn_model_config: ModelConfig = Field(
-        ..., description="Neural network model configuration"
+        default_factory=ModelConfig, description="Neural network model configuration"
     )
 
     optimizer_config: OptimizerConfig = Field(
-        ..., description="Optimizer configuration"
+        default_factory=OptimizerConfig, description="Optimizer configuration"
     )
     lr_shed_config: LRSchedulerConfig = Field(
-        ..., description="Learning rate scheduler configuration"
+        default_factory=LRSchedulerConfig, description="Learning rate scheduler configuration"
     )
     train_ds_config: TrainingDatasetConfig = Field(
-        ..., description="Training dataset configuration"
+        default_factory=TrainingDatasetConfig, description="Training dataset configuration"
     )
-    swa_config: SWAConfig | None = Field(
-        None, description="Stochastic Weight Averaging configuration"
+    swa_config: Optional[SWAConfig] = Field(
+        default_factory=SWAConfig, description="Stochastic Weight Averaging configuration"
     )
-    weights_config: WeightsConfig | None = Field(
-        None, description="Model weights configuration"
+    weights_config: Optional[WeightsConfig] = Field(
+        default_factory=WeightsConfig, description="Model weights configuration"
     )
-    lags: int = Field(..., description="Number of lag periods to consider", gt=0)
-    quantiles: list[float] | None = Field(
-        None, description="Quantiles for probabilistic forecasting"
+    lags: int = Field(9, description="Number of lag periods to consider", gt=0)
+    quantiles: list[float] = Field(
+        default_factory=lambda: [0.05, 0.25, 0.5, 0.75, 0.95],
+        description="Quantiles for probabilistic forecasting"
     )
-    model_id: str | None = Field(
-        'Plastinka_TiDE', description="ID of the model to use for training"
+    model_id: str = Field(
+        "4ff41e5d", 
+        description="ID of the model to use for training"
     )
-    additional_hparams: dict[str, Any] | None = Field(
+    additional_hparams: Optional[dict[str, Any]] = Field(
         None, description="Additional training hparams"
     )
 
@@ -214,7 +216,6 @@ class TrainingResponse(JobResponse):
 
 
 # Prediction Models
-
 
 class PredictionParams(BaseModel):
     """Config for prediction job"""

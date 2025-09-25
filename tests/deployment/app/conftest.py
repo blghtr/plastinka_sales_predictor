@@ -408,7 +408,7 @@ def db_with_sales_data(in_memory_db):
         recording_decade="dummy",
         release_decade="dummy",
         style="dummy",
-        record_year=2000,
+        recording_year=2000,
         connection=dal._connection, # Pass the connection
     )
 

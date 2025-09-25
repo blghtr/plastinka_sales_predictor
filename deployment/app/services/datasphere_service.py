@@ -5,7 +5,6 @@ import os
 import shutil
 import tempfile
 import zipfile
-from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -14,7 +13,6 @@ import pandas as pd
 
 from deployment.app.config import get_settings
 from deployment.app.db.data_access_layer import DataAccessLayer
-from deployment.app.db.feature_storage import load_features
 from deployment.app.models.api_models import JobStatus, TrainingConfig
 from deployment.app.services.job_registries.input_preparator_registry import (
     get_input_preparator,
@@ -107,7 +105,6 @@ def cleanup_project_input_link(project_root: str) -> None:
 
 async def _prepare_job_datasets(
     job_id: str,
-    config: TrainingConfig | None,
     dal: DataAccessLayer,
     start_date_for_dataset: str = None,
     end_date_for_dataset: str = None,
@@ -118,17 +115,18 @@ async def _prepare_job_datasets(
     logger.info(f"[{job_id}] Stage 2: Preparing datasets...")
 
     logger.info(
-        f"[{job_id}] Calling get_datasets with start_date: {start_date_for_dataset}, end_date: {end_date_for_dataset}, outputting to: {output_dir}"
+        f"[{job_id}] Calling get_datasets with start_date: "
+        f"{start_date_for_dataset}, end_date: {end_date_for_dataset}, "
+        f"outputting to: {output_dir}"
     )
+
     try:
         get_datasets(
             start_date=start_date_for_dataset,
             end_date=end_date_for_dataset,
-            config=config,
             output_dir=output_dir,
-            feature_types=["sales", "stock", "movement"],
             datasets_to_generate=job_config.datasets_to_generate if job_config else [],
-            connection=dal._connection,
+            dal=dal,
         )
         logger.info(f"[{job_id}] Datasets prepared in {output_dir}.")
         dal.update_job_status(
@@ -912,7 +910,7 @@ def save_predictions_to_db(
             "recording_decade",
             "release_decade",
             "style",
-            "record_year",
+            "recording_year",
             "0.05",
             "0.25",
             "0.5",
@@ -991,6 +989,8 @@ async def run_job(
     """
     Runs a DataSphere training job pipeline: setup, execution, monitoring, result processing, cleanup.
     """
+    import debugpy; debugpy.listen(5678); print("Waiting for debugger to attach..."); debugpy.wait_for_client()
+
     ds_job_id: str | None = None
     client: DataSphereClient | None = None
     project_input_link_path: str | None = None
@@ -1022,7 +1022,8 @@ async def run_job(
                     job_config.additional_params.update(additional_job_params)
 
                 logger.info(
-                    f"[{job_id}] Using job configuration for type: {job_config.name} with additional_params={job_config.additional_params}"
+                    f"[{job_id}] Using job configuration for type: "
+                    f"{job_config.name} with additional_params={job_config.additional_params}"
                 )
 
                 # Initialize job status
@@ -1036,7 +1037,6 @@ async def run_job(
                 # Stage 2: Prepare Datasets
                 await _prepare_job_datasets(
                     job_id,
-                    config,
                     dal,
                     dataset_start_date,
                     dataset_end_date,
@@ -1057,7 +1057,9 @@ async def run_job(
                 )
 
                 # Stage 4a.1: Verify DataSphere job inputs
-                await _verify_datasphere_job_inputs(job_id, temp_input_dir, job_config, dal)
+                await _verify_datasphere_job_inputs(
+                    job_id, temp_input_dir, job_config, dal
+                )
 
                 # Stage 4b: Archive Input Directory
                 archive_path = await _archive_input_directory(

@@ -276,7 +276,7 @@ class TestDataRetention(unittest.TestCase):
                 recording_decade="1990s",
                 release_decade="1990s",
                 style="rock",
-                record_year=1995
+                recording_year=1995
             )
             multiindex_ids.append(multiindex_id)
 

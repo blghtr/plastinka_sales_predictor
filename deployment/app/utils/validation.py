@@ -3,10 +3,27 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Any
-
-import pandas as pd
+from plastinka_sales_predictor.data_preparation import read_data_file
 
 logger = logging.getLogger("plastinka.validation")
+
+# Default size limits
+DEFAULT_MAX_FILE_SIZE = int(
+    os.environ.get("MAX_FILE_SIZE", "10485760")
+)  # 10MB by default
+MAX_EXCEL_FILE_SIZE = int(
+    os.environ.get("MAX_EXCEL_FILE_SIZE", "5242880")
+)  # 5MB for Excel files
+MAX_CSV_FILE_SIZE = int(
+    os.environ.get("MAX_CSV_FILE_SIZE", "5242880")
+)  # 5MB for CSV files
+
+# Valid content types
+VALID_CONTENT_TYPES = [
+    ".xlsx",
+    ".xls",
+    ".csv"
+]
 
 
 class ValidationError(Exception):
@@ -16,117 +33,6 @@ class ValidationError(Exception):
         self.message = message
         self.details = details or {}
         super().__init__(self.message)
-
-
-def validate_excel_file(
-    file_content: bytes, expected_columns: list[str] = None
-) -> tuple[bool, str]:
-    """
-    Validate that the provided file is a valid Excel file with the expected structure.
-
-    Args:
-        file_content: The content of the uploaded file
-        expected_columns: Optional list of column names expected in the file
-
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    try:
-        # Try to read as Excel file, specify engine
-        df = pd.read_excel(io.BytesIO(file_content), engine="openpyxl")
-
-        # Check if dataframe is empty
-        if df.empty:
-            return False, "Excel file is empty"
-
-        # Check for expected columns if provided
-        if expected_columns:
-            missing_columns = [col for col in expected_columns if col not in df.columns]
-            if missing_columns:
-                return False, f"Missing required columns: {', '.join(missing_columns)}"
-
-        return True, ""
-    except Exception as e:
-        logger.error(f"Excel validation error: {str(e)}", exc_info=True)
-        return False, f"Invalid Excel file: {str(e)}"
-
-
-def validate_csv_file(
-    file_content: bytes, expected_columns: list[str] = None
-) -> tuple[bool, str]:
-    """
-    Validate that the provided file is a valid CSV file with the expected structure.
-
-    Args:
-        file_content: The content of the uploaded file
-        expected_columns: Optional list of column names expected in the file
-
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    try:
-        # Try different encodings
-        for encoding in ['utf-8', 'windows-1251', 'cp1252']:
-            try:
-                content_str = file_content.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            return False, "Unable to decode CSV file. Please ensure it's in UTF-8 or Windows-1251 encoding."
-
-        # Try to read as CSV file with automatic separator detection
-        df = pd.read_csv(io.StringIO(content_str), sep=None, engine='python')
-
-        # Check if dataframe is empty
-        if df.empty:
-            return False, "CSV file is empty"
-
-        # Check for expected columns if provided
-        if expected_columns:
-            missing_columns = [col for col in expected_columns if col not in df.columns]
-            if missing_columns:
-                return False, f"Missing required columns: {', '.join(missing_columns)}"
-
-        return True, ""
-    except Exception as e:
-        logger.error(f"CSV validation error: {str(e)}", exc_info=True)
-        return False, f"Invalid CSV file: {str(e)}"
-
-
-def validate_data_file_content(
-    file_content: bytes, expected_columns: list[str] = None, filename: str = ""
-) -> tuple[bool, str]:
-    """
-    Universal validation for data file content (Excel or CSV).
-    Automatically detects file type and applies appropriate validation.
-
-    Args:
-        file_content: The content of the uploaded file
-        expected_columns: Optional list of column names expected in the file
-        filename: Filename to help determine file type
-
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    # Determine file type by extension
-    file_ext = os.path.splitext(filename.lower())[1] if filename else ""
-
-    if file_ext in [".xls", ".xlsx"]:
-        return validate_excel_file(file_content, expected_columns)
-    elif file_ext == ".csv":
-        return validate_csv_file(file_content, expected_columns)
-    else:
-        # Try Excel first, then CSV as fallback
-        is_valid, error = validate_excel_file(file_content, expected_columns)
-        if is_valid:
-            return True, ""
-
-        is_valid_csv, error_csv = validate_csv_file(file_content, expected_columns)
-        if is_valid_csv:
-            return True, ""
-
-        return False, f"File is neither valid Excel nor CSV. Excel error: {error}. CSV error: {error_csv}"
 
 
 def validate_date_format(
@@ -254,7 +160,12 @@ def validate_forecast_date_range(
     max_range_days = 365  # Max 1 year forecast range
 
     return validate_date_range(
-        start_date, end_date, format_str, min_date, max_date, max_range_days
+        start_date, 
+        end_date, 
+        format_str, 
+        min_date, 
+        max_date, 
+        max_range_days
     )
 
 
@@ -282,46 +193,167 @@ def validate_historical_date_range(
     )
 
 
-def validate_stock_file(file_content: bytes, filename: str = "") -> tuple[bool, str]:
+def validate_file_size(
+    file: io.BytesIO, 
+    max_size: int = DEFAULT_MAX_FILE_SIZE
+) -> tuple[bool, str | None]:
+    """
+    Validate that the file size is within allowed limits.
+
+    Args:
+        file: The file to validate
+        max_size: Maximum allowed file size in bytes
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    # Get file size
+    file_size = file.getbuffer().nbytes
+    if file_size > max_size:
+        error_msg = f"File too large: {file_size} bytes (max {max_size} bytes)"
+        logger.warning(f"File size validation failed: {error_msg}")
+        return False, error_msg
+    return True, None
+
+
+def validate_content_type(
+    path: str
+) -> tuple[bool, str | None]:
+    """
+    Validate that the file's content type is allowed.
+
+    Args:
+        path: Path to the file
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    ext = (os.path.splitext(path)[1] or "").lower()
+    if ext not in VALID_CONTENT_TYPES:
+        error_msg = f"Invalid content type: {ext}"
+        logger.warning(f"Content type validation failed: {error_msg}")
+        return False, error_msg
+
+    return True, None
+
+
+def validate_data_file_content(
+    file: io.BytesIO,
+    expected_columns: list[str] = None,
+    path: str = None
+) -> tuple[bool, str]:
+    """
+    Validate that the provided file is a valid CSV\Excel file with the expected structure.
+
+    Args:
+        file: The content of the uploaded file
+        expected_columns: Optional list of column names expected in the file
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    try:
+        df = read_data_file(
+            file=file,
+            path=path
+        )
+
+        # Check if dataframe is empty
+        if df.empty:
+            return False, "File is empty"
+
+        # Check for expected columns if provided
+        if expected_columns:
+            missing_columns = [col for col in expected_columns if col not in df.columns]
+            if missing_columns:
+                return False, f"Missing required columns: {', '.join(missing_columns)}"
+
+        return True, ""
+    except Exception as e:
+        logger.error(f"File validation error: {str(e)}", exc_info=True)
+        return False, f"Invalid file: {str(e)}"
+
+
+def validate_data_file_upload(file: io.BytesIO, path: str) -> tuple[bool, str]:
+    """
+    Validate that the provided file is a valid data file (Excel or CSV) of a valid size.
+
+    Args:
+        file: The uploaded file
+        path: Path to the file
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    size_valid, size_error = validate_file_size(file)
+    if not size_valid:
+        return False, size_error
+    content_valid, content_error = validate_content_type(path)
+    if not content_valid:
+        return False, content_error
+    return True, None
+
+
+def validate_stock_file(file: io.BytesIO, path: str = None) -> tuple[bool, str]:
     """
     Validate that the provided file is a valid stock data file (Excel or CSV).
 
     Args:
-        file_content: The content of the uploaded file
-        filename: Filename to help determine file type
+        file: The uploaded file
+        path: Path to the file
 
     Returns:
         Tuple of (is_valid, error_message)
     """
     expected_columns = [
-        "Штрихкод",
-        "Исполнитель",
-        "Альбом",
-        "Дата создания",
-        "Экземпляры",
+        "barcode",
+        "artist",
+        "album",
+        "cover_type",
+        "price",
+        "release_type",
+        "recording_year",
+        "release_year",
+        "style",
+        "created_date",
+        "count",
     ]
-    return validate_data_file_content(file_content, expected_columns, filename)
+    upload_valid, upload_error = validate_data_file_upload(file, path)
+    if not upload_valid:
+        return False, upload_error
+    file.seek(0)
+    return validate_data_file_content(file, expected_columns, path)
 
 
-def validate_sales_file(file_content: bytes, filename: str = "") -> tuple[bool, str]:
+def validate_sales_file(file: io.BytesIO, path: str = None) -> tuple[bool, str]:
     """
     Validate that the provided file is a valid sales data file (Excel or CSV).
 
     Args:
-        file_content: The content of the uploaded file
-        filename: Filename to help determine file type
+        file: The content of the uploaded file
+        path: Path to the file
 
     Returns:
         Tuple of (is_valid, error_message)
     """
     expected_columns = [
-        "Barcode",
-        "Исполнитель",
-        "Альбом",
-        "Дата добавления",
-        "Дата продажи",
+        "barcode",
+        "artist",
+        "album",
+        "cover_type",
+        "price",
+        "release_type",
+        "recording_year",
+        "release_year",
+        "style",
+        "created_date",
+        "sold_date",
     ]
-    return validate_data_file_content(file_content, expected_columns, filename)
+    upload_valid, upload_error = validate_data_file_upload(file, path)
+    if not upload_valid:
+        return False, upload_error
+    file.seek(0)
+    return validate_data_file_content(file, expected_columns, path)
 
 
 def validate_pagination_params(offset: int, limit: int) -> tuple[int, int]:

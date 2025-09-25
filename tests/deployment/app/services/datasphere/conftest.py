@@ -51,7 +51,7 @@ SAMPLE_PREDICTIONS = {
     "recording_decade": ["2010s", "2010s", "2000s", "2000s", "1990s"],
     "release_decade": ["2020s", "2020s", "2010s", "2010s", "2000s"],
     "style": ["Rock", "Rock", "Pop", "Pop", "Jazz"],
-    "record_year": [2015, 2016, 2007, 2008, 1995],
+    "recording_year": [2015, 2016, 2007, 2008, 1995],
     "0.05": [10.5, 12.3, 5.2, 7.8, 3.1],
     "0.25": [15.2, 18.7, 8.9, 11.3, 5.7],
     "0.5": [21.4, 24.8, 12.6, 15.9, 7.5],
@@ -467,7 +467,7 @@ def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
                 base_recording_decade, # recording_decade
                 base_release_decade, # release_decade
                 base_style, # style
-                base_year # record_year
+                base_year # recording_year
             )
             multiindex_id_to_tuple[multiindex_id_val] = multiindex_tuple
 

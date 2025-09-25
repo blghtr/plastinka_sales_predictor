@@ -7,6 +7,7 @@ from pathlib import Path as PathLibPath
 from typing import Any
 
 import aiofiles
+import io
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -46,7 +47,7 @@ from deployment.app.services.data_processor import process_data_files
 from deployment.app.services.datasphere_service import run_job
 from deployment.app.services.report_service import generate_report
 from deployment.app.utils.error_handling import AppValidationError, ErrorDetail
-from deployment.app.utils.file_validation import validate_data_file_upload
+from deployment.app.utils.validation import validate_data_file_upload
 from deployment.app.utils.validation import (
     validate_sales_file,
     validate_stock_file,
@@ -60,6 +61,7 @@ from ..dependencies import (  # Import the DAL dependency
 logger = logging.getLogger("plastinka.api")
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
+
 
 async def _save_uploaded_file(uploaded_file: UploadFile, directory: PathLibPath) -> PathLibPath:
     """Helper function to save UploadFile asynchronously."""
@@ -133,13 +135,14 @@ async def create_data_upload_job(
     """
     job_id = None
     temp_job_dir = None
+    
+    stock_file_content = io.BytesIO(await stock_file.read())
     try:
-        # Validate stock file format and size
-        await validate_data_file_upload(stock_file)
-
         # Validate stock file content
-        stock_content = await stock_file.read()
-        is_valid_stock, stock_error = validate_stock_file(stock_content, stock_file.filename)
+        is_valid_stock, stock_error = validate_stock_file(
+            stock_file_content, 
+            stock_file.filename
+        )
         if not is_valid_stock:
             raise AppValidationError(
                 message=f"Invalid stock file: {stock_error}",
@@ -152,11 +155,12 @@ async def create_data_upload_job(
         # Validate sales files
         for i, sales_file in enumerate(sales_files):
             # Validate sales file format and size
-            await validate_data_file_upload(sales_file)
-
+            sales_file_content = io.BytesIO(await sales_file.read())
             # Validate sales file content
-            sales_content = await sales_file.read()
-            is_valid_sales, sales_error = validate_sales_file(sales_content, sales_file.filename)
+            is_valid_sales, sales_error = validate_sales_file(
+                sales_file_content, 
+                sales_file.filename
+            )
             if not is_valid_sales:
                 raise AppValidationError(
                     message=f"Invalid sales file ({sales_file.filename}): {sales_error}",

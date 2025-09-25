@@ -4,9 +4,7 @@ from warnings import warn
 
 import pandas as pd
 
-from deployment.app.config import get_settings
 from deployment.app.db import feature_storage
-from deployment.app.db.data_access_layer import DataAccessLayer
 from deployment.app.db.schema import MULTIINDEX_NAMES
 from plastinka_sales_predictor.data_preparation import (
     GlobalLogMinMaxScaler,
@@ -14,6 +12,7 @@ from plastinka_sales_predictor.data_preparation import (
     PlastinkaInferenceTSDataset,
     PlastinkaTrainingTSDataset,
     get_monthly_sales_pivot,
+    COLTYPES
 )
 
 DEFAULT_OUTPUT_DIR = "./datasets/"  # Default location if not specified
@@ -22,7 +21,7 @@ DEFAULT_STATIC_FEATURES = [
     "release_type",
     "price_category",
     "style",
-    "record_year",
+    "recording_year",
     "release_decade",
 ]
 DEFAULT_PAST_COVARIATES_FNAMES = [
@@ -34,57 +33,6 @@ DEFAULT_PAST_COVARIATES_FNAMES = [
 
 # Use application-wide logger configured in deployment.app.logger_config
 logger = logging.getLogger(__name__)
-
-
-def load_data(start_date=None, end_date=None, feature_types=None, dal=None):
-    """
-    Loads features using feature_storage.load_features (factory pattern).
-
-    Args:
-        start_date: Optional start date for filtering data
-        end_date: Optional end date for filtering data
-        feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
-                      If None, all available features will be loaded
-        connection: Database connection object
-
-    Returns:
-        Dictionary of loaded features
-    """
-    features = None
-
-    try:
-        # Ensure we're loading all required feature types
-        required_types = ["sales", "stock", "movement", "prices"]
-        if feature_types is None:
-            feature_types = required_types
-        else:
-            # Make sure required types are included
-            for req_type in required_types:
-                if req_type not in feature_types:
-                    feature_types.append(req_type)
-
-        logger.info(
-            f"Loading features from database with types: {feature_types}..."
-        )
-        logger.info(
-            f"Loading with parameters: start_date={start_date}, end_date={end_date}"
-        )
-        logger.info("About to call feature_storage.load_features...")
-
-        features = feature_storage.load_features(
-            store_type="sql",
-            start_date=start_date,
-            end_date=end_date,
-            feature_types=feature_types,
-            dal=dal,
-        )
-        logger.info("Features loaded successfully via factory.")
-
-    except Exception as e:
-        logger.error(f"Error loading data via factory: {e}", exc_info=True)
-        raise
-
-    return features
 
 
 def prepare_datasets(
@@ -111,7 +59,6 @@ def prepare_datasets(
     # Validate required raw features exist
     if (
         "sales" not in raw_features
-        or "stock" not in raw_features
         or "movement" not in raw_features
     ):
         raise ValueError("Missing required raw feature data.")
@@ -187,45 +134,49 @@ def prepare_datasets(
 def get_datasets(
     start_date=None,
     end_date=None,
-    config=None,
     output_dir: str | None = None,
-    feature_types=None,
     datasets_to_generate: Sequence[str] = ("train", "val"),
-    connection=None,
+    dal=None,
 ):
     """
-    Loads data from DB, prepares features, creates and saves datasets to output_dir.
-
-    Args:
-        start_date: Start date for data loading.
-        end_date: End date for data loading.
-        config: Dictionary containing training configuration.
-        output_dir: Directory to save the prepared datasets.
-        feature_types: Optional list of feature types to load (e.g., ['sales', 'stock'])
-        datasets_to_generate: List of dataset types to generate (e.g., ["train", "val", "inference"])
-        connection: Database connection object.
-
-    Returns:
-        Tuple of (train_dataset, inference_dataset)
+    Loads all data via a single call, prepares features, creates and saves datasets.
     """
     logger.info("get_datasets function started...")
 
-    dal = DataAccessLayer(connection=connection)
     try:
-        raw_features = load_data(start_date, end_date, feature_types, dal=dal)
-        logger.info("Raw features loaded successfully.")
-        feature_values = ["availability", "confidence"]
-        stock_features_long = feature_storage.load_report_features(
+        # --- ЕДИНЫЙ ШАГ ЗАГРУЗКИ ---
+        # Один вызов для загрузки всех фичей, определённых в конфиге feature_storage
+        all_features = feature_storage.load_features(
             store_type="sql",
+            start_date=start_date,
+            end_date=end_date,
             dal=dal,
-            start_date=config.get("start_date", None),
-            end_date=config.get("end_date", None),
-            prediction_month=config.get("prediction_month", None),
-            feature_subset=feature_values
         )
-        logger.info("Stock features loaded successfully in long format.")
+        logger.info("All features loaded successfully via unified load_features.")
 
-        # Transform from long to wide format
+        # --- ИЗВЛЕЧЕНИЕ И ПОДГОТОВКА ДАННЫХ ---
+        # Извлекаем разные типы фичей из результата
+        raw_features = {
+            "sales": all_features.get("sales"),
+            "movement": all_features.get("movement"),
+        }
+        
+        # 'report_features' теперь также загружаются через load_features
+        stock_features_long = all_features.get("report_features")
+
+        if raw_features["sales"] is None or raw_features["movement"] is None:
+            raise ValueError("Missing required 'sales' or 'movement' data from load_features.")
+        
+        if stock_features_long is None:
+             raise ValueError("Missing required 'report_features' data from load_features.")
+
+        # --- ЛОГИКА ПРЕОБРАЗОВАНИЯ В ШИРОКИЙ ФОРМАТ (остаётся без изменений) ---
+        feature_values = ["availability", "confidence"]
+        
+        missing_cols = set(feature_values) - set(stock_features_long.columns)
+        if missing_cols:
+            raise ValueError(f"Loaded report_features are missing columns required for stock features: {missing_cols}")
+
         stock_features_long['data_date'] = pd.to_datetime(
             stock_features_long['data_date']
         )
@@ -235,11 +186,12 @@ def get_datasets(
             columns=MULTIINDEX_NAMES,
             values=feature_values
         )
-        logger.info(f"Transformed stock features to wide format with shape: {stock_features_wide.shape}")
+        logger.info("Stock features transformed to wide format successfully.")
 
+        # --- ПОДГОТОВКА ДАТАСЕТОВ (здесь без изменений) ---
         train_dataset, inference_dataset = prepare_datasets(
             raw_features,
-            stock_features_wide, # Pass the transformed wide dataframe
+            stock_features_wide,
             output_dir,
             datasets_to_generate,
         )

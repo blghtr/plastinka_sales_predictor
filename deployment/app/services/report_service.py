@@ -50,7 +50,6 @@ def generate_report(params: ReportParams, dal: DataAccessLayer) -> pd.DataFrame:
     
     # Fetch pre-calculated features from the database using the DAL
     report_features = dal.get_report_features(
-        prediction_month=prediction_month,
         multiidx_ids=multiidx_have_prediction,
         feature_subset=["avg_sales_items", "avg_sales_rub", "lost_sales_rub"],
     )

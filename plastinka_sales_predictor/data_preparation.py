@@ -1,9 +1,10 @@
 ﻿import logging
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import dill
 import numpy as np
@@ -15,42 +16,44 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MultiLabelBinarizer, OrdinalEncoder, minmax_scale
 from typing_extensions import Self
 
+import io
+
 logger = logging.getLogger(__name__)
 
 COLTYPES = {
-    "Штрихкод": str,
-    "Barcode": str,
-    "Экземпляры": "int64",
-    "Ценовая категория": "str",
-    "Цена, руб.": "float64",
-    "Конверт": str,
-    "Альбом": str,
-    "Исполнитель": str,
-    "Год записи": str,
-    "Год выпуска": str,
-    "Тип": str,
-    "Стиль": str,
-    "Дата создания": "datetime64[ns]",
-    "Дата продажи": "datetime64[ns]",
-    "Дата добавления": "datetime64[ns]",
-    "precise_record_year": "int64",
+    "barcode": str,
+    "cover_type": str,
+    "album": str,
+    "artist": str,
+    "recording_decade": str,
+    "release_decade": str,
+    "release_type": str,
+    "style": str,
+    "created_date": "datetime64[ns]",
+    "sold_date": "datetime64[ns]",
+    "recording_year": str,
+    "price": "int64",
+    "price_category": str,
 }
 
 COLUMN_MAPPING = {
     "Штрихкод": "barcode",
+    "Barcode": "barcode",
     "Исполнитель": "artist",
     "Альбом": "album",
     "Конверт": "cover_type",
-    "Ценовая категория": "price_category",
+    "Цена, руб.": "price",
     "Тип": "release_type",
-    "Год записи": "recording_decade",
-    "Год выпуска": "release_decade",
+    "Год записи": "recording_year",
+    "Год выпуска": "release_year",
     "Стиль": "style",
-    "precise_record_year": "record_year",
     "Дата создания": "created_date",
-    "Дата продажи": "sold_date",
+    "Дата добавления": "created_date",
+    "Дата заказа": "sold_date",
+    "Экземпляры": "count"
 }
 
+# Canonical MultiIndex key order (kept local to avoid deployment dependency)
 GROUP_KEYS = [
     "barcode",
     "artist",
@@ -61,7 +64,7 @@ GROUP_KEYS = [
     "recording_decade",
     "release_decade",
     "style",
-    "record_year",
+    "recording_year",
 ]
 
 
@@ -109,15 +112,26 @@ class PlastinkaBaseTSDataset:
         logger.info("Initializing PlastinkaBaseTSDataset...")
         # --- Регуляризация временного индекса ---
         monthly_sales = ensure_monthly_regular_index(monthly_sales)
-        stock_features = ensure_monthly_regular_index(stock_features)
+        monthly_sales = monthly_sales.fillna(0)
 
+        stock_features = ensure_monthly_regular_index(stock_features)
+        stock_features = stock_features.fillna(0)
+        
         self.dtype = dtype
-        multiidxs = monthly_sales.columns.drop_duplicates().tolist()
+        multiidxs = (
+            monthly_sales
+            .columns
+            .drop_duplicates()
+            .to_frame()
+            .astype(str)
+            .values
+            .tolist()
+        )
         self._idx2multiidx = OrderedDict(
-            {i: multiidxs[i] for i in range(len(multiidxs))}
+            {i: tuple(map(str, multiidxs[i])) for i in range(len(multiidxs))}
         )
         self._multiidx2idx = OrderedDict(
-            {tuple(multiidx): idx for idx, multiidx in enumerate(multiidxs)}
+            {tuple(map(str, multiidx)): idx for idx, multiidx in enumerate(multiidxs)}
         )
         self._index_names_mapping = OrderedDict(
             {n: i for i, n in enumerate(monthly_sales.columns.names)}
@@ -132,6 +146,8 @@ class PlastinkaBaseTSDataset:
         self.start = start
         self._past_covariates_fnames = past_covariates_fnames
         self.minimum_sales_months = minimum_sales_months
+        self._allow_empty_stock = False
+
         self.setup_dataset(
             input_chunk_length=input_chunk_length,
             output_chunk_length=output_chunk_length,
@@ -143,7 +159,6 @@ class PlastinkaBaseTSDataset:
             copy=False,
             reindex=False,
         )
-        self._allow_empty_stock = False
         self._idx_mapping = self._build_index_mapping()
         self.save_dir = save_dir
         self.dataset_name = dataset_name
@@ -192,20 +207,25 @@ class PlastinkaBaseTSDataset:
         with open(save_dir / f"{dataset_name}.dill", "wb") as f:
             dill.dump(self, f)
 
-    def prepare_past_covariates(self, span=None):
-        if span is not None:
-            self._past_covariates_span = span
+    def prepare_past_covariates(self, span):
+        if span is None:
+            span = 1
+        self._past_covariates_span = span
 
-        self._past_covariates_cached = {
-            feat: get_past_covariates_df(
-                self.monthly_sales_df,
-                self.stock_features,
-                (feat,),
-                self._past_covariates_span,
-            )
-            for feat in self._past_covariates_fnames
-        }
-
+        if self._past_covariates_span is not None:
+            self._past_covariates_cached = {
+                feat: get_past_covariates_df(
+                    self.monthly_sales_df,
+                    self.stock_features,
+                    (feat,),
+                    self._past_covariates_span,
+                )
+                for feat in self._past_covariates_fnames
+            } 
+        else:
+            self.logger.error("Past covariates span is not set, cannot prepare past covariates")
+            raise ValueError("Past covariates span is not set")
+            
     def get_static_covariates(self):
         if self.static_transformer is None:
             return None
@@ -249,11 +269,11 @@ class PlastinkaBaseTSDataset:
 
     def get_past_covariates(self, item_multiidx):
         past_covariates = []
-        release_year = item_multiidx[self._index_names_mapping["recording_decade"]]
+        recording_decade = str(item_multiidx[self._index_names_mapping["recording_decade"]])
         for feat_name in self._past_covariates_cached:
             feat_vals = item_multiidx[self._index_names_mapping[feat_name]]
             feat_df = self._past_covariates_cached[feat_name].loc[
-                :, pd.IndexSlice[feat_vals, release_year, :]
+                :, pd.IndexSlice[feat_vals, recording_decade, :]
             ]
             past_covariates.append(feat_df)
 
@@ -349,8 +369,7 @@ class PlastinkaBaseTSDataset:
 
             ds.prepare_past_covariates(span)
 
-            if copy:
-                return ds
+            return ds
 
         except Exception as e:
             logger.error(f"Error setting up dataset: {e}", exc_info=True)
@@ -805,70 +824,107 @@ def validate_feature_date_columns(df: pd.DataFrame) -> pd.DataFrame:
     def fill_partial_years_np_where(series):
         try:
             is_not_20 = ~series.str.startswith("2")
-            valid_str = series.str.extract(r"(^\\d+)")[0]
+            valid_str = series.str.extract(r"(^\d+)")[0]
             padding_9 = (4 - valid_str.str.len().astype(int)).map(lambda x: "9" * x)
-            padding_1 = (4 - valid_str.str.len().astype(int)).map(lambda x: "1" * x)
-            return np.where(is_not_20, valid_str + padding_9, valid_str + padding_1)
+            padding_1 = (4 - valid_str.str.len().astype(int)).map(lambda x: "0" * x)
+            return np.where(
+                is_not_20,
+                valid_str + padding_9,
+                valid_str + padding_1
+            )
 
         except Exception as e:
-            
             logger.warning(
-                f"Error in fill_partial_years_np_where: {e}", exc_info=True
+                f"Error in fill_partial_years_np_where: {e}", 
+                exc_info=True
             )
-            return series  # Return original series on error instead of silently failing
+            return series
 
     validated = df.copy()
 
-    validated["Год записи"] = pd.to_numeric(validated["Год записи"], errors="coerce")
-    validated = validated.dropna(subset=["Год записи"])
+    validated["recording_year"] = pd.to_numeric(
+        validated["recording_year"], 
+        errors="coerce",
+    )
+    validated = validated.dropna(subset=["recording_year"])
 
-    uncert_rerelease_year_idxs = ~validated["Год выпуска"].fillna("1234").astype(
-        str
-    ).str.match(r"^(\\d{4}|[^0-9]*)$")
+    validated["release_year"] = np.where(
+        validated["release_year"]
+        .fillna("1234")
+        .astype(str)
+        .str
+        .match(r"^(19|20)"),
+        validated["release_year"],
+        np.nan
+    )
+    
+    uncert_rerelease_year_idxs = (
+        ~validated["release_year"]
+        .fillna("1234")
+        .astype(str)
+        .str
+        .match(r"^\d{4}$")
+    )
     unvalid_rereleases = validated.loc[
-        uncert_rerelease_year_idxs, "Год выпуска"
+        uncert_rerelease_year_idxs,
+        "release_year"
     ].astype(str)
-    validated.loc[uncert_rerelease_year_idxs, "Год выпуска"] = (
+
+    validated.loc[
+        uncert_rerelease_year_idxs, 
+        "release_year"
+    ] = (
         fill_partial_years_np_where(unvalid_rereleases)
     )
-    validated["Год выпуска"] = pd.to_numeric(validated["Год выпуска"], errors="coerce")
+    validated["release_year"] = pd.to_numeric(
+        validated["release_year"],
+        errors="coerce",
+    )
 
-    validated.loc[validated["Тип"] == "Оригинал", "Год выпуска"] = validated.loc[
-        validated["Тип"] == "Оригинал", "Год записи"
+    validated.loc[
+        validated["release_type"] == "Оригинал",
+        "release_year"
+    ] = validated.loc[
+        validated["release_type"] == "Оригинал", 
+        "recording_year"
     ]
 
     valid_rereleases = validated[
-        (validated["Тип"] != "Оригинал") & (validated["Год выпуска"].notna())
+        (validated["release_type"] != "Оригинал")
+        & (validated["release_year"].notna())
     ]
     if len(valid_rereleases) > 10:
-        diff_years = valid_rereleases["Год выпуска"] - valid_rereleases["Год записи"]
+        diff_years = (
+            valid_rereleases["release_year"]
+            - valid_rereleases["recording_year"]
+        )
         # Check for valid (non-NaN) differences before calculating mean
+        mean_gap = 15
         if not diff_years.empty and not diff_years.isnull().all():
             mean_gap = diff_years.mean()
             if pd.notna(mean_gap):
                 mean_gap = int(round(mean_gap))
-            else:
-                mean_gap = 15  # Default if mean is NaN
-        else:
-            mean_gap = 15  # Default if no valid differences
-    else:
-        mean_gap = 15
 
-    rerelease_nans = (validated["Тип"] != "Оригинал") & (
-        validated["Год выпуска"].isna()
+    rerelease_nans = (validated["release_type"] != "Оригинал") & (
+        validated["release_year"].isna()
     )
-    validated.loc[rerelease_nans, "Год выпуска"] = (
-        validated.loc[rerelease_nans, "Год записи"] + mean_gap
+    validated.loc[rerelease_nans, "release_year"] = (
+        validated.loc[rerelease_nans, "recording_year"] + mean_gap
     )
 
-    invalid_release_dates = validated["Год выпуска"] < validated["Год записи"]
-    validated.loc[invalid_release_dates, "Год выпуска"] = (
-        validated.loc[invalid_release_dates, "Год записи"] + mean_gap
+    invalid_release_dates = validated["release_year"] < validated["recording_year"]
+    validated.loc[invalid_release_dates, "release_year"] = (
+        validated.loc[invalid_release_dates, "recording_year"] + mean_gap
     )
 
     current_year = datetime.now().year
-    validated["Год записи"] = validated["Год записи"].clip(1950, current_year)
-    validated["Год выпуска"] = validated["Год выпуска"].clip(1950, current_year)
+    validated["recording_year"] = validated["recording_year"].clip(1950, current_year)
+    validated["release_year"] = validated["release_year"].clip(1950, current_year)
+    validated[
+        ["release_year", "recording_year"]
+    ] = validated[
+        ["release_year", "recording_year"]
+    ].astype(int)
 
     return validated
 
@@ -876,132 +932,111 @@ def validate_feature_date_columns(df: pd.DataFrame) -> pd.DataFrame:
 def validate_date_columns(
         df: pd.DataFrame, 
         datecols: Sequence[str], 
-    ) -> pd.DataFrame:
-     
+) -> pd.DataFrame:
     validated = df.copy()
-
     if len(datecols) == 2:
-        idx = validated["Дата создания"] > validated["Дата продажи"]
-        validated.loc[idx, "Дата создания"] = validated.loc[idx, "Дата продажи"]
+        idx = validated["created_date"] > validated["sold_date"]
+        validated.loc[idx, "created_date"] = validated.loc[idx, "sold_date"]
 
         dominant_month_period = (
-            validated["Дата продажи"]
+            validated["sold_date"]
             .dt
             .to_period('M')
             .mode()[0]
         )
         outlier_mask = (
-            validated["Дата продажи"]
+            validated["sold_date"]
             .dt
             .to_period('M') != dominant_month_period
         )
-        validated.loc[outlier_mask, "Дата продажи"] = None
-        validated["Дата продажи"] = validated["Дата продажи"].dt.floor("D")
+        validated.loc[outlier_mask, "sold_date"] = None
+        validated["sold_date"] = validated["sold_date"].dt.floor("D")
 
     validated = validated.dropna(subset=datecols)
-    validated["Дата создания"] = validated["Дата создания"].dt.floor("D")
+    validated["created_date"] = validated["created_date"].dt.floor("D")
     
     return validated
 
 
 def validate_categories(df: pd.DataFrame) -> pd.DataFrame:
     validated = df.copy()
-    nan_idx = validated["Конверт"].isna()
-    nan_df = validated[nan_idx]
+
+    def _mode_or_first(series: pd.Series):
+        non_null = series.dropna()
+        if non_null.empty:
+            return np.nan
+        mode_vals = non_null.mode()
+        if not mode_vals.empty:
+            return mode_vals.iloc[0]
+        return non_null.iloc[0]
+
     for gpouping_cols in [
-        ["Исполнитель", "Альбом", "Год выпуска"],
-        ["Ценовая категория", "Год выпуска"],
+        ["artist", "album", "release_decade"],
+        ["price_category", "release_decade"],
     ]:
-        for gl, g_nan in nan_df.groupby(gpouping_cols, observed=True):
-            filter_condition = (
-                validated[gpouping_cols] == pd.Series(gl, index=gpouping_cols)
-            ).all(axis=1)
-            g_known = validated.loc[filter_condition, "Конверт"].dropna()
-            idxs = g_nan.index
-            if g_known.shape[0]:
-                mode_val = g_known.mode()
-                if not mode_val.empty:
-                    validated.loc[idxs] = validated.loc[idxs].fillna(
-                        {"Конверт": mode_val.iloc[0]}
-                    )
-                else:
-                    # If no mode found (all values unique or other edge case), use the first value
-                    
-                    logger.warning(
-                        "No mode found for 'Конверт' in group. Using first value if available."
-                    )
-                    if len(g_known) > 0:
-                        validated.loc[idxs] = validated.loc[idxs].fillna(
-                            {"Конверт": g_known.iloc[0]}
-                        )
-    validated["Конверт"] = validated["Конверт"].map(
+        fill_vals = (
+            validated
+            .groupby(gpouping_cols, observed=True)["cover_type"]
+            .transform(_mode_or_first)
+        )
+        validated["cover_type"] = validated["cover_type"].fillna(fill_vals)
+
+    validated["cover_type"] = validated["cover_type"].map(
         lambda x: "Sealed" if x == "SS" else "Opened"
     )
     return validated
 
+
 def validate_styles(df: pd.DataFrame) -> pd.DataFrame:
     validated = df.copy()
-    validated = validated.fillna({"Стиль": "None"})
+    validated = validated.fillna({"style": "None"})
     for (artist, album), group in validated.groupby(
         [
-            "Исполнитель",
-            "Альбом",
+            "artist",
+            "album",
         ]
     ):
         try:
             if len(group) > 1:
                 validated.loc[
-                    (validated["Исполнитель"] == artist)
-                    & (validated["Альбом"] == album),
-                    "Стиль",
-                ] = group["Стиль"].mode().values[0]
+                    (validated["artist"] == artist)
+                    & (validated["album"] == album),
+                    "style",
+                ] = group["style"].mode().values[0]
         except Exception:
             pass
 
     return validated
 
+
 def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
     
-    rename = {}
-    if "Штрихкод" not in df.columns:
-        rename["Barcode"] = "Штрихкод"
-
-    if "Дата создания" not in df.columns:
-        rename["Дата добавления"] = "Дата создания"
-
-    validated = df.rename(columns=rename)
-    validated = validated.fillna({"Штрихкод": "None"})
-    validated.loc[:, "Штрихкод"] = validated["Штрихкод"].map(
+    validated = df.fillna({"barcode": "None"})
+    validated.loc[:, "barcode"] = validated["barcode"].map(
         lambda x: x.replace(" ", "").lstrip("0")
     )
 
     validated = validated.dropna(
         subset=[
-            "Исполнитель",
-            "Альбом",
-            "Цена, руб.",
-            "Дата создания",
+            "artist",
+            "album",
+            "price",
+            "created_date",
         ]
     )
 
-    validated.loc[:, "Цена, руб."] = pd.to_numeric(
-        validated["Цена, руб."], errors='coerce'
+    validated.loc[:, "price"] = pd.to_numeric(
+        validated["price"], errors='coerce'
     ).astype("int64")
 
     validated, bins = categorize_prices(validated, bins)
     validated = validate_feature_date_columns(validated)
-    validated = validate_categories(validated)
-    if "precise_record_year" not in validated.columns:
-        validated = validated.assign(precise_record_year=validated["Год записи"])
     validated = categorize_dates(validated)
+    validated = validate_categories(validated)
     validated = validate_styles(validated)
 
     coltypes = dict(filter(lambda x: x[0] in validated.columns, COLTYPES.items()))
-    datecols = [col for col in validated.columns if col.startswith("Дата")]
-    
-    # Ensure 'Конверт' is always included if it exists in the original df
-    if "Конверт" in df.columns and "Конверт" not in coltypes:
-        coltypes["Конверт"] = str
+    datecols = [col for col in validated.columns if col in ["created_date", "sold_date"]]
 
     validated = validated[list(coltypes.keys())]
     validated = validated.dropna()
@@ -1030,16 +1065,15 @@ def process_raw(df: pd.DataFrame, bins=None) -> pd.DataFrame:
 
     validated = validate_date_columns(validated, datecols)
 
-    # Rename columns to match DB schema
-    validated = validated.rename(columns=COLUMN_MAPPING)
-
     return validated
+
 
 def categorize_dates(df: pd.DataFrame) -> pd.DataFrame:
     validated = df.copy()
-    for col in ["Год записи", "Год выпуска"]:
-        validated[col] = pd.cut(
-            validated[col],
+    for col_pref in ["recording", "release"]:
+        new_col, old_col = f"{col_pref}_decade", f"{col_pref}_year"
+        validated[new_col] = pd.cut(
+            validated[old_col].astype(int),
             bins=[-np.inf]
             +
             list(
@@ -1065,15 +1099,16 @@ def categorize_dates(df: pd.DataFrame) -> pd.DataFrame:
 
     return validated
 
+
 def categorize_prices(
     df: pd.DataFrame, bins=None, q=(0.05, 0.3, 0.5, 0.75, 0.9, 0.95, 0.99)
 ) -> Sequence:
     df = df.copy()
-    prices = df["Цена, руб."]
+    prices = df["price"]
 
     if bins is None:
         try:
-            df["Ценовая категория"], bins = pd.qcut(prices, q=q, retbins=True, duplicates='drop')
+            df["price_category"], bins = pd.qcut(prices, q=q, retbins=True, duplicates='drop')
         except ValueError as e:
             if "Bin edges must be unique" in str(e) or "Too many duplicate edges" in str(e):
                 raise ValueError(
@@ -1085,9 +1120,10 @@ def categorize_prices(
             else:
                 raise e
     else:
-        df["Ценовая категория"] = pd.cut(prices, bins=bins, include_lowest=True)
+        df["price_category"] = pd.cut(prices, bins=bins, include_lowest=True)
 
     return df, bins
+
 
 def filter_by_date(
     df: pd.DataFrame | pd.Series,
@@ -1113,12 +1149,14 @@ def filter_by_date(
 
     return filtered_df
 
+
 def process_stock(df):
-    """Sum 'Экземпляры' field in a group for stock calculation"""
+    """Sum 'count' field in a group for stock calculation"""
     return pd.Series({
-        "count": df["Экземпляры"].astype("int64").sum(),
-        "price": df["Цена, руб."].astype("float64").mean()
+        "count": df["count"].astype("int64").sum(),
+        "price": df["price"].astype("float64").mean()
     })
+
 
 def process_movements(df):
     """
@@ -1128,9 +1166,10 @@ def process_movements(df):
     return pd.Series(
         {
             "count": len(df),
-            "price": (df["Цена, руб."].astype("float64").mean()),
+            "price": (df["price"].astype("float64").mean()),
         }
     )
+
 
 def _process_stock(
         preprocessed_df: pd.DataFrame, 
@@ -1153,9 +1192,8 @@ def _process_stock(
     )
 
     monthly_stock = monthly_stock.rename("stock").to_frame()
-
-
     return monthly_stock, monthly_prices
+
 
 def _init_stock(
     stock_path: str,
@@ -1163,7 +1201,7 @@ def _init_stock(
     cutoff_date: pd.Timestamp | None = None,
     bins: pd.IntervalIndex | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    stock_df = read_data_file(stock_path)
+    stock_df = read_data_file(path=stock_path)
 
     preprocessed_stock_df = process_raw(stock_df, bins=bins)
 
@@ -1182,8 +1220,8 @@ def _init_stock(
         cutoff_date
     )
     
-    
     return stock, prices_from_stock
+
 
 def _get_sales_files_paths(sales_path: str) -> list[Path]:
     sales_files: list[Path] = []
@@ -1200,20 +1238,111 @@ def _get_sales_files_paths(sales_path: str) -> list[Path]:
         raise ValueError("Sales path does not lead to a valid file or directory.")
     return sales_files
 
-def read_data_file(path: Path) -> pd.DataFrame:
-    if not isinstance(path, Path):
-        path = Path(path)
-    if path.suffix == ".csv":
-        return pd.read_csv(path, dtype="str")
-    elif path.suffix in [".xlsx", ".xls"]:
-        return pd.read_excel(path, dtype="str")
+
+def read_data_file(
+    file: io.BytesIO | None = None, 
+    path: "Path" = None, 
+    encoding: str = None, 
+    sheet_name: str = None
+) -> "pd.DataFrame":
+    """
+    Read data from CSV or Excel file with improved error handling.
+
+    Args:
+        file: File object (takes priority over path)
+        path: Path to file
+        encoding: Text encoding for CSV files (ignored for Excel)
+        sheet_name: Excel sheet name (if None and multiple sheets, raises error)
+
+    Returns:
+        DataFrame with standardized column names
+
+    Raises:
+        ValueError: If neither file nor path provided, or file format unsupported
+        UnicodeDecodeError: If CSV encoding fails
+    """
+    if file is None and path is None:
+        raise ValueError("Either file or path must be provided.")
+
+    # Normalize path
+    provided_path: Optional[Path] = None
+    if path is not None:
+        provided_path = Path(path) if not isinstance(path, Path) else path
+
+    def _seek_start(f):
+        """Reset file pointer to start if possible."""
+        if hasattr(f, "seek"):
+            try:
+                f.seek(0)
+            except Exception:
+                pass
+
+    def _read_excel_from_source(src) -> pd.DataFrame:
+        """Read Excel file with proper sheet handling."""
+        if sheet_name is not None:
+            return pd.read_excel(src, sheet_name=sheet_name, dtype=str)
+        
+        with pd.ExcelFile(src) as xls:
+            if len(xls.sheet_names) != 1:
+                raise ValueError(
+                    f"Excel file has {len(xls.sheet_names)} sheets: "
+                    f"{xls.sheet_names}. Specify sheet_name parameter."
+                )
+            return pd.read_excel(xls, sheet_name=xls.sheet_names[0], dtype=str)
+
+    def _read_csv_from_source(src) -> pd.DataFrame:
+        """Read CSV file with encoding fallback."""
+        encodings = [encoding] if encoding else [
+            "utf-8", "utf-8-sig", "cp1251", "cp1252"
+        ]
+        last_err = None
+        
+        for enc in encodings:
+            try:
+                return pd.read_csv(src, dtype=str, encoding=enc)
+            except UnicodeDecodeError as e:
+                last_err = e
+                continue
+        
+        raise last_err
+
+    # Priority: file object over path
+    if file is not None and path is None:
+        _seek_start(file)
+        
+        # Try Excel first, then CSV
+        try:
+            _seek_start(file)
+            df = _read_excel_from_source(file)
+        except Exception:
+            _seek_start(file)
+            try:
+                df = _read_csv_from_source(file)
+            finally:
+                _seek_start(file)
     else:
-        raise ValueError(f"Unsupported file extension: {path.suffix}")
+        # Read from path
+        ext = (provided_path.suffix or "").lower()
+        readable = file if file else provided_path
+        if ext in {".xlsx", ".xls"}:
+            df = _read_excel_from_source(readable)
+        elif ext == ".csv":
+            df = _read_csv_from_source(readable)
+        else:
+            raise ValueError(
+                f"Unsupported file extension: {provided_path.suffix!r}"
+            )
+
+    # Post-process: rename columns and validate
+    df = df.rename(columns=COLUMN_MAPPING)
+
+    return df[[c for c in df.columns if c in set(COLUMN_MAPPING.values())]]
+
 
 def _preprocess_sort_sales(sales_files_paths: list[Path], bins: pd.IntervalIndex) -> OrderedDict:
     monthly_dfs = {}
     for path in sales_files_paths:
-        df = process_raw(read_data_file(path), bins=bins)
+        df = process_raw(read_data_file(path=path), bins=bins)
         if not df.empty and "sold_date" in df.columns:
             month = pd.to_datetime(
                 df["sold_date"]
@@ -1224,6 +1353,7 @@ def _preprocess_sort_sales(sales_files_paths: list[Path], bins: pd.IntervalIndex
             monthly_dfs[month] = df
     return OrderedDict(sorted(monthly_dfs.items(), reverse=True))  # reverse=True для обработки от позднего к раннему
 
+
 def _get_grouped_df(
     processed_df: pd.DataFrame,
     group_keys: Sequence[str],
@@ -1232,12 +1362,16 @@ def _get_grouped_df(
     group_keys = [k for k in group_keys if k in processed_df.columns]
     preprocessed_df = (
         processed_df
-        .groupby(group_keys)
+        .groupby(
+            group_keys, 
+            sort=False,
+            observed=True)
         .apply(process_movements)
         .sort_index(axis=1, ascending=False)
     )
 
     return preprocessed_df
+
 
 def _process_grouped_df(
         grouped_df: pd.DataFrame, 
@@ -1309,23 +1443,23 @@ def _process_grouped_df(
 
     arrived = _prune_arrival_dates(arrived, sold)
 
-    sales, arrived = sold.align(
+    sold_aligned, arrived_aligned = sold.align(
         arrived,
         join='outer',
         axis=0
     )
 
     movements = (
-        sales
+        sold_aligned
         .fillna(0)
         .mul(-1)
         .add(
-            arrived.fillna(0)
+            arrived_aligned.fillna(0)
         )
         .rename('movement')
     )
 
-    sales_pivot = sales.unstack(
+    sales_pivot = sold_aligned.unstack(
         level='_date'
     ).fillna(0).astype(int)
     
@@ -1335,15 +1469,19 @@ def _process_grouped_df(
 
     return sales_pivot, movement_pivot, prices
 
-def _combine_prices(prices_from_stock: pd.DataFrame, prices_from_sales: pd.DataFrame) -> pd.DataFrame:
+
+def _combine_prices(
+    prices_from_stock: pd.DataFrame, 
+    prices_from_sales: pd.DataFrame
+) -> pd.DataFrame:
     """Combine prices from stock and sales sources using mean."""
-    
     prices = pd.concat(
         [prices_from_stock, prices_from_sales],
         axis=1, sort=True
     ).mean(axis=1)
     
     return prices
+
 
 def _calculate_cumulative_stock(stock: pd.DataFrame, movement: pd.DataFrame):
     """Joins previous stock with monthly movement and calculates the cumulative sum in reverse order."""
@@ -1361,8 +1499,8 @@ def _calculate_cumulative_stock(stock: pd.DataFrame, movement: pd.DataFrame):
     # Apply cumsum in reverse direction (from right to left)
     cumulative_stock = cumulative_stock.cumsum(axis=1)
 
-
     return cumulative_stock
+
 
 def _split_stock(cumulative_stock):
     """Splits the stock into the current month's view and the end-of-month carry-over stock."""
@@ -1379,11 +1517,13 @@ def _split_stock(cumulative_stock):
 
     # гарантируем, что last_stock указывает на начало месяца
     last_stock.columns = last_stock.columns.to_period('M').start_time
-
     
     return last_stock, monthly_stock
 
-def _calculate_availability_and_confidence(monthly_stock: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
+
+def _calculate_availability_and_confidence(
+    monthly_stock: pd.DataFrame
+) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
     """Рассчитывает долю наличия и уверенность в данных, возвращая Series."""
     
     in_stock = monthly_stock.clip(0, 1)
@@ -1391,8 +1531,8 @@ def _calculate_availability_and_confidence(monthly_stock: pd.DataFrame) -> tuple
     confidence = (monthly_stock.clip(0, 5) / 5).mean(1)
     availability_mask = in_stock > 0
     
-    
     return availability, confidence, availability_mask
+
 
 def _calculate_masked_sales(
         sales: pd.DataFrame, 
@@ -1400,7 +1540,6 @@ def _calculate_masked_sales(
         prices: pd.DataFrame
     ) -> tuple[pd.Series, pd.Series]:
     """Рассчитывает средние продажи с учетом наличия и их стоимость, возвращая Series."""
-    
     availability_mask = availability_mask.reindex(sales.index)
     masked_mean_sales_items = (
         sales
@@ -1420,8 +1559,8 @@ def _calculate_masked_sales(
         .astype(int)
     )
     
-    
     return masked_mean_sales_items, masked_mean_sales_rub
+
 
 def _calculate_lost_sales(
         availability_mask: pd.DataFrame, 
@@ -1444,6 +1583,7 @@ def _calculate_lost_sales(
     )
     
     return lost_sales
+
 
 def _gather_base_features(
         base_features_lists: dict[str, list[pd.Series | pd.DataFrame]],
@@ -1486,11 +1626,12 @@ def _gather_base_features(
         if feature_list:
             feature_df = pd.concat(
                 feature_list, 
-                axis=1
+                axis=1,
             )
             processing_fn = _get_correct_processing_fn(feature_df)
             base_features_dict[feature_name] = processing_fn(feature_df)
     return base_features_dict
+
 
 def run_data_processing_pipeline(config: dict, initial_inputs: dict) -> dict:
     """ 
@@ -1583,6 +1724,7 @@ def run_data_processing_pipeline(config: dict, initial_inputs: dict) -> dict:
         
     return artifact_pool.get('pipeline_outputs')
 
+
 def process_data(
     stock_path: str, 
     sales_path: str, 
@@ -1590,7 +1732,8 @@ def process_data(
     base_features_names: list[str] = [],
     report_features_names: list[str] = []
 ) -> dict[str, pd.DataFrame]:
-    
+    # import debugpy; debugpy.listen(5678); print("Waiting for debugger to attach..."); debugpy.wait_for_client()
+
     if not base_features_names:
         base_features_names = BASE_FEATURES_DEFAULT
     if not report_features_names:
@@ -1698,7 +1841,7 @@ UNIFIED_PIPELINE_CONFIG = {
         }),
     ]),
     'closure': OrderedDict([
-        ('package_outputs', {
+        ('_pack_outputs', {
             'func': lambda base_features_dict, report_features: {
                 'base_features_dict': base_features_dict,
                 'report_features': report_features
@@ -1726,6 +1869,7 @@ def transform_months(series):
 
     return msin, mcos
 
+
 def get_monthly_sales_pivot(monthly_sales_df):
     monthly_sales_pivot = monthly_sales_df.groupby(
         monthly_sales_df.index.get_level_values("_date").to_period("M")
@@ -1734,6 +1878,7 @@ def get_monthly_sales_pivot(monthly_sales_df):
     monthly_sales_pivot = monthly_sales_pivot.sort_index(axis=1)
 
     return monthly_sales_pivot
+
 
 def get_past_covariates_df(monthly_sales_df, stock_features, feature_list, span):
     boolean_mask = stock_features.T

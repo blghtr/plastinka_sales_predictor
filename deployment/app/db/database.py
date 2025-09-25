@@ -10,7 +10,6 @@ from typing import Any
 
 import pandas as pd
 from pydantic import ValidationError
-
 from deployment.app.config import get_settings
 from deployment.app.models.api_models import TrainingConfig
 from deployment.app.utils.retry import retry_with_backoff
@@ -147,7 +146,13 @@ def dict_factory(cursor, row):
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
 
-@retry_with_backoff(max_tries=3, base_delay=1.0, max_delay=10.0, component="database_query")
+@retry_with_backoff(
+    max_tries=3, 
+    base_delay=1.0, 
+    max_delay=10.0, 
+    component="database_query",
+    giveup_func=lambda e: isinstance(e, TypeError)
+)
 def execute_query(
     query: str,
     connection: sqlite3.Connection,
@@ -314,7 +319,7 @@ def create_job(
 
     def _db_operation(conn_to_use: sqlite3.Connection):
         # execute_query will use the provided conn_to_use and will NOT commit/rollback itself.
-        execute_query(sql_query, params=params_tuple, connection=conn_to_use)
+        execute_query(sql_query, connection=conn_to_use, params=params_tuple)
         logger.info(f"Created new job: {job_id} of type {job_type}")
 
     # This function now *always* expects an external connection.
@@ -350,7 +355,7 @@ def update_job_status(
     def _update_operation(conn_to_use: sqlite3.Connection):
         # First check if the job exists
         check_query = "SELECT 1 FROM jobs WHERE job_id = ?"
-        result = execute_query(check_query, params=(job_id,), connection=conn_to_use)
+        result = execute_query(check_query, connection=conn_to_use, params=(job_id,))
         if not result:
             logger.warning(
                 f"Job with ID {job_id} not found while trying to update status to {status}"
@@ -369,7 +374,7 @@ def update_job_status(
             WHERE job_id = ?
         """
         params = (status, now, progress, result_id, error_message, job_id)
-        execute_query(query, params=params, connection=conn_to_use)
+        execute_query(query, connection=conn_to_use, params=params)
 
         # Always log status change to job_status_history table
         # If no status_message is provided, use the status itself
@@ -382,7 +387,7 @@ def update_job_status(
             VALUES (?, ?, ?, ?, ?)
         """
         history_params = (job_id, status, history_message, progress, now)
-        execute_query(history_query, params=history_params, connection=conn_to_use)
+        execute_query(history_query, connection=conn_to_use, params=history_params)
 
         logger.info(
             f"Updated job {job_id}: status={status}, progress={progress}, message={status_message}"
@@ -496,7 +501,7 @@ def create_data_upload_result(
 
     # This function now *always* expects an external connection.
     # The caller (DataAccessLayer) is responsible for transaction management.
-    execute_query(query, params=params, connection=connection)
+    execute_query(query, connection=connection, params=params)
     return result_id
 
 
@@ -525,6 +530,10 @@ def create_or_get_config(
     except (ValidationError, ValueError) as e:
         logger.error(f"Configuration is invalid: {e}", exc_info=True)
         raise ValueError(f"Invalid configuration provided: {e}") from e
+
+    # Store any JSON-serializable config without strict validation
+    # Validation will be performed at usage time when needed
+    logger.debug(f"Storing config: {config_dict}")
 
     def _activate_config(connection: sqlite3.Connection, config_id: str) -> None:
         execute_query(query="UPDATE configs SET is_active = 0 WHERE config_id != ?", connection=connection, params=(config_id,))
@@ -1060,7 +1069,7 @@ def create_tuning_result(
         VALUES (?, ?, ?, ?, ?)
         """
         params = (result_id, job_id, config_id, metrics_json, duration)
-        execute_query(query, params=params, connection=conn_to_use)
+        execute_query(query, connection=conn_to_use, params=params)
         logger.info(f"Created tuning result: {result_id} for job: {job_id}")
         return result_id
 
@@ -1069,10 +1078,10 @@ def create_tuning_result(
 
 def create_prediction_result(
     job_id: str,
-    prediction_month: str,
     model_id: str | None = None,
     output_path: str | None = None,
     summary_metrics: dict[str, Any] | None = None,
+    prediction_month: str = None,
     connection: sqlite3.Connection = None,
 ) -> str:
     """
@@ -1126,11 +1135,11 @@ def create_prediction_result(
         logger.info(f"Creating new prediction result for job {job_id} and month {prediction_month}")
 
     try:
-        execute_query(query, params=params, connection=connection)
+        execute_query(query, connection=connection, params=params)
 
         # Update the job with the result_id
         update_query = "UPDATE jobs SET result_id = ? WHERE job_id = ?"
-        execute_query(update_query, params=(result_id, job_id), connection=connection)
+        execute_query(update_query, connection=connection, params=(result_id, job_id))
         logger.info(f"Updated job {job_id} with result_id: {result_id}")
 
         return result_id
@@ -1161,7 +1170,7 @@ def insert_predictions(
                 recording_decade=row["recording_decade"],
                 release_decade=row["release_decade"],
                 style=row["style"],
-                record_year=int(row["record_year"]),
+                recording_year=int(row["recording_year"]),
                 connection=conn_to_use,
             )
 
@@ -1416,10 +1425,10 @@ def get_training_results(
     """
     if result_id:
         query = "SELECT * FROM training_results WHERE result_id = ?"
-        return execute_query(query, params=(result_id,), connection=connection)
+        return execute_query(query, connection=connection, params=(result_id,))
     else:
         query = "SELECT * FROM training_results ORDER BY created_at DESC LIMIT ?"
-        return execute_query(query, params=(limit,), fetchall=True, connection=connection)
+        return execute_query(query, connection=connection, params=(limit,), fetchall=True)
 
 
 def get_prediction_result(
@@ -1442,7 +1451,7 @@ def get_prediction_results_by_month(
         params.append(model_id)
 
     query += " ORDER BY prediction_month DESC"
-    return execute_query(query, tuple(params), fetchall=True, connection=connection)
+    return execute_query(query, connection=connection, params=tuple(params), fetchall=True)
 
 
 def get_predictions(
@@ -1510,7 +1519,7 @@ def get_predictions(
             dmm.recording_decade,
             dmm.release_decade,
             dmm.style,
-            dmm.record_year,
+            dmm.recording_year,
             fp.model_id,
             fp.prediction_month,
             fp.quantile_05,
@@ -1582,7 +1591,7 @@ def create_processing_run(
     )
 
     try:
-        execute_query(query, params=params, connection=connection)
+        execute_query(query, connection=connection, params=params)
 
         # Get the last inserted ID
         result = execute_query(
@@ -1620,7 +1629,7 @@ def update_processing_run(
     params.append(run_id)
 
     try:
-        execute_query(query, params=tuple(params), connection=connection)
+        execute_query(query, connection=connection, params=tuple(params))
     except DatabaseError:
         logger.error(f"Failed to update processing run {run_id}")
         raise
@@ -1647,7 +1656,7 @@ def get_or_create_multiindex_ids_batch(
         return {}
 
     def _batch_operation(conn_to_use: sqlite3.Connection) -> dict[tuple, int]:
-        execute_query("CREATE TEMP TABLE _tuples_to_find (barcode TEXT, artist TEXT, album TEXT, cover_type TEXT, price_category TEXT, release_type TEXT, recording_decade TEXT, release_decade TEXT, style TEXT, record_year INTEGER)", conn_to_use)
+        execute_query("CREATE TEMP TABLE _tuples_to_find (barcode TEXT, artist TEXT, album TEXT, cover_type TEXT, price_category TEXT, release_type TEXT, recording_decade TEXT, release_decade TEXT, style TEXT, recording_year INTEGER)", conn_to_use)
 
         try:
             execute_many("INSERT INTO _tuples_to_find VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuples_to_process, conn_to_use)
@@ -1665,16 +1674,16 @@ def get_or_create_multiindex_ids_batch(
                     m.recording_decade = t.recording_decade AND
                     m.release_decade = t.release_decade AND
                     m.style = t.style AND
-                    m.record_year = t.record_year
+                    m.recording_year = t.recording_year
             """
             existing_rows = execute_query(query_existing, conn_to_use, fetchall=True) or []
 
             existing_tuples = set()
             id_map = {}
             for row in existing_rows:
-                existing_tuple = tuple(row[col] for col in row.keys() if col != 'multiindex_id')
+                existing_tuple = tuple(str(row[col]) for col in row.keys() if col != 'multiindex_id')
                 existing_tuples.add(existing_tuple)
-                id_map[existing_tuple] = row['multiindex_id']
+                id_map[existing_tuple] = int(row['multiindex_id'])
 
             new_tuples = [t for t in tuples_to_process if tuple(t) not in existing_tuples]
 
@@ -1682,15 +1691,15 @@ def get_or_create_multiindex_ids_batch(
                 insert_query = """
                 INSERT OR IGNORE INTO dim_multiindex_mapping (
                     barcode, artist, album, cover_type, price_category,
-                    release_type, recording_decade, release_decade, style, record_year
+                    release_type, recording_decade, release_decade, style, recording_year
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
                 execute_many(insert_query, new_tuples, conn_to_use)
 
                 all_rows = execute_query(query_existing, conn_to_use, fetchall=True) or []
                 for row in all_rows:
-                    full_tuple = tuple(row[col] for col in row.keys() if col != 'multiindex_id')
-                    id_map[full_tuple] = row['multiindex_id']
+                    full_tuple = tuple(str(row[col]) for col in row.keys() if col != 'multiindex_id')
+                    id_map[full_tuple] = int(row['multiindex_id'])
 
         finally:
             execute_query("DROP TABLE _tuples_to_find", conn_to_use)
@@ -1713,7 +1722,7 @@ def get_or_create_multiindex_id(
     recording_decade: str,
     release_decade: str,
     style: str,
-    record_year: int,
+    recording_year: int,
     connection: sqlite3.Connection = None,
 ) -> int:
     """
@@ -1729,7 +1738,7 @@ def get_or_create_multiindex_id(
         recording_decade: Recording decade
         release_decade: Release decade
         style: Music style
-        record_year: Record year
+        recording_year: Record year
         connection: Optional existing database connection to use
 
     Returns:
@@ -1740,7 +1749,7 @@ def get_or_create_multiindex_id(
     SELECT multiindex_id FROM dim_multiindex_mapping
     WHERE barcode = ? AND artist = ? AND album = ? AND cover_type = ? AND
           price_category = ? AND release_type = ? AND recording_decade = ? AND
-          release_decade = ? AND style = ? AND record_year = ?
+          release_decade = ? AND style = ? AND recording_year = ?
     """
 
     params = (
@@ -1753,11 +1762,11 @@ def get_or_create_multiindex_id(
         recording_decade,
         release_decade,
         style,
-        record_year,
+        recording_year,
     )
 
     try:
-        existing = existing = execute_query(query, params=params, connection=connection)
+        existing = execute_query(query, connection=connection, params=params)
 
         if existing:
             return existing["multiindex_id"]
@@ -1766,11 +1775,11 @@ def get_or_create_multiindex_id(
         insert_query = """
         INSERT INTO dim_multiindex_mapping (
             barcode, artist, album, cover_type, price_category,
-            release_type, recording_decade, release_decade, style, record_year
+            release_type, recording_decade, release_decade, style, recording_year
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
-        execute_query(insert_query, params=params, connection=connection)
+        execute_query(insert_query, connection=connection, params=params)
 
         # Get the new ID
         result = execute_query(
@@ -1844,7 +1853,6 @@ def insert_report_features(
 
 def get_report_features(
     multiidx_ids: list[int] | None = None,
-    prediction_month: date | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
     feature_subset: list[str] | None = None,
@@ -1859,13 +1867,11 @@ def get_report_features(
 
     Args:
         multiidx_ids: Optional list of multiindex_ids to retrieve features for.
-        prediction_month: The specific month for which to retrieve features (YYYY-MM-DD).
         start_date: The start of the date range (inclusive).
         end_date: The end of the date range (inclusive).
         feature_subset: Optional list of specific features to retrieve from report_features
                         (e.g., ["avg_sales_items", "lost_sales_rub"]). If None, all are fetched.
-        connection: An active database connection.
-
+        connection: Optional existing database connection to use
     Returns:
         A list of dictionaries, where each dictionary contains product attributes
         and its requested features. Returns an empty list if no matching data is found.
@@ -1873,14 +1879,9 @@ def get_report_features(
     Raises:
         ValueError: If no date filter (prediction_month or start/end_date) is provided.
     """
-    if prediction_month:
-        start_date = prediction_month.replace(day=1) 
-        end_date =(prediction_month.replace(day=1) + pd.DateOffset(months=1) - pd.Timedelta(days=1)).date()
-    elif not (start_date and end_date):
-        raise ValueError("A date filter must be provided. Use 'prediction_month' or both 'start_date' and 'end_date'.")
 
     # Build the SELECT clause
-    select_parts = ["dmm.*", "rf.multiindex_id as rf_multiindex_id"]  # Alias to avoid collision
+    select_parts = ["dmm.*", "rf.multiindex_id as rf_multiindex_id", "rf.data_date"]  # Alias to avoid collision
     if feature_subset:
         selected_features = list(
             EXPECTED_REPORT_FEATURES_SET.intersection(feature_subset)
@@ -1930,11 +1931,69 @@ def get_report_features(
             query_template = f"{select_clause} {from_clause}"
 
         try:
-            results = execute_query(query=query_template, params=tuple(params), fetchall=True, connection=connection)
+            results = execute_query(query=query_template, connection=connection, params=tuple(params), fetchall=True)
             return results or []
         except DatabaseError as e:
             logger.error(f"Failed to get report features: {e}")
             raise
+
+
+def get_feature_dataframe(
+    table_name: str,
+    columns: list[str],
+    connection: sqlite3.Connection,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
+    """
+    Fetches feature data from a specified table for a given date range.
+
+    Selects 'multiindex_id', 'data_date', and the specified value columns
+    from the given table, filtering by date if provided.
+
+    Args:
+        table_name: The name of the feature table (e.g., 'fact_sales').
+        columns: A list of value columns to select (e.g., ['value'] or
+                 ['availability', 'confidence']).
+        connection: An active database connection.
+        start_date: The start date for the range (YYYY-MM-DD).
+        end_date: The end date for the range (YYYY-MM-DD).
+
+    Returns:
+        A list of dictionaries, where each dictionary represents a row of data.
+        Returns an empty list if no data is found.
+    """
+    # Basic sanitization for table and column names
+    def _is_safe_identifier(name: str) -> bool:
+        return all(c.isalnum() or c == '_' for c in name)
+    
+    if not _is_safe_identifier(table_name) or not all(_is_safe_identifier(col) for col in columns):
+        logger.error(f"Invalid characters in table or column names: {table_name}, {columns}")
+        raise ValueError("Invalid table or column names provided.")
+
+    select_columns = ["multiindex_id", "data_date"] + columns
+    select_clause = ", ".join(f'"{c}"' for c in select_columns) # Quote to be safe
+
+    query = f"SELECT {select_clause} FROM {table_name}"
+    
+    params = []
+    where_clauses = []
+
+    if start_date:
+        where_clauses.append("data_date >= ?")
+        params.append(start_date)
+    if end_date:
+        where_clauses.append("data_date <= ?")
+        params.append(end_date)
+
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+
+    try:
+        return execute_query(query=query, connection=connection, params=tuple(params), fetchall=True) or []
+    except DatabaseError as e:
+        logger.error(f"Failed to get feature dataframe from {table_name}: {e}")
+        raise
 
 
 def delete_configs_by_ids(
@@ -2284,7 +2343,7 @@ def get_tuning_results(
     # Fetch a single result by ID
     if result_id:
         query = "SELECT * FROM tuning_results WHERE result_id = ?"
-        return execute_query(query, params=(result_id,), fetchall=False, connection=connection)
+        return execute_query(query, connection=connection, params=(result_id,), fetchall=False)
 
     # Fetch a list of results, with optional sorting
     params = [limit]
@@ -2310,7 +2369,7 @@ def get_tuning_results(
         query = "SELECT * FROM tuning_results ORDER BY created_at DESC LIMIT ?"
 
     try:
-        results = execute_query(query, params=tuple(params), fetchall=True, connection=connection)
+        results = execute_query(query, connection=connection, params=tuple(params), fetchall=True)
         return results if results is not None else []
     except DatabaseError as e:
         logger.error(f"Failed to get tuning results: {e}")
@@ -2450,7 +2509,7 @@ def insert_retry_event(event: dict[str, Any], connection: sqlite3.Connection) ->
     event["successful"] = 1 if event.get("successful") else 0
 
     try:
-        execute_query(query, params=event, connection=connection)
+        execute_query(query, connection=connection, params=event)
     except Exception as e:
         logger.error(f"[insert_retry_event] Error during insert for event {event.get('operation')}: {e}", exc_info=True)
         raise
@@ -2460,7 +2519,7 @@ def fetch_recent_retry_events(limit: int = 1000, connection: sqlite3.Connection 
     """Fetch most recent retry events ordered oldest->newest up to *limit*."""
 
     query = "SELECT * FROM retry_events ORDER BY id DESC LIMIT ?"
-    rows = execute_query(query, (limit,), fetchall=True, connection=connection) or []
+    rows = execute_query(query, connection=connection, params=(limit,), fetchall=True) or []
     rows.reverse()
     return rows
 
@@ -2509,7 +2568,7 @@ def get_features_by_date_range(
         query += f" ORDER BY {date_column}"
 
         try:
-            return execute_query(query=query, params=tuple(params), connection=conn_to_use, fetchall=True) or []
+            return execute_query(query=query, connection=conn_to_use, params=tuple(params), fetchall=True) or []
         except DatabaseError as e:
             logger.error(f"Failed to get features from {table}: {e}")
             raise
@@ -2553,7 +2612,7 @@ def adjust_dataset_boundaries(
         params.append(end_date.isoformat())
 
     try:
-        result = execute_query(query, params=tuple(params), connection=connection)
+        result = execute_query(query, connection=connection, params=tuple(params))
 
         if not result or not result.get("last_date"):
             # No data found — return the original end_date
@@ -2600,7 +2659,7 @@ def get_multiindex_mapping_by_ids(
 
     query_template = """
     SELECT multiindex_id, barcode, artist, album, cover_type, price_category,
-           release_type, recording_decade, release_decade, style, record_year
+           release_type, recording_decade, release_decade, style, recording_year
     FROM dim_multiindex_mapping
     WHERE multiindex_id IN ({placeholders})
     """

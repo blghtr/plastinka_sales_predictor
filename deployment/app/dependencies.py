@@ -66,3 +66,15 @@ async def get_dal_system() -> AsyncGenerator[DataAccessLayer, None]:
         yield dal
     finally:
         pass
+
+
+def get_dal_system_sync(connection=None) -> DataAccessLayer:
+    """
+    Synchronous version of get_dal_system for use in non-FastAPI contexts.
+    Provides a DataAccessLayer instance with SYSTEM roles.
+    
+    Args:
+        connection: Optional database connection to use. If None, DAL creates its own.
+    """
+    user_context = UserContext(roles=[UserRoles.SYSTEM])
+    return DataAccessLayer(user_context=user_context, connection=connection)

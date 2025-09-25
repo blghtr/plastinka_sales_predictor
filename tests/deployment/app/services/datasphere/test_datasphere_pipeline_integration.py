@@ -551,7 +551,7 @@ async def test_datasphere_pipeline_missing_metrics(mock_datasphere_env, caplog, 
         with open(os.path.join(results_dir, "model.onnx"), "w") as f:
             f.write("fake onnx model data")
         with open(os.path.join(results_dir, "predictions.csv"), "w") as f:
-            f.write("barcode,artist,album,cover_type,price_category,release_type,recording_decade,release_decade,style,record_year,0.05,0.25,0.5,0.75,0.95\n")
+            f.write("barcode,artist,album,cover_type,price_category,release_type,recording_decade,release_decade,style,recording_year,0.05,0.25,0.5,0.75,0.95\n")
             f.write("123456789012,Artist1,Album1,CD,CategoryA,TypeX,1990s,2000s,Rock,2005,10.0,12.0,15.0,18.0,20.0\n")
 
     monkeypatch.setattr(mock_datasphere_env["api_client"], "download_job_results", download_without_metrics)

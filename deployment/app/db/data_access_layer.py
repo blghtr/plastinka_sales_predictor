@@ -37,6 +37,7 @@ from deployment.app.db.database import (
     get_data_upload_result,
     get_db_connection,
     get_effective_config,
+    get_feature_dataframe,
     get_features_by_date_range,
     get_job,
     get_job_params,
@@ -130,6 +131,16 @@ class DataAccessLayer:
         if self._owns_connection and self._connection:
             self._connection.close()
             self._connection = None
+
+    @property
+    def connection(self) -> sqlite3.Connection | None:
+        """Expose the underlying sqlite connection (read-only)."""
+        return self._connection
+
+    def commit(self) -> None:
+        """Commit current transaction on the managed connection (no-op if none)."""
+        if self._connection:
+            self._connection.commit()
 
     @contextmanager
     def transaction(self):
@@ -257,7 +268,14 @@ class DataAccessLayer:
     @transaction_required
     def create_prediction_result(self, job_id: str, model_id: str, output_path: str, summary_metrics: dict[str, Any] | None, prediction_month: date | None = None) -> str:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return create_prediction_result(job_id, prediction_month, model_id, output_path, summary_metrics, self._connection)
+        return create_prediction_result(
+            job_id=job_id,
+            model_id=model_id,
+            output_path=output_path,
+            summary_metrics=summary_metrics,
+            prediction_month=prediction_month,
+            connection=self._connection,
+        )
 
     def get_data_upload_result(self, result_id: str) -> dict:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
@@ -300,9 +318,9 @@ class DataAccessLayer:
         return update_processing_run(run_id, status, end_time, self._connection)
 
     @transaction_required
-    def get_or_create_multiindex_id(self, barcode: str, artist: str, album: str, cover_type: str, price_category: str, release_type: str, recording_decade: str, release_decade: str, style: str, record_year: int) -> int:
+    def get_or_create_multiindex_id(self, barcode: str, artist: str, album: str, cover_type: str, price_category: str, release_type: str, recording_decade: str, release_decade: str, style: str, recording_year: int) -> int:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return get_or_create_multiindex_id(barcode, artist, album, cover_type, price_category, release_type, recording_decade, release_decade, style, record_year, self._connection)
+        return get_or_create_multiindex_id(barcode, artist, album, cover_type, price_category, release_type, recording_decade, release_decade, style, recording_year, self._connection)
 
     def get_configs(self, limit: int = 5) -> list[dict[str, Any]]:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
@@ -378,10 +396,19 @@ class DataAccessLayer:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_latest_prediction_month(self._connection)
 
+    def get_feature_dataframe(
+        self,
+        table_name: str,
+        columns: list[str],
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict]:
+        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
+        return get_feature_dataframe(table_name, columns, self._connection, start_date, end_date)
+
     def get_report_features(
         self,
         multiidx_ids: list[int] | None = None,
-        prediction_month: date | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
         feature_subset: list[str] | None = None,
@@ -389,7 +416,6 @@ class DataAccessLayer:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_report_features(
             multiidx_ids=multiidx_ids,
-            prediction_month=prediction_month,
             start_date=start_date,
             end_date=end_date,
             feature_subset=feature_subset,

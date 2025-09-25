@@ -38,7 +38,7 @@ class TestCategorizePricesWithStaticBins:
         # Arrange
         df = pd.DataFrame(
             {
-                "Цена, руб.": [
+                "price": [
                     500,
                     1500,
                     2500,
@@ -59,12 +59,12 @@ class TestCategorizePricesWithStaticBins:
         result_df, result_bins = categorize_prices(df, bins=static_price_bins)
 
         # Assert
-        assert "Ценовая категория" in result_df.columns
-        assert result_df["Ценовая категория"].dtype == "category"
+        assert "price_category" in result_df.columns
+        assert result_df["price_category"].dtype == "category"
         assert len(result_df) == 10
 
         # Check that most prices are categorized (negative values may be NaN)
-        categories = result_df["Ценовая категория"]
+        categories = result_df["price_category"]
         # Allow some NaN values for edge cases like negative numbers
         assert categories.notna().sum() >= 9, "Most valid prices should be categorized"
 
@@ -81,30 +81,30 @@ class TestCategorizePricesWithStaticBins:
         """
         # Arrange
         # With include_lowest=True, it's hard to get NaNs unless the input is NaN.
-        df = pd.DataFrame({"Цена, руб.": [np.nan]})
+        df = pd.DataFrame({"price": [np.nan]})
 
         # Act
         result_df, result_bins = categorize_prices(df, bins=static_price_bins)
 
         # Assert
-        assert "Ценовая категория" in result_df.columns
-        assert result_df["Ценовая категория"].dtype == "category"
+        assert "price_category" in result_df.columns
+        assert result_df["price_category"].dtype == "category"
         # NaN values should result in NaN categories
-        assert result_df["Ценовая категория"].isna().all()
+        assert result_df["price_category"].isna().all()
 
     def test_categorize_prices_with_null_values(self, static_price_bins):
         """Test that null (NaN) prices result in null categories."""
         # Arrange
-        df = pd.DataFrame({"Цена, руб.": [100, np.nan, 300, 400, np.nan]})
+        df = pd.DataFrame({"price": [100, np.nan, 300, 400, np.nan]})
 
         # Act
         result_df, result_bins = categorize_prices(df, bins=static_price_bins)
 
         # Assert
-        assert "Ценовая категория" in result_df.columns
-        assert result_df["Ценовая категория"].dtype == "category"
+        assert "price_category" in result_df.columns
+        assert result_df["price_category"].dtype == "category"
         # Valid prices should be categorized, NaN values should remain NaN
-        categories = result_df["Ценовая категория"]
+        categories = result_df["price_category"]
         assert categories.notna().sum() == 3  # 3 valid prices
         assert categories.isna().sum() == 2   # 2 NaN values
 
@@ -115,13 +115,13 @@ class TestCategorizePricesEdgeCases:
     def test_categorize_prices_empty_dataframe(self, static_price_bins):
         """Test price categorization with an empty DataFrame."""
         # Arrange
-        df = pd.DataFrame({"Цена, руб.": []})
+        df = pd.DataFrame({"price": []})
 
         # Act
         result_df, result_bins = categorize_prices(df, bins=static_price_bins)
 
         # Assert
-        assert "Ценовая категория" in result_df.columns
+        assert "price_category" in result_df.columns
         assert result_df.empty
 
     def test_categorize_prices_missing_price_column(self, static_price_bins):
@@ -130,13 +130,13 @@ class TestCategorizePricesEdgeCases:
         df = pd.DataFrame({"Other_Column": [100, 200, 300]})
 
         # Act & Assert
-        with pytest.raises(KeyError, match="'Цена, руб.'"):
+        with pytest.raises(KeyError, match="'price'"):
             categorize_prices(df, bins=static_price_bins)
 
     def test_categorize_prices_non_numeric_values(self, static_price_bins):
         """Test handling of non-numeric values in the price column."""
         # Arrange
-        df = pd.DataFrame({"Цена, руб.": [100, "invalid", 300, "another_invalid", 500]})
+        df = pd.DataFrame({"price": [100, "invalid", 300, "another_invalid", 500]})
 
         # Act & Assert
         # Function cannot handle non-numeric strings with pd.cut
