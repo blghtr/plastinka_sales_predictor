@@ -191,9 +191,7 @@ class TrainingConfig(BaseModel):
         "4ff41e5d", 
         description="ID of the model to use for training"
     )
-    additional_hparams: Optional[dict[str, Any]] = Field(
-        None, description="Additional training hparams"
-    )
+
 
     @model_validator(mode='before')
     @classmethod
