@@ -1732,8 +1732,6 @@ def process_data(
     base_features_names: list[str] = [],
     report_features_names: list[str] = []
 ) -> dict[str, pd.DataFrame]:
-    # import debugpy; debugpy.listen(5678); print("Waiting for debugger to attach..."); debugpy.wait_for_client()
-
     if not base_features_names:
         base_features_names = BASE_FEATURES_DEFAULT
     if not report_features_names:
