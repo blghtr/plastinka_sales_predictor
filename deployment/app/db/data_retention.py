@@ -86,13 +86,6 @@ def cleanup_old_historical_data(
     if stock_days_to_keep is None:
         stock_days_to_keep = get_settings().data_retention.stock_retention_days
 
-    # Calculate cutoff dates
-    sales_cutoff = datetime.now() - timedelta(days=sales_days_to_keep)
-    stock_cutoff = datetime.now() - timedelta(days=stock_days_to_keep)
-
-    sales_cutoff_str = sales_cutoff.strftime("%Y-%m-%d")
-    stock_cutoff_str = stock_cutoff.strftime("%Y-%m-%d")
-
     if dal is None:
         dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.SYSTEM]))
 

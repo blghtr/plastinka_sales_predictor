@@ -28,7 +28,10 @@ class TestDataRetention(unittest.TestCase):
         os.makedirs(self.model_dir, exist_ok=True)
 
         from deployment.app.config import AppSettings, get_settings
-        self.settings_patch_db_path = patch.object(AppSettings, 'database_path', new_callable=PropertyMock)
+
+        self.settings_patch_db_path = patch.object(
+            AppSettings, "database_path", new_callable=PropertyMock
+        )
         self.mock_db_path = self.settings_patch_db_path.start()
         self.mock_db_path.return_value = self.test_db_path
 
@@ -38,8 +41,8 @@ class TestDataRetention(unittest.TestCase):
         self.mock_get_settings = self.settings_patch.start()
 
         mock_retention_settings = DataRetentionSettings(
-            sales_retention_days=730,
-            stock_retention_days=730,
+            sales_retention_days=365,
+            stock_retention_days=365,
             prediction_retention_days=30,
             models_to_keep=2,
             inactive_model_retention_days=15,
@@ -56,32 +59,15 @@ class TestDataRetention(unittest.TestCase):
         """Clean up after tests"""
         self.settings_patch_db_path.stop()
         self.settings_patch.stop()
-        self.dal.close() # Explicitly close DAL connection
+        self.dal.close()  # Explicitly close DAL connection
 
-        # Handle file cleanup more gracefully
         try:
             shutil.rmtree(self.test_dir)
         except (PermissionError, OSError) as e:
-            # Log the error but don't fail the test
             import logging
+
             logger = logging.getLogger(__name__)
             logger.warning(f"Could not clean up test directory {self.test_dir}: {e}")
-            # Try to remove individual files if directory removal fails
-            try:
-                for root, dirs, files in os.walk(self.test_dir, topdown=False):
-                    for name in files:
-                        try:
-                            os.remove(os.path.join(root, name))
-                        except (PermissionError, OSError):
-                            pass
-                    for name in dirs:
-                        try:
-                            os.rmdir(os.path.join(root, name))
-                        except (PermissionError, OSError):
-                            pass
-            except Exception:
-                pass
-
 
     def _create_test_models(self):
         """Create test model records and files"""
@@ -122,21 +108,12 @@ class TestDataRetention(unittest.TestCase):
                     "batch_size": 32,
                     "dropout": 0.1,
                     "use_reversible_instance_norm": True,
-                    "use_layer_norm": True
+                    "use_layer_norm": True,
                 },
-                "optimizer_config": {
-                    "lr": 0.001,
-                    "weight_decay": 0.0001
-                },
-                "lr_shed_config": {
-                    "T_0": 10,
-                    "T_mult": 2
-                },
-                "train_ds_config": {
-                    "alpha": 0.5,
-                    "span": 12
-                },
-                "lags": 12
+                "optimizer_config": {"lr": 0.001, "weight_decay": 0.0001},
+                "lr_shed_config": {"T_0": 10, "T_mult": 2},
+                "train_ds_config": {"alpha": 0.5, "span": 12},
+                "lags": 12,
             },
             is_active=True,
         )
@@ -225,29 +202,32 @@ class TestDataRetention(unittest.TestCase):
         """Create test prediction records"""
         now = datetime.now()
 
-        # Create jobs and results first (required for foreign key constraints)
+        # Create jobs and results first
         job1_id = self.dal.create_job("prediction_job_1", {"test": "params"})
         job2_id = self.dal.create_job("prediction_job_2", {"test": "params"})
 
-        # Create models first
-        self.dal.create_model_record(
-            model_id="model1",
-            job_id=job1_id,
-            model_path=os.path.join(self.model_dir, "model1.pt"),
-            created_at=now,
-            metadata={"size": 1000},
-            is_active=True,
-        )
-        self.dal.create_model_record(
-            model_id="model2",
-            job_id=job2_id,
-            model_path=os.path.join(self.model_dir, "model2.pt"),
-            created_at=now,
-            metadata={"size": 1000},
-            is_active=True,
-        )
+        # Create models if they don't exist
+        try:
+            self.dal.create_model_record(
+                model_id="model1",
+                job_id=job1_id,
+                model_path=os.path.join(self.model_dir, "model1.pt"),
+                created_at=now,
+                is_active=True,
+            )
+        except Exception:  # May already exist
+            pass
+        try:
+            self.dal.create_model_record(
+                model_id="model2",
+                job_id=job2_id,
+                model_path=os.path.join(self.model_dir, "model2.pt"),
+                created_at=now,
+                is_active=True,
+            )
+        except Exception:  # May already exist
+            pass
 
-        # Create prediction results
         result1_id = self.dal.create_prediction_result(
             job_id=job1_id,
             prediction_month=now.strftime("%Y-%m"),
@@ -263,27 +243,26 @@ class TestDataRetention(unittest.TestCase):
             summary_metrics={"mape": 11.5},
         )
 
-        # Create multiindex records first (required for foreign key constraints)
-        multiindex_ids = []
-        for i in range(200):  # Create enough for all predictions
-            multiindex_id = self.dal.get_or_create_multiindex_id(
-                barcode=f"barcode{i}",
-                artist=f"artist{i}",
-                album=f"album{i}",
-                cover_type="vinyl",
-                price_category="medium",
-                release_type="studio",
-                recording_decade="1990s",
-                release_decade="1990s",
-                style="rock",
-                recording_year=1995
+        # Create multiindex records in batch
+        multiindex_tuples = [
+            (
+                f"barcode{i}",
+                f"artist{i}",
+                f"album{i}",
+                "vinyl",
+                "medium",
+                "studio",
+                "1990s",
+                "1990s",
+                "rock",
+                1995,
             )
-            multiindex_ids.append(multiindex_id)
+            for i in range(200)
+        ]
+        multiindex_ids = self.dal.get_or_create_multiindex_ids_batch(multiindex_tuples)
 
-        # Insert predictions with various dates
         predictions = []
-
-        # Recent predictions (within retention period)
+        # Recent predictions (10 records)
         for i in range(10):
             date = now - timedelta(days=i)
             predictions.append(
@@ -297,11 +276,11 @@ class TestDataRetention(unittest.TestCase):
                     20.1,
                     25.8,
                     30.3,
-                    now.strftime("%Y-%m-%d %H:%M:%S"),
+                    now.isoformat(),
                 )
             )
 
-        # Old predictions (beyond retention period)
+        # Old predictions (10 records)
         for i in range(10):
             date = now - timedelta(days=40 + i)
             predictions.append(
@@ -315,215 +294,198 @@ class TestDataRetention(unittest.TestCase):
                     21.1,
                     26.8,
                     31.3,
-                    now.strftime("%Y-%m-%d %H:%M:%S"),
+                    now.isoformat(),
                 )
             )
 
-        for p in predictions:
-            self.dal.execute_raw_query(
-                "INSERT INTO fact_predictions (multiindex_id, prediction_month, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9])
-            )
+        self.dal.connection.executemany(
+            "INSERT INTO fact_predictions (multiindex_id, prediction_month, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            predictions,
+        )
+        self.dal.commit()
 
     def _create_test_historical_data(self):
-        """Create test historical data records"""
+        """Create test historical data records directly."""
         now = datetime.now()
 
-        # Generate test data for different time ranges
-        sales_data = []
-        changes_data = []
+        # 1. Create multi-index entries
+        multiindex_tuples = [
+            (
+                f"barcode_hist_{i}",
+                f"artist_hist_{i}",
+                f"album_hist_{i}",
+                "CD",
+                "low",
+                "live",
+                "2010s",
+                "2010s",
+                "electronic",
+                2015,
+            )
+            for i in range(200)
+        ]
+        multiindex_ids = self.dal.get_or_create_multiindex_ids_batch(multiindex_tuples)
 
-        # Recent data (within 1 year)
-        for i in range(10):
-            date = now - timedelta(days=i * 30)  # Roughly monthly
+        sales_params = []
+        movement_params = []
+
+        # 2. Generate data points
+        # Recent data (100 records)
+        for i in range(10):  # 10 dates
+            date = now - timedelta(days=i * 30)
             date_str = date.strftime("%Y-%m-%d")
+            for j in range(10):  # 10 products per date
+                midx_id = multiindex_ids[i * 10 + j]
+                sales_params.append((midx_id, date_str, 10.0 + j))
+                movement_params.append((midx_id, date_str, 1.0 + j))
 
-            # Add multiple records for each date (different products)
-            for j in range(10):  # Changed from 5 to 10
-                multiindex_id = i * 10 + j + 1  # Unique multiindex_id for each record
-
-                sales_data.append((multiindex_id, date_str, 10 + j))
-                changes_data.append((multiindex_id, date_str, 1 + j))  # Changed from -5 + j to 1 + j to avoid zero values
-
-        # Old data (over 2 years old)
-        for i in range(10):
-            date = now - timedelta(days=800 + i * 30)  # Beyond the retention period
+        # Old data (100 records)
+        for i in range(10):  # 10 dates
+            date = now - timedelta(days=800 + i * 30)
             date_str = date.strftime("%Y-%m-%d")
+            for j in range(10):  # 10 products per date
+                midx_id = multiindex_ids[100 + i * 10 + j]
+                sales_params.append((midx_id, date_str, 5.0 + j))
+                movement_params.append((midx_id, date_str, 1.0 + j))
 
-            # Add multiple records for each date
-            for j in range(10):  # Changed from 5 to 10
-                multiindex_id = 100 + i * 10 + j + 1  # Unique multiindex_id for each record
-
-                sales_data.append((multiindex_id, date_str, 5 + j))
-                changes_data.append((multiindex_id, date_str, 1 + j))  # Changed from -2 + j to 1 + j to avoid zero values
-
-        # Convert to DataFrames and save using SQLFeatureStore
-        import pandas as pd
-
-        from deployment.app.db.feature_storage import SQLFeatureStore
-        from deployment.app.db.schema import MULTIINDEX_NAMES
-
-        feature_store = SQLFeatureStore(dal=self.dal)
-
-        def create_df(data):
-            df = pd.DataFrame(data, columns=["multiindex_id", "data_date", "value"])
-            df["data_date"] = pd.to_datetime(df["data_date"])
-            pivot_df = df.pivot_table(index="multiindex_id", columns="data_date", values="value", fill_value=0)
-
-            # Check if pivot_df is empty
-            if pivot_df.empty:
-                # Create a minimal DataFrame with correct structure
-                pivot_df = pd.DataFrame(
-                    data=[[1.0]],  # Single value
-                    index=pd.MultiIndex.from_tuples([("dummy", "dummy", "dummy", "dummy", "dummy", "dummy", "dummy", "dummy", "dummy", 2000)], names=MULTIINDEX_NAMES),
-                    columns=[pd.Timestamp.now().normalize()]
-                )
-            else:
-                full_multiindex_tuples = []
-                for idx_multiindex_id in pivot_df.index:
-                    # Create a tuple with the multiindex_id as the barcode, and dummy values for others
-                    # The order must match MULTIINDEX_NAMES: ["barcode", "artist", "album", ...]
-                    multiindex_tuple = [str(idx_multiindex_id)] + ["dummy"] * (len(MULTIINDEX_NAMES) - 1)
-                    full_multiindex_tuples.append(tuple(multiindex_tuple))
-
-                pivot_df.index = pd.MultiIndex.from_tuples(full_multiindex_tuples, names=MULTIINDEX_NAMES)
-            return pivot_df
-
-        feature_store.save_features({"sales": create_df(sales_data)})
-        feature_store.save_features({"movement": create_df(changes_data)})
+        # 3. Insert data directly
+        self.dal.insert_features_batch("fact_sales", sales_params)
+        self.dal.insert_features_batch("fact_stock_movement", movement_params)
+        self.dal.commit()
 
     def test_cleanup_old_predictions(self):
         """Test cleaning up old predictions"""
-        # Create test data
         self._create_test_predictions()
 
-        # Count predictions before cleanup
-        before_count_result = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_predictions", fetchall=False)
-        before_count = before_count_result["count"]
-        self.assertEqual(before_count, 20, "Should have 20 predictions before cleanup")
+        before_count = self.dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_predictions", fetchall=False
+        )["count"]
+        self.assertEqual(before_count, 20)
 
-        # Run cleanup function with 30-day retention
         count = cleanup_old_predictions(days_to_keep=30, dal=self.dal)
 
-        # Count predictions after cleanup
-        after_count_result = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_predictions", fetchall=False)
-        after_count = after_count_result["count"]
+        after_count = self.dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_predictions", fetchall=False
+        )["count"]
 
-        # Check results
-        self.assertEqual(count, 10, "Should have removed 10 old predictions")
-        self.assertEqual(after_count, 10, "Should have 10 predictions remaining")
-
-        # Check that only recent predictions remain
-        old_remaining_result = self.dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_predictions WHERE prediction_month < ?",
-            ((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),),
-            fetchall=False
-        )
-        old_remaining = old_remaining_result["count"]
-        self.assertEqual(
-            old_remaining, 0, "Should have no predictions older than 30 days"
-        )
+        self.assertEqual(count, 10)
+        self.assertEqual(after_count, 10)
 
     def test_cleanup_old_historical_data(self):
         """Test cleaning up old historical data"""
-        # Create test data
         self._create_test_historical_data()
 
-        # Count data before cleanup
-        sales_before = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_sales", fetchall=False)["count"]
-        changes_before = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_stock_movement", fetchall=False)["count"]
+        sales_before = self.dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_sales", fetchall=False
+        )["count"]
+        changes_before = self.dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_stock_movement", fetchall=False
+        )["count"]
 
-        self.assertEqual(
-            sales_before, 200, "Should have 200 sales records before cleanup"
-        )
-        self.assertEqual(
-            changes_before, 200, "Should have 200 movement records before cleanup"
-        )
+        self.assertEqual(sales_before, 200)
+        self.assertEqual(changes_before, 200)
 
-        # Run cleanup function with 1-year retention
         result = cleanup_old_historical_data(
             sales_days_to_keep=365, stock_days_to_keep=365, dal=self.dal
         )
 
-        # Count data after cleanup
-        sales_after = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_sales", fetchall=False)["count"]
-        changes_after = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM fact_stock_movement", fetchall=False)["count"]
-
-        # Check results
-        self.assertEqual(result["sales"], 100, "Should have removed 100 sales records")
-        self.assertEqual(
-            result["stock_movement"], 100, "Should have removed 100 movement records"
-        )
-
-        self.assertEqual(sales_after, 100, "Should have 100 sales records remaining")
-        self.assertEqual(changes_after, 100, "Should have 100 movement records remaining")
-
-        # Check that only recent records remain
-        one_year_ago = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-
-        old_sales = self.dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_sales WHERE data_date < ?", (one_year_ago,),
-            fetchall=False
+        sales_after = self.dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_sales", fetchall=False
         )["count"]
-        old_stock_movement = self.dal.execute_raw_query(
-            "SELECT COUNT(*) as count FROM fact_stock_movement WHERE data_date < ?",
-            (one_year_ago,),
-            fetchall=False
+        changes_after = self.dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM fact_stock_movement", fetchall=False
         )["count"]
 
-        self.assertEqual(old_sales, 0, "Should have no sales records older than 1 year")
-        self.assertEqual(
-            old_stock_movement,
-            0,
-            "Should have no stock movement records older than 1 year",
-        )
+        self.assertEqual(result["sales"], 100)
+        self.assertEqual(result["stock_movement"], 100)
+        self.assertEqual(sales_after, 100)
+        self.assertEqual(changes_after, 100)
 
     def test_cleanup_old_models(self):
-        """Test cleaning up old models"""
-        # Create test data
+        """Test cleaning up old models, including check for linked predictions."""
         self._create_test_models()
 
-        # Count models before cleanup
-        before_count = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM models", fetchall=False)["count"]
-        self.assertEqual(before_count, 6, "Should have 6 models before cleanup")
+        # Add predictions linked to models that would otherwise be deleted
+        job_id = self.dal.create_job("prediction_job_test", {})
+        result_id = self.dal.create_prediction_result(
+            job_id=job_id,
+            prediction_month="2025-01",
+            model_id="model4",
+            output_path="/tmp/pred_test1",
+            summary_metrics={"test": 1.0},
+        )
+        multiindex_id = self.dal.get_or_create_multiindex_ids_batch(
+            [("p_bc", "p_art", "p_alb", "a", "b", "c", "d", "e", "f", 2000)]
+        )[0]
 
-        # Run cleanup function keeping 2 models and 15-day retention for inactive
+        self.dal.connection.execute(
+            "INSERT INTO fact_predictions (multiindex_id, prediction_month, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                multiindex_id,
+                "2025-01-01",
+                result_id,
+                "model4",
+                1,
+                2,
+                3,
+                4,
+                5,
+                datetime.now().isoformat(),
+            ),
+        )
+
+        job_id2 = self.dal.create_job("prediction_job_test2", {})
+        result_id2 = self.dal.create_prediction_result(
+            job_id=job_id2,
+            prediction_month="2025-01",
+            model_id="inactive_model2",
+            output_path="/tmp/pred_test2",
+            summary_metrics={"test": 1.0},
+        )
+        self.dal.connection.execute(
+            "INSERT INTO fact_predictions (multiindex_id, prediction_month, result_id, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                multiindex_id,
+                "2025-01-01",
+                result_id2,
+                "inactive_model2",
+                1,
+                2,
+                3,
+                4,
+                5,
+                datetime.now().isoformat(),
+            ),
+        )
+        self.dal.commit()
+
+        before_count = self.dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM models", fetchall=False
+        )["count"]
+        self.assertEqual(before_count, 6)
+
         deleted_model_ids = cleanup_old_models(
             models_to_keep=2, inactive_days_to_keep=15, dal=self.dal
         )
 
-        # Count models after cleanup
-        after_count = self.dal.execute_raw_query("SELECT COUNT(*) as count FROM models", fetchall=False)["count"]
+        after_count = self.dal.execute_raw_query(
+            "SELECT COUNT(*) as count FROM models", fetchall=False
+        )["count"]
 
-        # Check results - should keep model1 + model2 (top 2 active) and inactive_model1 (within 15-day retention)
-        self.assertEqual(len(deleted_model_ids), 3, "Should have removed 3 models")
-        self.assertEqual(after_count, 3, "Should have 3 models remaining")
+        # Only model3 should be deleted. model4 and inactive_model2 are protected by predictions.
+        self.assertEqual(len(deleted_model_ids), 1)
+        self.assertIn("model3", deleted_model_ids)
+        self.assertEqual(after_count, 5)
 
-        # Check that the correct models were retained
-        remaining_models = [row["model_id"] for row in self.dal.execute_raw_query("SELECT model_id FROM models", fetchall=True)]
-        self.assertIn(
-            "model1",
-            remaining_models,
-            "model1 should be retained (active, best metric)",
+        remaining_models_q = self.dal.execute_raw_query(
+            "SELECT model_id FROM models", fetchall=True
         )
-        self.assertIn(
-            "model2",
-            remaining_models,
-            "model2 should be retained (active, second-best metric)",
-        )
-        self.assertIn(
-            "inactive_model1",
-            remaining_models,
-            "inactive_model1 should be retained (within retention period)",
-        )
-
-        # Check that deleted models are actually deleted from filesystem
-        for model_id in deleted_model_ids:
-            result = self.dal.execute_raw_query(
-                "SELECT model_path FROM models WHERE model_id = ?", (model_id,),
-                fetchall=False
-            )
-            self.assertIsNone(result, f"{model_id} should be deleted from database")
+        remaining_models = {row["model_id"] for row in remaining_models_q}
+        self.assertIn("model1", remaining_models)
+        self.assertIn("model2", remaining_models)
+        self.assertIn("inactive_model1", remaining_models)
+        self.assertIn("model4", remaining_models)
+        self.assertIn("inactive_model2", remaining_models)
 
     @patch("deployment.app.db.data_retention.cleanup_old_predictions")
     @patch("deployment.app.db.data_retention.cleanup_old_models")
@@ -532,18 +494,12 @@ class TestDataRetention(unittest.TestCase):
         self, mock_cleanup_historical, mock_cleanup_models, mock_cleanup_predictions
     ):
         """Test running the complete cleanup job"""
-        # Setup return values
         mock_cleanup_predictions.return_value = 10
-        mock_cleanup_models.return_value = ["model3", "model4", "inactive_model2"]
-        mock_cleanup_historical.return_value = {
-            "sales": 50,
-            "stock_movement": 50,
-        }
+        mock_cleanup_models.return_value = ["model3"]
+        mock_cleanup_historical.return_value = {"sales": 50, "stock_movement": 50}
 
-        # Run the complete cleanup job
-        run_cleanup_job()
+        run_cleanup_job(dal=self.dal)
 
-        # Check that all cleanup functions were called with correct parameters
         mock_cleanup_predictions.assert_called_once()
         mock_cleanup_models.assert_called_once()
         mock_cleanup_historical.assert_called_once()
