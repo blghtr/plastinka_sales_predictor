@@ -890,7 +890,29 @@ def save_predictions_to_db(
     try:
         # Load predictions from CSV
         try:
-            df = pd.read_csv(predictions_path)
+            df = pd.read_csv(
+                predictions_path, 
+                dtype={'barcode': object}             
+            )
+            num_cols = df.select_dtypes(include="number").columns
+            int_cols = list(num_cols[:3])
+            float_cols = list(num_cols[3:])
+
+            df.loc[:, int_cols] = (
+                df.loc[:, int_cols]
+                .fillna(0)
+                .round(0)
+                .astype("int64")
+            )
+
+            df.loc[:, float_cols] = (
+                df
+                .loc[:, float_cols]
+                .fillna(0)
+                .round(2)
+                .astype("float64")
+            )
+            
         except (pd.errors.ParserError, UnicodeDecodeError) as e:
             raise ValueError(f"Invalid predictions file format: {e}")
 

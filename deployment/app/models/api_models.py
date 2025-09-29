@@ -2,12 +2,111 @@ import json
 from datetime import date, datetime
 from enum import Enum
 from typing import Any, Optional
+from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
+
+import numpy as np
 
 from fastapi import Form
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class YandexCloudToken(BaseModel):
+# --- Rounding Utilities -------------------------------------------------------
+
+def _digit_at(decimal_value: Decimal, position: int) -> int:
+    """Return the digit at the given fractional position (1-based) as integer.
+
+    Position 1 => first digit after decimal point, Position 2 => second, etc.
+    Works with absolute value; sign is ignored.
+    """
+    d = decimal_value.copy_abs()
+    scaled = d * (Decimal(10) ** position)
+    integer_part = scaled.quantize(Decimal('1'), rounding=ROUND_DOWN)
+    return int(integer_part % 10)
+
+
+def _has_fraction(decimal_value: Decimal) -> bool:
+    return decimal_value != decimal_value.quantize(Decimal('1'))
+
+
+def _choose_precision(decimal_value: Decimal) -> int:
+    """Choose rounding precision per spec:
+    - If 3rd decimal digit is non-zero -> 3 decimals
+    - Else round to nearest non-zero digit to the left among first two decimals
+      (2 if second non-zero, else 1 if first non-zero)
+    - Else (first three decimals are zeros) -> round to the first non-zero digit
+      to the right starting from 4th position; if none -> 0 decimals.
+    """
+    d = decimal_value
+    # Integers or exact decimals without fractional part
+    if not _has_fraction(d.copy_abs()):
+        return 0
+
+    if _digit_at(d, 3) != 0:
+        return 3
+    if _digit_at(d, 2) != 0:
+        return 2
+    if _digit_at(d, 1) != 0:
+        return 1
+
+    # Find first non-zero beyond 3rd, cap search to avoid infinite loops
+    for pos in range(4, 28):  # 28 matches Decimal default precision upper bound
+        if _digit_at(d, pos) != 0:
+            return pos
+    return 0
+
+
+def _quantize_to_precision(decimal_value: Decimal, precision: int) -> Decimal:
+    if precision <= 0:
+        quant = Decimal('1')
+    else:
+        quant = Decimal('1').scaleb(-precision)  # 10**(-precision)
+    return decimal_value.quantize(quant, rounding=ROUND_HALF_UP)
+
+
+def _round_scalar(value: Any) -> Any:
+    # Preserve original types where possible (Decimal stays Decimal)
+    if isinstance(value, Decimal):
+        precision = _choose_precision(value)
+        return _quantize_to_precision(value, precision)
+    if isinstance(value, (np.floating, float)):
+        d = Decimal(str(float(value)))
+        precision = _choose_precision(d)
+        return float(_quantize_to_precision(d, precision))
+    return value
+
+
+def _round_structure(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _round_structure(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_round_structure(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_round_structure(v) for v in value)
+    if isinstance(value, np.ndarray):
+        # Apply element-wise while preserving shape
+        vectorized = np.vectorize(_round_scalar, otypes=[float])
+        try:
+            return vectorized(value)
+        except Exception:
+            # Fallback: leave as-is if dtype/objects are incompatible
+            return value
+    # Do not alter pydantic models themselves here
+    return _round_scalar(value)
+
+
+class FloatRoundingBaseModel(BaseModel):
+    """Base model that applies post-validation rounding per project spec."""
+
+    @model_validator(mode="after")
+    def _apply_rounding(self):
+        for field_name in self.__class__.model_fields:
+            current_value = getattr(self, field_name)
+            rounded_value = _round_structure(current_value)
+            setattr(self, field_name, rounded_value)
+        return self
+
+
+class YandexCloudToken(FloatRoundingBaseModel):
     """Model for Yandex Cloud OAuth token with validation."""
     token: str = Field(..., pattern=r"^y[0-3]_[a-zA-Z0-9_-]+$", description="Yandex Cloud OAuth token")
 
@@ -32,7 +131,7 @@ class JobType(str, Enum):
     TUNING = "tuning"
 
 
-class JobResponse(BaseModel):
+class JobResponse(FloatRoundingBaseModel):
     """Response model for job creation"""
 
     job_id: str
@@ -41,7 +140,7 @@ class JobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class JobDetails(BaseModel):
+class JobDetails(FloatRoundingBaseModel):
     """Detailed job information"""
 
     job_id: str
@@ -56,7 +155,7 @@ class JobDetails(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class JobsList(BaseModel):
+class JobsList(FloatRoundingBaseModel):
     """List of jobs"""
 
     jobs: list[JobDetails]
@@ -77,7 +176,7 @@ class DataUploadResponse(JobResponse):
 # Training Models
 
 
-class ModelConfig(BaseModel):
+class ModelConfig(FloatRoundingBaseModel):
     """Neural network model configuration"""
 
     num_encoder_layers: int = Field(2, description="Number of encoder layers", gt=0)
@@ -110,7 +209,7 @@ class ModelConfig(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class OptimizerConfig(BaseModel):
+class OptimizerConfig(FloatRoundingBaseModel):
     """Optimizer configuration"""
 
     lr: float = Field(4.616, description="Learning rate", gt=0)
@@ -119,7 +218,7 @@ class OptimizerConfig(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class LRSchedulerConfig(BaseModel):
+class LRSchedulerConfig(FloatRoundingBaseModel):
     """Learning rate scheduler configuration"""
 
     T_0: int = Field(
@@ -132,7 +231,7 @@ class LRSchedulerConfig(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class TrainingDatasetConfig(BaseModel):
+class TrainingDatasetConfig(FloatRoundingBaseModel):
     """Training dataset configuration"""
 
     alpha: float = Field(2.556, description="Alpha config value for training", gt=0)
@@ -141,17 +240,17 @@ class TrainingDatasetConfig(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class SWAConfig(BaseModel):
+class SWAConfig(FloatRoundingBaseModel):
     """Stochastic Weight Averaging configuration"""
 
     swa_lrs: float = Field(0.0001, description="SWA learning rate", gt=0)
-    swa_epoch_start: float = Field(65, description="Epoch to start SWA", ge=0)
+    swa_epoch_start: float = Field(0.6, description="Epoch to start SWA", ge=0)
     annealing_epochs: int = Field(45, description="Number of annealing epochs", gt=0)
 
     model_config = ConfigDict(from_attributes=True)
 
 
-class WeightsConfig(BaseModel):
+class WeightsConfig(FloatRoundingBaseModel):
     """Model weights configuration"""
 
     sigma_left: float = Field(0.754, description="Left sigma config value", gt=0)
@@ -160,13 +259,12 @@ class WeightsConfig(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class TrainingConfig(BaseModel):
+class TrainingConfig(FloatRoundingBaseModel):
     """Configuration for training job"""
 
     nn_model_config: ModelConfig = Field(
         default_factory=ModelConfig, description="Neural network model configuration"
     )
-
     optimizer_config: OptimizerConfig = Field(
         default_factory=OptimizerConfig, description="Optimizer configuration"
     )
@@ -192,16 +290,14 @@ class TrainingConfig(BaseModel):
         description="ID of the model to use for training"
     )
 
-
     @model_validator(mode='before')
     @classmethod
-    def _handle_model_config_alias(cls, data: Any) -> Any:
+    def _handle_model_config_alias(cls, data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(data, dict) and 'model_config' in data:
             if 'nn_model_config' in data:
                 raise ValueError("Cannot provide both 'model_config' and 'nn_model_config'")
             data['nn_model_config'] = data.pop('model_config')
         return data
-
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -215,7 +311,7 @@ class TrainingResponse(JobResponse):
 
 # Prediction Models
 
-class PredictionParams(BaseModel):
+class PredictionParams(FloatRoundingBaseModel):
     """Config for prediction job"""
 
     model_id: str = Field(..., description="ID of the model to use for prediction")
@@ -235,16 +331,13 @@ class PredictionResponse(JobResponse):
     pass
 
 
-# Report Models
-
-
 class ReportType(str, Enum):
     """Enum for report types"""
 
     PREDICTION_REPORT = "prediction_report"
 
 
-class ReportParams(BaseModel):
+class ReportParams(FloatRoundingBaseModel):
     """Parameters for prediction report job"""
 
     report_type: ReportType = Field(
@@ -266,7 +359,7 @@ class ReportParams(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class TrainingParams(BaseModel):
+class TrainingParams(FloatRoundingBaseModel):
     """Parameters for a training job."""
 
     dataset_start_date: date | None = Field(
@@ -284,7 +377,7 @@ class TrainingParams(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-class TuningParams(BaseModel):
+class TuningParams(FloatRoundingBaseModel):
     """Parameters for a tuning job."""
 
     dataset_start_date: date | None = Field(
@@ -314,7 +407,7 @@ class TuningParams(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-class ReportResponse(BaseModel):
+class ReportResponse(FloatRoundingBaseModel):
     """Response model for report generation"""
 
     report_type: str = Field(..., description="Type of report generated")
@@ -334,7 +427,7 @@ class ReportResponse(BaseModel):
 # --- API Models for Model/Parameter Set Management ---
 
 
-class ConfigResponse(BaseModel):
+class ConfigResponse(FloatRoundingBaseModel):
     """Response model for config information"""
 
     config_id: str
@@ -345,7 +438,7 @@ class ConfigResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class TrainingResultResponse(BaseModel):
+class TrainingResultResponse(FloatRoundingBaseModel):
     """Response model for a single training result"""
 
     result_id: str
@@ -359,7 +452,7 @@ class TrainingResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class TuningResultResponse(BaseModel):
+class TuningResultResponse(FloatRoundingBaseModel):
     """Response model for a single tuning result"""
 
     result_id: str
@@ -372,7 +465,7 @@ class TuningResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class ModelResponse(BaseModel):
+class ModelResponse(FloatRoundingBaseModel):
     """Response model for model information"""
 
     model_id: str
@@ -385,13 +478,13 @@ class ModelResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class DeleteIdsRequest(BaseModel):
+class DeleteIdsRequest(FloatRoundingBaseModel):
     """Request model for deleting items by a list of IDs"""
 
     ids: list[str]
 
 
-class DeleteResponse(BaseModel):
+class DeleteResponse(FloatRoundingBaseModel):
     """Response model for bulk delete operations"""
 
     successful: int
@@ -399,14 +492,14 @@ class DeleteResponse(BaseModel):
     errors: list[str] = []
 
 
-class ConfigCreateRequest(BaseModel):
+class ConfigCreateRequest(FloatRoundingBaseModel):
     """Request model for creating a config"""
 
     json_payload: dict[str, Any] = Field(..., description="Config dictionary")
     is_active: bool | None = Field(False, description="Set as active after creation")
 
 
-class ModelCreateRequest(BaseModel):
+class ModelCreateRequest(FloatRoundingBaseModel):
     """Request model for creating a model record"""
 
     model_id: str = Field(..., description="Unique model identifier")
@@ -417,7 +510,7 @@ class ModelCreateRequest(BaseModel):
     created_at: str | None = Field(None, description="Creation timestamp (ISO format)")
 
 
-class ModelUploadMetadata(BaseModel):
+class ModelUploadMetadata(FloatRoundingBaseModel):
     """Metadata for uploaded models."""
     description: str | None = Field(None, description="A brief description of the model.")
     version: str | None = Field(None, description="Version of the model.")
@@ -445,7 +538,7 @@ class ModelUploadMetadata(BaseModel):
         )
 
 
-class DataUploadFormParameters(BaseModel):
+class DataUploadFormParameters(FloatRoundingBaseModel):
     """Form parameters for data upload."""
     overwrite: bool | None = Field(False, description="Whether to overwrite existing features.")
     @classmethod
@@ -456,7 +549,7 @@ class DataUploadFormParameters(BaseModel):
         return cls(overwrite=overwrite)
 
 
-class ErrorDetailResponse(BaseModel):
+class ErrorDetailResponse(FloatRoundingBaseModel):
     """Standardized error response model."""
 
     message: str = Field(..., description="A human-readable error message.")

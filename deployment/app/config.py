@@ -591,6 +591,12 @@ class AppSettings(BaseSettings):
         description="Maximum upload size in bytes",
     )
 
+    # Data processing behavior
+    fill_missing_days: bool = Field(
+        default=True,
+        description="If true, patch trailing missing days at end of month during data processing",
+    )
+
     # SQLite configuration
     sqlite_max_variables: int = Field(
         default=900,

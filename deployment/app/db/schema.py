@@ -217,6 +217,8 @@ CREATE TABLE IF NOT EXISTS retry_events (
 CREATE INDEX IF NOT EXISTS idx_multiindex_barcode ON dim_multiindex_mapping(barcode);
 CREATE INDEX IF NOT EXISTS idx_multiindex_artist_album ON dim_multiindex_mapping(artist, album);
 CREATE INDEX IF NOT EXISTS idx_multiindex_style ON dim_multiindex_mapping(style);
+CREATE INDEX IF NOT EXISTS idx_multiindex_multiindex_id ON dim_multiindex_mapping(multiindex_id);
+
 
 CREATE INDEX IF NOT EXISTS idx_sales_date ON fact_sales(data_date);
 CREATE INDEX IF NOT EXISTS idx_movement_date ON fact_stock_movement(data_date);

@@ -120,19 +120,12 @@ class SQLFeatureStore:
             index_elems
             .itertuples(index=False, name=None)
         )
-        # Normalize tuple components to str for consistent identity
-        id_map = self._dal.get_or_create_multiindex_ids_batch(
+
+        features_data.loc[:, 'multiindex_id'] = self._dal.get_or_create_multiindex_ids_batch(
             list(unique_tuples)
         )
-        features_data = features_data.copy()  # Avoid SettingWithCopyWarning
-        features_data['multiindex_id'] = (
-            index_elems
-            .astype(str)
-            .agg(tuple, axis=1)
-            .map(id_map)
-        )
-        features_data['data_date'] = features_data['_date'].dt.strftime('%Y-%m-%d')
-        features_data['created_at'] = datetime.now().isoformat()
+        features_data.loc[:, 'data_date'] = features_data['_date'].dt.strftime('%Y-%m-%d')
+        features_data.loc[:, 'created_at'] = datetime.now().isoformat()
         features_data = features_data.drop(columns=['_date'])
 
         # 4. Form data for insertion
@@ -239,17 +232,14 @@ class SQLFeatureStore:
             df = df.loc[~df.index.duplicated(keep='first')]
             # Normalize tuples to strings for consistent identity mapping
             original_unique_tuples = df.index.to_list()
-            normalized_unique_tuples = [
-                tuple(str(value) for value in tuple_values)
-                for tuple_values in original_unique_tuples
-            ]
-            id_map = self._dal.get_or_create_multiindex_ids_batch(
-                normalized_unique_tuples
+
+            multiindex_id = (
+                self
+                ._dal
+                .get_or_create_multiindex_ids_batch(
+                    original_unique_tuples
+                )
             )
-            multiindex_id = [
-                id_map.get(tuple(str(value) for value in tuple_values))
-                for tuple_values in original_unique_tuples
-            ]
 
             if not isinstance(df.columns, pd.DatetimeIndex) and not is_time_agnostic:
                 logger.warning(
@@ -300,7 +290,6 @@ class SQLFeatureStore:
                 logger.info(f"Saved {len(params_list)} records to {table}")
             else:
                 logger.warning(f"No data to save for {feature_type}")
-
 
     def _convert_to_int(self, value: Any, default: int = 0) -> int:
         """Safely convert any value to integer with proper handling of np.float64."""
@@ -387,11 +376,11 @@ class SQLFeatureStore:
         # 2. Get attributes for all collected IDs in one batch
         # Convert numpy types to Python int to avoid SQLite type issues
         ids_list = [int(id_val) for id_val in all_multiindex_ids if id_val is not None]
-        mapping_data = self._dal.get_multiindex_mapping_by_ids(ids_list)
-        if not mapping_data:
+        multiindex_tuples = self._dal.get_multiindex_mapping_by_ids(ids_list)
+        if not multiindex_tuples:
             logger.error("Could not retrieve multi-index mapping for any of the found IDs.")
             return {}
-        attributes_df = pd.DataFrame(mapping_data, dtype=str)
+        attributes_df = pd.DataFrame(multiindex_tuples, dtype=str)
 
         # 3. & 4. Format each group according to its config
         final_features = {}
@@ -448,7 +437,7 @@ class SQLFeatureStore:
 
         if output_format == "flat":
             # For 'flat' format, the enriched DataFrame is the result.
-            enriched_df = enriched_df.drop(columns=['multiindex_id'])
+            # enriched_df = enriched_df.drop(columns=['multiindex_id'])
             result[group_name] = enriched_df.fillna(0)
             logger.info(f"Formatted '{group_name}' as a flat DataFrame with {len(enriched_df)} rows.")
 

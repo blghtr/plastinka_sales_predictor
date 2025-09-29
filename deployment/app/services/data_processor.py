@@ -52,6 +52,7 @@ async def process_data_files(
             stock_path=str(stock_path),
             sales_path=str(sales_dir_path),
             bins=settings.price_category_interval_index,
+            fill_missing_days=settings.fill_missing_days,
         )
 
         dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=80)
@@ -88,6 +89,7 @@ async def process_data_files(
         dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=str(e))
         # Re-raise for logging
         raise
+    
     finally:
         # Clean up temporary files
         if temp_dir.exists():

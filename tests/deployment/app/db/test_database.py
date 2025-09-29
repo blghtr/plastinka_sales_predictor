@@ -25,7 +25,6 @@ import pytest
 
 from deployment.app.db.database import (
     DatabaseError,
-    adjust_dataset_boundaries,
     create_data_upload_result,
     create_job,
     create_model_record,
@@ -40,12 +39,9 @@ from deployment.app.db.database import (
     generate_id,
     get_active_config,
     get_active_model,
-    get_best_config_by_metric,
     get_db_connection,
-    get_effective_config,
     get_feature_dataframe,
     get_job,
-    get_top_configs,
     get_training_results,
     get_tuning_results,
     list_jobs,
@@ -53,6 +49,8 @@ from deployment.app.db.database import (
     set_model_active,
     update_job_status,
     update_processing_run,
+    get_or_create_multiindex_ids_batch,
+    get_multiindex_mapping_by_ids,
 )
 
 # =============================================
@@ -359,7 +357,7 @@ def test_get_active_config(in_memory_db, sample_config):
 def test_set_config_active(in_memory_db, sample_config):
     """Test setting a config as active"""
     config_id1 = create_or_get_config(sample_config, connection=in_memory_db._connection)
-    config_id2 = create_or_get_config({"a":1}, connection=in_memory_db._connection)
+    create_or_get_config({"a": 1}, connection=in_memory_db._connection)
     set_config_active(config_id1, connection=in_memory_db._connection)
     active = get_active_config(in_memory_db._connection)
     assert active["config_id"] == config_id1
@@ -449,8 +447,6 @@ def test_create_and_update_processing_run(in_memory_db):
 def test_get_feature_dataframe(in_memory_db):
     """Test the generic get_feature_dataframe function."""
     conn = in_memory_db._connection
-    from deployment.app.db.database import get_feature_dataframe
-
     # 1. Setup data
     try:
         conn.execute("INSERT INTO dim_multiindex_mapping (multiindex_id, barcode, artist, album, cover_type, price_category, release_type, recording_decade, release_decade, style, recording_year) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -503,3 +499,58 @@ def test_get_feature_dataframe(in_memory_db):
             columns=["value; DROP TABLE users"],
             connection=conn
         )
+
+
+def test_multiindex_batch_order_and_inverse(in_memory_db):
+    """Batch function preserves order and reverse mapping is aligned."""
+    conn = in_memory_db._connection
+
+    tuples = [
+        ("bc1", "art1", "alb1", "ct1", "pc1", "rt1", "rd1", "reld1", "st1", 2001),
+        ("bc2", "art2", "alb2", "ct2", "pc2", "rt2", "rd2", "reld2", "st2", 2002),
+        ("bc3", "art3", "alb3", "ct3", "pc3", "rt3", "rd3", "reld3", "st3", 2003),
+    ]
+
+    ids = get_or_create_multiindex_ids_batch(tuples, connection=conn)
+    assert isinstance(ids, tuple)
+    assert len(ids) == len(tuples)
+
+    # Call again to exercise existing rows path; must return same ids, same order
+    ids_again = get_or_create_multiindex_ids_batch(tuples, connection=conn)
+    assert ids_again == ids
+
+    # Reverse mapping should align with ids order
+    mappings = get_multiindex_mapping_by_ids(list(ids), connection=conn)
+    assert len(mappings) == len(ids)
+
+    # Verify each mapping corresponds to the input tuple by order
+    for idx, mid in enumerate(ids):
+        m = mappings[idx]
+        # Ensure id matches
+        assert int(m["multiindex_id"]) == int(mid)
+        # Ensure all attributes match string-normalized values
+        exp = tuples[idx]
+        assert (
+            m["barcode"], m["artist"], m["album"], m["cover_type"], m["price_category"],
+            m["release_type"], m["recording_decade"], m["release_decade"], m["style"], str(m["recording_year"])
+        ) == tuple(map(str, exp))
+
+
+def test_multiindex_batch_handles_duplicates_by_position(in_memory_db):
+    """If duplicates are present in input, positions must be preserved in output ids."""
+    conn = in_memory_db._connection
+    base = ("bcD", "artD", "albD", "ctD", "pcD", "rtD", "rdD", "reldD", "stD", 1999)
+    tuples = [base, base, base]
+
+    ids = get_or_create_multiindex_ids_batch(tuples, connection=conn)
+    assert len(ids) == 3
+    # All ids should be equal and correspond to the same mapping, repeated by position
+    assert ids[0] == ids[1] == ids[2]
+
+    mappings = get_multiindex_mapping_by_ids(list(ids), connection=conn)
+    assert len(mappings) == 3
+    for m in mappings:
+        assert (
+            m["barcode"], m["artist"], m["album"], m["cover_type"], m["price_category"],
+            m["release_type"], m["recording_decade"], m["release_decade"], m["style"], str(m["recording_year"])
+        ) == tuple(map(str, base))

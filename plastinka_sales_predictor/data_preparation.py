@@ -593,7 +593,8 @@ class PlastinkaTrainingTSDataset(PlastinkaBaseTSDataset, TorchTrainingDataset):
 
 class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        save_dir = kwargs.pop("save_dir", None)
+        super().__init__(*args, save_dir=None, **kwargs)
         self._allow_empty_stock = True # This flag was part of the original training dataset but makes sense for inference too
 
         # --- Restore padding logic directly in __init__ for inference dataset ---
@@ -621,9 +622,10 @@ class PlastinkaInferenceTSDataset(PlastinkaBaseTSDataset, TorchInferenceDataset)
 
         self.reset_window()
 
-        if self.save_dir is not None:
-            logger.info(f"Saving inference dataset to {self.save_dir}/{self.dataset_name}.dill")
-            self.save(self.save_dir, self.dataset_name)
+        if save_dir is not None:
+            self.save_dir = save_dir
+            logger.info(f"Saving inference dataset to {save_dir}/{self.dataset_name}.dill")
+            self.save(save_dir, self.dataset_name)
 
     def __getitem__(self, idx):
         (array_index, start_index, end_index) = self._project_index(idx)
@@ -1461,11 +1463,11 @@ def _process_grouped_df(
 
     sales_pivot = sold_aligned.unstack(
         level='_date'
-    ).fillna(0).astype(int)
+    ).fillna(0).astype(int).sort_index(axis=1)
     
     movement_pivot = movements.unstack(
         level='_date'
-    ).fillna(0).astype(int)
+    ).fillna(0).astype(int).sort_index(axis=1)
 
     return sales_pivot, movement_pivot, prices
 
@@ -1585,6 +1587,94 @@ def _calculate_lost_sales(
     return lost_sales
 
 
+def _patch_censored_sales(
+        sales: pd.DataFrame,
+        masked_mean_sales_items: pd.Series
+) -> pd.DataFrame:
+    """Patch only trailing missing days at the end of month.
+
+    - Consider only consecutive missing days from the end of the month (tail gaps).
+    - Do not compensate for inner gaps within the month.
+    - Add the entire missing total to the last calendar day of the month.
+    """
+    if not isinstance(sales.columns, pd.DatetimeIndex):
+        raise ValueError("sales must have a DatetimeIndex on columns")
+
+    # Identify month boundaries using existing sales columns
+    month_period = sales.columns[0].to_period('M')
+    month_start = month_period.start_time.normalize()
+    month_end = month_period.to_timestamp(how='end').normalize()
+
+    # If already has the last day of month, nothing to patch
+    if month_end in sales.columns:
+        return sales.fillna(0).astype(int).sort_index(axis=1)
+
+    # Compute trailing missing count only
+    last_present_day = sales.columns.max()
+    if last_present_day < month_start:
+        # Degenerate case: no days for the month — nothing to patch
+        return sales.fillna(0).astype(int).sort_index(axis=1)
+
+    trailing_missing_count = (month_end - last_present_day).days
+    if trailing_missing_count <= 0:
+        return sales.fillna(0).astype(int).sort_index(axis=1)
+
+    # Align monthly averages with sales index (per item)
+    monthly_avg = (
+        masked_mean_sales_items
+        .reindex(sales.index)
+        .fillna(0)
+        .clip(lower=0)
+    )
+
+    missing_sales_total = monthly_avg * trailing_missing_count
+    missing_sales_rounded = np.round(missing_sales_total).astype(int)
+
+    patched = sales.fillna(0).astype(int)
+    if month_end not in patched.columns:
+        patched[month_end] = 0
+    patched.loc[:, month_end] = (patched.loc[:, month_end] + missing_sales_rounded).astype(int)
+
+    return patched.sort_index(axis=1)
+
+
+def _check_results(
+        sales: pd.DataFrame,
+        masked_mean_sales_items: pd.Series,
+        month_date: pd.Timestamp,
+        fill_missing_days: bool,
+) -> pd.DataFrame:
+    """Ensure month completeness for sales.
+
+    - If last available day equals the month's last day, return normalized sales.
+    - If month is incomplete and fill_missing_days is True, patch trailing days.
+    - If month is incomplete and fill_missing_days is False, return empty DataFrame
+      with the same row index so aggregation can skip it.
+    """
+    try:
+        if not isinstance(sales, pd.DataFrame) or not isinstance(sales.columns, pd.DatetimeIndex):
+            return sales
+
+        if sales.empty or sales.columns.size == 0:
+            return sales
+
+        month_end = month_date.to_period('M').to_timestamp(how='end').normalize()
+
+        # Month complete
+        if month_end in sales.columns:
+            return sales.fillna(0).astype(int).sort_index(axis=1)
+
+        # Month incomplete
+        if fill_missing_days:
+            return _patch_censored_sales(sales, masked_mean_sales_items)
+        else:
+            return pd.DataFrame(index=sales.index)
+    except Exception as e:
+        logger.error(f"Error in _check_results: {e}", exc_info=True)
+        # Fail-safe: return original sales
+        return sales
+
+
 def _gather_base_features(
         base_features_lists: dict[str, list[pd.Series | pd.DataFrame]],
     ) -> dict[str, pd.Series | pd.DataFrame]:
@@ -1609,6 +1699,7 @@ def _gather_base_features(
             )
             .agg('sum')
             .fillna(0)
+            .sort_index(axis=1)
         )
     
     def _get_correct_processing_fn(
@@ -1627,7 +1718,7 @@ def _gather_base_features(
             feature_df = pd.concat(
                 feature_list, 
                 axis=1,
-            )
+            ).sort_index(axis=1)
             processing_fn = _get_correct_processing_fn(feature_df)
             base_features_dict[feature_name] = processing_fn(feature_df)
     return base_features_dict
@@ -1654,6 +1745,13 @@ def run_data_processing_pipeline(config: dict, initial_inputs: dict) -> dict:
         if not isinstance(results, tuple):
             results = (results,)
         for name, value in zip(output_names, results):
+            # Filter out empty DataFrames/Series so they don't pollute artifact pool
+            try:
+                is_empty_df = hasattr(value, 'empty') and bool(getattr(value, 'empty'))
+                if is_empty_df:
+                    continue
+            except Exception:
+                pass
             artifact_pool[name] = value
 
     # --- 1. Init Stage ---
@@ -1730,7 +1828,8 @@ def process_data(
     sales_path: str, 
     bins: pd.IntervalIndex | None = None,
     base_features_names: list[str] = [],
-    report_features_names: list[str] = []
+    report_features_names: list[str] = [],
+    fill_missing_days: bool = True,
 ) -> dict[str, pd.DataFrame]:
     if not base_features_names:
         base_features_names = BASE_FEATURES_DEFAULT
@@ -1741,6 +1840,7 @@ def process_data(
         'stock_path': stock_path,
         'sales_path': sales_path,
         'bins': bins,
+        'fill_missing_days': fill_missing_days,
         'all_keys': ["created_date", "sold_date", *GROUP_KEYS],
         'group_keys': ["created_date", "sold_date", *GROUP_KEYS],
         'keys_no_dates': GROUP_KEYS,
@@ -1837,6 +1937,11 @@ UNIFIED_PIPELINE_CONFIG = {
             'inputs': ['availability_mask', 'masked_mean_sales_rub'],
             'outputs': ['lost_sales']
         }),
+        ('_check_results', {
+            'func': _check_results,
+            'inputs': ['sales', 'masked_mean_sales_items', 'month_date', 'fill_missing_days'],
+            'outputs': ['sales']
+        })
     ]),
     'closure': OrderedDict([
         ('_pack_outputs', {

@@ -44,7 +44,6 @@ from deployment.app.db.database import (
     get_job_prediction_month,
     get_latest_prediction_month,
     get_next_prediction_month,
-    get_or_create_multiindex_id,
     get_prediction_result,
     get_prediction_results_by_month,
     get_predictions,
@@ -327,11 +326,6 @@ class DataAccessLayer:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return update_processing_run(run_id, status, end_time, self._connection)
 
-    @transaction_required
-    def get_or_create_multiindex_id(self, barcode: str, artist: str, album: str, cover_type: str, price_category: str, release_type: str, recording_decade: str, release_decade: str, style: str, recording_year: int) -> int:
-        self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
-        return get_or_create_multiindex_id(barcode, artist, album, cover_type, price_category, release_type, recording_decade, release_decade, style, recording_year, self._connection)
-
     def get_configs(self, limit: int = 5) -> list[dict[str, Any]]:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return get_configs(limit, self._connection)
@@ -382,6 +376,7 @@ class DataAccessLayer:
         return fetch_recent_retry_events(limit, self._connection)
 
     # Admin-only operations - require ADMIN role
+    @transaction_required
     def execute_raw_query(self, query: str, params: tuple = (), fetchall: bool = False) -> list[dict] | dict | None:
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         return execute_query(query, connection=self._connection, params=params, fetchall=fetchall)
@@ -490,13 +485,13 @@ class DataAccessLayer:
         return get_multiindex_mapping_batch(tuples_to_process, self._connection)
 
     @transaction_required
-    def get_or_create_multiindex_ids_batch(self, tuples_to_process: list[tuple]) -> dict[tuple, int]:
+    def get_or_create_multiindex_ids_batch(self, tuples_to_process: list[tuple]) -> tuple[int, ...]:
         """Get or create multiindex IDs for a batch of tuples."""
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         from deployment.app.db.database import get_or_create_multiindex_ids_batch
         return get_or_create_multiindex_ids_batch(tuples_to_process, self._connection)
 
-    def get_multiindex_mapping_by_ids(self, multiindex_ids: list[int]) -> list[dict]:
+    def get_multiindex_mapping_by_ids(self, multiindex_ids: list[int]) -> list[tuple[int, ...]]:
         """Get multiindex mapping data by IDs."""
         self._authorize([UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM])
         from deployment.app.db.database import get_multiindex_mapping_by_ids

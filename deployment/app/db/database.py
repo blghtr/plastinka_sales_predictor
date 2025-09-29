@@ -128,6 +128,16 @@ def get_db_connection(
 
         current_db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(current_db_path), check_same_thread=False)
+        # Improve concurrency and reduce lock contention
+        try:
+            conn.execute("PRAGMA journal_mode=WAL;")
+        except Exception:
+            # If WAL not supported (very rare), continue
+            pass
+        try:
+            conn.execute("PRAGMA busy_timeout=5000;")  # 5s
+        except Exception:
+            pass
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.row_factory = dict_factory
         return conn
@@ -137,13 +147,37 @@ def get_db_connection(
             f"Database connection failed: {str(e)}", original_error=e
         ) from e
 
-
-
-
-
 def dict_factory(cursor, row):
     """Convert row to dictionary"""
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+
+def _db_should_give_up(exception: Exception) -> bool:
+    """Decide when DB retries should give up (non-retryable errors).
+
+    Give up on integrity/programming errors (e.g., constraint failures, syntax),
+    keep retrying on transient operational issues like 'database is locked'.
+    """
+    try:
+        from sqlite3 import IntegrityError, ProgrammingError, OperationalError
+        if isinstance(exception, DatabaseError):
+            orig = getattr(exception, "original_error", None)
+            msg = (str(exception) or "").lower()
+            if isinstance(orig, IntegrityError) or "constraint failed" in msg:
+                return True
+            if isinstance(orig, ProgrammingError) or "syntax error" in msg or "no such table" in msg:
+                return True
+            # For OperationalError we may retry unless it's clearly non-transient
+            if isinstance(orig, OperationalError):
+                # Retry on 'database is locked'; give up on others like 'readonly'
+                if "database is locked" in str(orig).lower():
+                    return False
+                if "readonly" in str(orig).lower():
+                    return True
+        return False
+    except Exception:
+        # Be conservative
+        return False
 
 
 @retry_with_backoff(
@@ -151,7 +185,7 @@ def dict_factory(cursor, row):
     base_delay=1.0, 
     max_delay=10.0, 
     component="database_query",
-    giveup_func=lambda e: isinstance(e, TypeError)
+    giveup_func=_db_should_give_up
 )
 def execute_query(
     query: str,
@@ -224,7 +258,7 @@ def execute_query(
         pass
 
 
-@retry_with_backoff(max_tries=3, base_delay=1.0, max_delay=10.0, component="database_batch")
+@retry_with_backoff(max_tries=3, base_delay=1.0, max_delay=10.0, component="database_batch", giveup_func=_db_should_give_up)
 def execute_many(
     query: str,
     params_list: list[tuple],
@@ -1280,36 +1314,52 @@ def insert_predictions(
 ):
     def _insert_predictions_operation(conn_to_use: sqlite3.Connection):
         timestamp = datetime.now().isoformat()
-        predictions_data = []
-
-        for _, row in df.iterrows():
-            multiindex_id = get_or_create_multiindex_id(
-                barcode=row["barcode"],
-                artist=row["artist"],
-                album=row["album"],
-                cover_type=row["cover_type"],
-                price_category=row["price_category"],
-                release_type=row["release_type"],
-                recording_decade=row["recording_decade"],
-                release_decade=row["release_decade"],
-                style=row["style"],
-                recording_year=int(row["recording_year"]),
-                connection=conn_to_use,
-            )
-
-            prediction_row = (
-                result_id,
-                multiindex_id,
-                prediction_month,
-                model_id,
-                row["0.05"],
-                row["0.25"],
-                row["0.5"],
-                row["0.75"],
-                row["0.95"],
-                timestamp,
-            )
-            predictions_data.append(prediction_row)
+        
+        # Prepare tuples for batch multiindex creation
+        tuples_to_process = (
+            df[
+                [
+                    'barcode', 
+                    'artist', 
+                    'album', 
+                    'cover_type', 
+                    'price_category', 
+                    'release_type', 
+                    'recording_decade', 
+                    'release_decade', 
+                    'style', 
+                    'recording_year']
+            ]
+            .fillna('None')
+            .values
+            .tolist()
+        )
+        
+        # Get all multiindex_ids in batch
+        multiindex_ids = get_or_create_multiindex_ids_batch(tuples_to_process, conn_to_use)
+        
+        # Normalize prediction_month to ISO string to satisfy SQLite TEXT DATE column
+        if isinstance(prediction_month, date):
+            pm_str = prediction_month.isoformat()
+        else:
+            pm_str = str(prediction_month) if prediction_month is not None else None
+        if not pm_str:
+            # Defensive fallback to first day of current month if missing/invalid
+            pm_str = date.today().replace(day=1).isoformat()
+        
+        # Prepare predictions data - create DataFrame with proper structure
+        predictions_data = pd.DataFrame({
+            "result_id": [result_id] * len(df),
+            "multiindex_id": multiindex_ids,
+            "prediction_month": [pm_str] * len(df),
+            "model_id": [model_id] * len(df),
+            "quantile_05": df['0.05'].values,
+            "quantile_25": df['0.25'].values,
+            "quantile_50": df['0.5'].values,
+            "quantile_75": df['0.75'].values,
+            "quantile_95": df['0.95'].values,
+            "created_at": [timestamp] * len(df)
+        })
 
         execute_many(
             """
@@ -1317,7 +1367,7 @@ def insert_predictions(
             (result_id, multiindex_id, prediction_month, model_id, quantile_05, quantile_25, quantile_50, quantile_75, quantile_95, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            predictions_data,
+            predictions_data.values.tolist(),
             conn_to_use,
         )
 
@@ -1764,7 +1814,7 @@ def update_processing_run(
 def get_or_create_multiindex_ids_batch(
     tuples_to_process: list[tuple],
     connection: sqlite3.Connection
-) -> dict[tuple, int]:
+) -> tuple[int, ...]:
     """
     Efficiently gets or creates multiple multi-index IDs in a single batch.
 
@@ -1773,60 +1823,55 @@ def get_or_create_multiindex_ids_batch(
         connection: An active sqlite3.Connection object.
 
     Returns:
-        A dictionary mapping each input tuple to its integer multiindex_id.
+        A tuple of multiindex_ids.
     """
     if not tuples_to_process:
-        return {}
+        return ()
 
-    def _batch_operation(conn_to_use: sqlite3.Connection) -> dict[tuple, int]:
-        execute_query("CREATE TEMP TABLE _tuples_to_find (barcode TEXT, artist TEXT, album TEXT, cover_type TEXT, price_category TEXT, release_type TEXT, recording_decade TEXT, release_decade TEXT, style TEXT, recording_year INTEGER)", conn_to_use)
+    normalized_tuples = [
+        tuple(str(value) for value in tuple_values)
+        for tuple_values in tuples_to_process
+    ]
 
+    def _batch_operation(conn_to_use: sqlite3.Connection) -> tuple[int, ...]:
+        execute_query("CREATE TEMP TABLE _tuples_to_find (ord INTEGER PRIMARY KEY, barcode TEXT, artist TEXT, album TEXT, cover_type TEXT, price_category TEXT, release_type TEXT, recording_decade TEXT, release_decade TEXT, style TEXT, recording_year INTEGER)", conn_to_use)
         try:
-            execute_many("INSERT INTO _tuples_to_find VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuples_to_process, conn_to_use)
+            rows_with_ord = [(i,) + t for i, t in enumerate(normalized_tuples)]
+            execute_many("INSERT INTO _tuples_to_find VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows_with_ord, conn_to_use)
 
-            query_existing = """
-                SELECT t.*, m.multiindex_id
-                FROM _tuples_to_find t
-                JOIN dim_multiindex_mapping m ON
-                    m.barcode = t.barcode AND
-                    m.artist = t.artist AND
-                    m.album = t.album AND
-                    m.cover_type = t.cover_type AND
-                    m.price_category = t.price_category AND
-                    m.release_type = t.release_type AND
-                    m.recording_decade = t.recording_decade AND
-                    m.release_decade = t.release_decade AND
-                    m.style = t.style AND
-                    m.recording_year = t.recording_year
+            insert_query = """
+            INSERT OR IGNORE INTO dim_multiindex_mapping (
+                barcode, artist, album, cover_type, price_category,
+                release_type, recording_decade, release_decade, style, recording_year
+            )
+            SELECT barcode, artist, album, cover_type, price_category,
+                   release_type, recording_decade, release_decade, style, recording_year
+            FROM _tuples_to_find
             """
-            existing_rows = execute_query(query_existing, conn_to_use, fetchall=True) or []
+            execute_query(insert_query, conn_to_use)
 
-            existing_tuples = set()
-            id_map = {}
-            for row in existing_rows:
-                existing_tuple = tuple(str(row[col]) for col in row.keys() if col != 'multiindex_id')
-                existing_tuples.add(existing_tuple)
-                id_map[existing_tuple] = int(row['multiindex_id'])
-
-            new_tuples = [t for t in tuples_to_process if tuple(t) not in existing_tuples]
-
-            if new_tuples:
-                insert_query = """
-                INSERT OR IGNORE INTO dim_multiindex_mapping (
-                    barcode, artist, album, cover_type, price_category,
-                    release_type, recording_decade, release_decade, style, recording_year
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """
-                execute_many(insert_query, new_tuples, conn_to_use)
-
-                all_rows = execute_query(query_existing, conn_to_use, fetchall=True) or []
-                for row in all_rows:
-                    full_tuple = tuple(str(row[col]) for col in row.keys() if col != 'multiindex_id')
-                    id_map[full_tuple] = int(row['multiindex_id'])
+            select_query = """
+            SELECT t.ord, m.multiindex_id
+            FROM _tuples_to_find t
+            JOIN dim_multiindex_mapping m ON
+                m.barcode = t.barcode AND
+                m.artist = t.artist AND
+                m.album = t.album AND
+                m.cover_type = t.cover_type AND
+                m.price_category = t.price_category AND
+                m.release_type = t.release_type AND
+                m.recording_decade = t.recording_decade AND
+                m.release_decade = t.release_decade AND
+                m.style = t.style AND
+                m.recording_year = t.recording_year
+            ORDER BY t.ord
+            """
+            rows = execute_query(select_query, conn_to_use, fetchall=True) or []
+            ids = tuple(int(r["multiindex_id"]) for r in rows)
 
         finally:
             execute_query("DROP TABLE _tuples_to_find", conn_to_use)
-        return id_map
+        return ids
 
     try:
         return _batch_operation(connection)
@@ -1835,84 +1880,6 @@ def get_or_create_multiindex_ids_batch(
         raise
 
 
-def get_or_create_multiindex_id(
-    barcode: str,
-    artist: str,
-    album: str,
-    cover_type: str,
-    price_category: str,
-    release_type: str,
-    recording_decade: str,
-    release_decade: str,
-    style: str,
-    recording_year: int,
-    connection: sqlite3.Connection = None,
-) -> int:
-    """
-    Get or create a multiindex mapping entry
-
-    Args:
-        barcode: Barcode value
-        artist: Artist name
-        album: Album name
-        cover_type: Cover type
-        price_category: Price category
-        release_type: Release type
-        recording_decade: Recording decade
-        release_decade: Release decade
-        style: Music style
-        recording_year: Record year
-        connection: Optional existing database connection to use
-
-    Returns:
-        Multiindex ID
-    """
-    # Check if mapping already exists
-    query = """
-    SELECT multiindex_id FROM dim_multiindex_mapping
-    WHERE barcode = ? AND artist = ? AND album = ? AND cover_type = ? AND
-          price_category = ? AND release_type = ? AND recording_decade = ? AND
-          release_decade = ? AND style = ? AND recording_year = ?
-    """
-
-    params = (
-        barcode,
-        artist,
-        album,
-        cover_type,
-        price_category,
-        release_type,
-        recording_decade,
-        release_decade,
-        style,
-        recording_year,
-    )
-
-    try:
-        existing = execute_query(query, connection=connection, params=params)
-
-        if existing:
-            return existing["multiindex_id"]
-
-        # Create new mapping
-        insert_query = """
-        INSERT INTO dim_multiindex_mapping (
-            barcode, artist, album, cover_type, price_category,
-            release_type, recording_decade, release_decade, style, recording_year
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """
-
-        execute_query(insert_query, connection=connection, params=params)
-
-        # Get the new ID
-        result = execute_query(
-            "SELECT last_insert_rowid() as multiindex_id", connection=connection
-        )
-        return result["multiindex_id"]
-
-    except DatabaseError:
-        logger.error("Failed to get or create multiindex mapping")
-        raise
 
 
 def get_configs(
@@ -2192,10 +2159,10 @@ def delete_configs_by_ids(
             batch_placeholders = ",".join("?" for _ in batch)
             execute_query(
                 execute_query(
-            query=f"DELETE FROM configs WHERE config_id IN ({batch_placeholders})",
-            connection=conn,
-            params=batch,
-        )
+                    query=f"DELETE FROM configs WHERE config_id IN ({batch_placeholders})",
+                    connection=conn,
+                    params=batch,
+                )
             )
             deleted_count += len(batch)  # Since execute_query doesn't return rowcount, we use batch length
 
@@ -2621,21 +2588,32 @@ def insert_retry_event(event: dict[str, Any], connection: sqlite3.Connection) ->
         event: Dict with keys matching retry_events columns.
         connection: Optional existing DB connection.
     """
-    query = (
-        "INSERT INTO retry_events (timestamp, component, operation, attempt, max_attempts, "
-        "successful, duration_ms, exception_type, exception_message) "
-        "VALUES (:timestamp, :component, :operation, :attempt, :max_attempts, :successful, "
-        ":duration_ms, :exception_type, :exception_message)"
-    )
-
     event = event.copy()
     event["successful"] = 1 if event.get("successful") else 0
 
+    # IMPORTANT: Avoid using execute_query here to prevent retry recursion.
+    # Use a raw cursor execute to ensure recording retry events never triggers
+    # the retry decorator on execute_query (which itself records retries).
+    cursor = None
     try:
-        execute_query(query, connection=connection, params=event)
+        cursor = connection.cursor()
+        cursor.execute(
+            "INSERT INTO retry_events (timestamp, component, operation, attempt, max_attempts, successful, duration_ms, exception_type, exception_message) "
+            "VALUES (:timestamp, :component, :operation, :attempt, :max_attempts, :successful, :duration_ms, :exception_type, :exception_message)",
+            event,
+        )
     except Exception as e:
-        logger.error(f"[insert_retry_event] Error during insert for event {event.get('operation')}: {e}", exc_info=True)
+        logger.error(
+            f"[insert_retry_event] Error during insert for event {event.get('operation')}: {e}",
+            exc_info=True,
+        )
         raise
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
 
 def fetch_recent_retry_events(limit: int = 1000, connection: sqlite3.Connection = None) -> list[dict[str, Any]]:
@@ -2705,56 +2683,68 @@ def adjust_dataset_boundaries(
     connection: sqlite3.Connection = None,
 ) -> date | None:
     """
-    Adjusts the end date for the training dataset.
+    Adjust training dataset end date to the last available month in the database.
 
-    1. Validates the date range.
-    2. Finds the latest available date in fact_sales within the specified range.
-    3. Checks if the month of that date is complete.
-    4. If the month is complete, returns the original end_date.
-    5. If the month is incomplete, returns the end of the previous complete month.
+    Behavior (monthly granularity):
+    - Database stores monthly dates (e.g., 01.MM.YYYY) rather than daily data.
+    - If no dates are provided, returns the last available month (first day of month).
+      The caller can then derive the prediction month as the next month.
+    - If dates are provided, the last available month is computed within the range
+      and the returned end date is clipped to that month if necessary.
 
     Returns:
-        The adjusted end date (date) or None if no data is found.
-
-    Raises:
-        ValueError: If the date range is invalid.
+        A date object representing the first day of the last available month within
+        the optional range, or the provided end_date if no data is found.
     """
-    # Base query to find the last date
+    # Base query to find the last available (monthly) date
     query = "SELECT MAX(data_date) as last_date FROM fact_sales"
     params = []
 
     # Add date range conditions if provided
     if start_date and end_date:
+        # Normalize to first day of month for querying consistency
+        start_norm = start_date.replace(day=1)
+        end_norm = end_date.replace(day=1)
         query += " WHERE data_date BETWEEN ? AND ?"
-        params.extend([start_date.isoformat(), end_date.isoformat()])
+        params.extend([start_norm.isoformat(), end_norm.isoformat()])
     elif start_date:
+        start_norm = start_date.replace(day=1)
         query += " WHERE data_date >= ?"
-        params.append(start_date.isoformat())
+        params.append(start_norm.isoformat())
     elif end_date:
+        end_norm = end_date.replace(day=1)
         query += " WHERE data_date <= ?"
-        params.append(end_date.isoformat())
+        params.append(end_norm.isoformat())
 
     try:
         result = execute_query(query, connection=connection, params=tuple(params))
 
         if not result or not result.get("last_date"):
-            # No data found — return the original end_date
+            # No data found — return the original end_date (may be None)
             logger.warning("No sales data found for date range, returning original end_date.")
             return end_date
 
-        last_date_in_data = date.fromisoformat(result["last_date"])
+        last_available_month_first = date.fromisoformat(result["last_date"]).replace(day=1)
 
-        # Check if the month is complete
-        next_day = last_date_in_data + timedelta(days=1)
-        is_month_complete = last_date_in_data.month != next_day.month
+        # Compute month-end for a given date
+        def month_end(d: date) -> date:
+            if d.month == 12:
+                return date(d.year, 12, 31)
+            return date(d.year, d.month + 1, 1) - timedelta(days=1)
 
-        if is_month_complete:
-            # Month is complete — return the original end_date
-            return end_date
-        else:
-            # Month is incomplete — return the end of the previous month
-            adjusted_end_date = last_date_in_data.replace(day=1) - timedelta(days=1)
-            return adjusted_end_date
+        last_available_month_end = month_end(last_available_month_first)
+
+        if end_date is None:
+            # No explicit constraint: return the last available month END (last day of month)
+            return last_available_month_end
+
+        # Normalize provided end_date to its month end
+        end_month_end = month_end(end_date)
+
+        # Clip provided end to not exceed last available month end
+        if end_month_end > last_available_month_end:
+            return last_available_month_end
+        return end_month_end
 
     except (DatabaseError, TypeError, ValueError) as e:
         logger.error(f"Failed to adjust dataset boundaries: {e}", exc_info=True)
@@ -2764,7 +2754,7 @@ def adjust_dataset_boundaries(
 def get_multiindex_mapping_by_ids(
     multiindex_ids: list[int],
     connection: sqlite3.Connection
-) -> list[dict]:
+) -> list[tuple[int, ...]]:
     """
     Get multiindex mapping data by IDs.
 
@@ -2787,7 +2777,28 @@ def get_multiindex_mapping_by_ids(
     WHERE multiindex_id IN ({placeholders})
     """
 
-    return execute_query_with_batching(query_template, multiindex_ids, connection=connection)
+    rows = execute_query_with_batching(query_template, multiindex_ids, connection=connection)
+    if not rows:
+        return []
+
+    by_id = {
+        int(r["multiindex_id"]): {
+            "multiindex_id": int(r["multiindex_id"]),
+            "barcode": str(r["barcode"]),
+            "artist": str(r["artist"]),
+            "album": str(r["album"]),
+            "cover_type": str(r["cover_type"]),
+            "price_category": str(r["price_category"]),
+            "release_type": str(r["release_type"]),
+            "recording_decade": str(r["recording_decade"]),
+            "release_decade": str(r["release_decade"]),
+            "style": str(r["style"]),
+            "recording_year": str(r["recording_year"]),
+        }
+        for r in rows
+    }
+
+    return [by_id[i] for i in multiindex_ids if i in by_id]
 
 
 def get_job_params(
