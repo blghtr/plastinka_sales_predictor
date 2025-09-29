@@ -145,12 +145,12 @@ def test_save_and_load_all_features_end_to_end(comprehensive_feature_store_env):
     assert isinstance(report_loaded, pd.DataFrame)
     assert not isinstance(report_loaded.columns, pd.MultiIndex)
     assert "artist" in report_loaded.columns  # Check enrichment
-    assert "multiindex_id" not in report_loaded.columns  # Check cleanup
+    assert "multiindex_id" in report_loaded.columns  # Check that multiindex_id is preserved
 
     # 4 rows = 2 products * 2 dates
     assert report_loaded.shape[0] == 4
-    # Check number of columns: product attributes + date + expected features
-    assert report_loaded.shape[1] == len(MULTIINDEX_NAMES) + 1 + len(EXPECTED_REPORT_FEATURES)
+    # Check number of columns: product attributes + date + expected features + multiindex_id
+    assert report_loaded.shape[1] == len(MULTIINDEX_NAMES) + 1 + len(EXPECTED_REPORT_FEATURES) + 1
 
     # Check a specific value to ensure correct join and data integrity
     report_loaded['data_date'] = pd.to_datetime(report_loaded['data_date'])

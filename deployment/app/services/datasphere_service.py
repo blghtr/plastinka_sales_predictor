@@ -894,24 +894,26 @@ def save_predictions_to_db(
                 predictions_path, 
                 dtype={'barcode': object}             
             )
-            num_cols = df.select_dtypes(include="number").columns
-            int_cols = list(num_cols[:3])
-            float_cols = list(num_cols[3:])
+            # Identify integer columns (like recording_year) vs float columns (like quantiles)
+            int_cols = ['recording_year']  # Only recording_year should be treated as integer
+            float_cols = [col for col in df.select_dtypes(include="number").columns if col not in int_cols]
 
-            df.loc[:, int_cols] = (
-                df.loc[:, int_cols]
-                .fillna(0)
-                .round(0)
-                .astype("int64")
-            )
+            if int_cols:
+                df.loc[:, int_cols] = (
+                    df.loc[:, int_cols]
+                    .fillna(0)
+                    .round(0)
+                    .astype("int64")
+                )
 
-            df.loc[:, float_cols] = (
-                df
-                .loc[:, float_cols]
-                .fillna(0)
-                .round(2)
-                .astype("float64")
-            )
+            if float_cols:
+                df.loc[:, float_cols] = (
+                    df
+                    .loc[:, float_cols]
+                    .fillna(0)
+                    .round(2)
+                    .astype("float64")
+                )
             
         except (pd.errors.ParserError, UnicodeDecodeError) as e:
             raise ValueError(f"Invalid predictions file format: {e}")
