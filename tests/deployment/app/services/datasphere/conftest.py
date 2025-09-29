@@ -425,9 +425,13 @@ def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
     base_style = "Rock"
     base_year = 2015
     # Получить или создать multiindex_id
-    multiindex_id = in_memory_db.get_or_create_multiindex_id(
-        base_barcode, base_artist, base_album, base_cover, base_price,
-        base_release_type, base_recording_decade, base_release_decade, base_style, base_year,
+    multiindex_id = in_memory_db.get_or_create_multiindex_ids_batch(
+        [
+            (
+                base_barcode, base_artist, base_album, base_cover, base_price,
+                base_release_type, base_recording_decade, base_release_decade, base_style, base_year
+            ),
+        ]
     )
     from dateutil.relativedelta import relativedelta
     # Генерируем 13 месяцев назад от текущего месяца
