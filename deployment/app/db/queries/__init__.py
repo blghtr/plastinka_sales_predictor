@@ -50,6 +50,7 @@ from deployment.app.db.queries.multiindex import (
 from deployment.app.db.queries.predictions import (
     get_latest_prediction_month,
     get_next_prediction_month,
+    get_predictions_history,
 )
 from deployment.app.db.queries.processing_runs import (
     create_processing_run,
@@ -119,6 +120,7 @@ __all__ = [
     # Predictions
     "get_next_prediction_month",
     "get_latest_prediction_month",
+    "get_predictions_history",
     # Processing runs
     "create_processing_run",
     "update_processing_run",

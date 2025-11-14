@@ -259,6 +259,12 @@ class DataAccessLayer:
         requires_transaction=False
     )
     
+    get_predictions_history = QueryMethod(
+        queries.get_predictions_history,
+        required_roles=[UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM],
+        requires_transaction=False
+    )
+    
     insert_predictions = QueryMethod(
         queries.insert_predictions,
         required_roles=[UserRoles.ADMIN, UserRoles.USER, UserRoles.SYSTEM],

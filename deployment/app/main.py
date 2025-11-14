@@ -10,6 +10,7 @@ from deployment.app.api.auth import router as auth_router
 from deployment.app.api.health import router as health_router
 from deployment.app.api.jobs import router as jobs_router
 from deployment.app.api.models_configs import router as models_params_router
+from deployment.app.api.predictions import router as predictions_router
 from deployment.app.api.results import router as results_router
 from deployment.app.config import get_settings
 
@@ -85,6 +86,7 @@ app.include_router(health_router)
 app.include_router(models_params_router)
 app.include_router(admin_router)
 app.include_router(results_router)
+app.include_router(predictions_router)
 app.include_router(auth_router)
 
 

@@ -346,7 +346,7 @@ class ReportParams(FloatRoundingBaseModel):
     )
     prediction_month: date | None = Field(
         None,
-        description="Month for which to generate predictions (YYYY-MM-DD). If null, latest available month is used.",
+        description="Month for which to generate predictions (YYYY-MM-01). If null, latest available month is used.",
     )
     filters: dict[str, Any] | None = Field(
         None, description="Filters to apply to report data"
@@ -355,6 +355,24 @@ class ReportParams(FloatRoundingBaseModel):
         None,
         description="ID of the model to use for predictions in the report (defaults to active model)",
     )
+
+    @model_validator(mode="after")
+    def validate_prediction_month_format(self):
+        """Validate that prediction_month is in YYYY-MM-01 format (first day of month)."""
+        from deployment.app.utils.validation import ValidationError
+        
+        if self.prediction_month is not None:
+            if self.prediction_month.day != 1:
+                raise ValidationError(
+                    "Invalid date format. Expected YYYY-MM-01",
+                    details={
+                        "parameter": "prediction_month",
+                        "value": self.prediction_month.isoformat(),
+                        "reason": "Date must be first day of month (YYYY-MM-01)"
+                    }
+                )
+        
+        return self
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -370,9 +388,14 @@ class TrainingParams(FloatRoundingBaseModel):
     )
 
     @model_validator(mode="after")
-    def check_date_range(self):
+    def validate_dates(self):
+        """Validate that dates are valid date objects and form a valid range."""
         from deployment.app.utils.validation import validate_date_range_or_none
+        
+        # Validate date range (includes type validation and range check)
+        # Raises ValueError which Pydantic converts to 422
         validate_date_range_or_none(self.dataset_start_date, self.dataset_end_date)
+        
         return self
 
     model_config = ConfigDict(from_attributes=True)
@@ -400,9 +423,14 @@ class TuningParams(FloatRoundingBaseModel):
     )
 
     @model_validator(mode="after")
-    def check_date_range(self):
+    def validate_dates(self):
+        """Validate that dates are valid date objects and form a valid range."""
         from deployment.app.utils.validation import validate_date_range_or_none
+        
+        # Validate date range (includes type validation and range check)
+        # Raises ValueError which Pydantic converts to 422
         validate_date_range_or_none(self.dataset_start_date, self.dataset_end_date)
+        
         return self
 
     model_config = ConfigDict(from_attributes=True)
@@ -557,4 +585,164 @@ class ErrorDetailResponse(FloatRoundingBaseModel):
     status_code: int | None = Field(None, description="The HTTP status code associated with the error.")
     details: dict[str, Any] | None = Field(None, description="Additional details about the error.")
 
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Predictions History Models
+
+class PredictionQuantiles(FloatRoundingBaseModel):
+    """Quantiles for a prediction."""
+    
+    q05: float = Field(..., description="5th percentile quantile")
+    q25: float = Field(..., description="25th percentile quantile")
+    q50: float = Field(..., description="50th percentile quantile (median)")
+    q75: float = Field(..., description="75th percentile quantile")
+    q95: float = Field(..., description="95th percentile quantile")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PredictionItem(FloatRoundingBaseModel):
+    """A single prediction for a specific month and model."""
+    
+    prediction_month: date = Field(..., description="Month for which prediction was made (YYYY-MM-01)")
+    model_id: str = Field(..., description="ID of the model that generated this prediction")
+    quantiles: PredictionQuantiles = Field(..., description="Prediction quantiles")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ActualItem(FloatRoundingBaseModel):
+    """Actual sales data for a specific month."""
+    
+    month: date = Field(..., description="Month for actual sales (YYYY-MM-01)")
+    sales_count: float = Field(..., description="Total sales count for the month")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FeatureItem(FloatRoundingBaseModel):
+    """Report features for a specific month."""
+    
+    month: date = Field(..., description="Month for features (YYYY-MM-01)")
+    availability: float = Field(..., description="Product availability")
+    confidence: float = Field(..., description="Confidence level")
+    masked_mean_sales_items: float = Field(..., description="Masked mean sales in items")
+    masked_mean_sales_rub: float = Field(..., description="Masked mean sales in rubles")
+    lost_sales_rub: float = Field(..., description="Lost sales in rubles")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProductMetadata(FloatRoundingBaseModel):
+    """Product metadata from dim_multiindex_mapping."""
+    
+    barcode: str | None = Field(None, description="Product barcode")
+    artist: str | None = Field(None, description="Artist name")
+    album: str | None = Field(None, description="Album name")
+    cover_type: str | None = Field(None, description="Cover type")
+    price_category: str | None = Field(None, description="Price category")
+    release_type: str | None = Field(None, description="Release type")
+    recording_decade: str | None = Field(None, description="Recording decade")
+    release_decade: str | None = Field(None, description="Release decade")
+    style: str | None = Field(None, description="Music style")
+    recording_year: int | None = Field(None, description="Recording year")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PredictionHistoryItem(FloatRoundingBaseModel):
+    """History item for a single product (multiindex_id)."""
+    
+    multiindex_id: int = Field(..., description="Product multiindex ID")
+    metadata: ProductMetadata = Field(..., description="Product metadata")
+    predictions: list[PredictionItem] = Field(default_factory=list, description="List of predictions for this product")
+    actuals: list[ActualItem] = Field(default_factory=list, description="List of actual sales for this product")
+    features: list[FeatureItem] = Field(default_factory=list, description="List of features for this product")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DateRangeMetadata(FloatRoundingBaseModel):
+    """Date range metadata."""
+    
+    min: date = Field(..., description="Minimum date in the range")
+    max: date = Field(..., description="Maximum date in the range")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PredictionHistoryMetadata(FloatRoundingBaseModel):
+    """Metadata for predictions history response."""
+    
+    total_items: int = Field(..., description="Total number of items (multiindex_ids) returned")
+    date_range: DateRangeMetadata = Field(..., description="Date range of the data")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PredictionHistoryResponse(FloatRoundingBaseModel):
+    """Response model for predictions history endpoint."""
+    
+    items: list[PredictionHistoryItem] = Field(..., description="List of prediction history items")
+    metadata: PredictionHistoryMetadata = Field(..., description="Response metadata")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PredictionHistoryParams(FloatRoundingBaseModel):
+    """Query parameters for predictions history endpoint."""
+    
+    multiindex_id: int | None = Field(None, description="Filter by specific multiindex_id")
+    prediction_month_from: date | None = Field(None, description="Start date for prediction range (YYYY-MM-01)")
+    prediction_month_to: date | None = Field(None, description="End date for prediction range (YYYY-MM-01)")
+    include_actuals: bool = Field(True, description="Include actual sales data")
+    include_features: bool = Field(True, description="Include report_features data")
+    
+    @model_validator(mode="after")
+    def validate_prediction_month_format(self):
+        """Validate that dates are in YYYY-MM-01 format (first day of month)."""
+        from deployment.app.utils.validation import ValidationError
+        
+        if self.prediction_month_from is not None:
+            if self.prediction_month_from.day != 1:
+                raise ValidationError(
+                    "Invalid date format. Expected YYYY-MM-01",
+                    details={
+                        "parameter": "prediction_month_from",
+                        "value": self.prediction_month_from.isoformat(),
+                        "reason": "Date must be first day of month (YYYY-MM-01)"
+                    }
+                )
+        
+        if self.prediction_month_to is not None:
+            if self.prediction_month_to.day != 1:
+                raise ValidationError(
+                    "Invalid date format. Expected YYYY-MM-01",
+                    details={
+                        "parameter": "prediction_month_to",
+                        "value": self.prediction_month_to.isoformat(),
+                        "reason": "Date must be first day of month (YYYY-MM-01)"
+                    }
+                )
+        
+        return self
+    
+    @model_validator(mode="after")
+    def validate_date_range(self):
+        """Validate that prediction_month_from <= prediction_month_to."""
+        from deployment.app.utils.validation import ValidationError
+        
+        if self.prediction_month_from is not None and self.prediction_month_to is not None:
+            if self.prediction_month_from > self.prediction_month_to:
+                raise ValidationError(
+                    "prediction_month_from must be before or equal to prediction_month_to",
+                    details={
+                        "prediction_month_from": self.prediction_month_from.isoformat(),
+                        "prediction_month_to": self.prediction_month_to.isoformat()
+                    }
+                )
+        
+        return self
+    
     model_config = ConfigDict(from_attributes=True)

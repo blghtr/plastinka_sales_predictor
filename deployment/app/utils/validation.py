@@ -373,11 +373,47 @@ def validate_pagination_params(offset: int, limit: int) -> tuple[int, int]:
     return normalized_offset, normalized_limit
 
 
+def validate_date_attributes(*date_attrs, param_names=None):
+    """
+    Validates that date attributes are valid date objects.
+    
+    Args:
+        *date_attrs: Variable number of date values to validate
+        param_names: Optional list of parameter names for error messages (same order as date_attrs)
+    
+    Raises:
+        ValueError: If any date is not None and not a date object
+    
+    Example:
+        validate_date_attributes(start_date, end_date, param_names=["start_date", "end_date"])
+    """
+    from datetime import date
+    
+    if param_names is None:
+        param_names = [f"date_{i}" for i in range(len(date_attrs))]
+    
+    for date_attr, param_name in zip(date_attrs, param_names):
+        if date_attr is not None and not isinstance(date_attr, date):
+            raise ValueError(
+                f"Invalid {param_name} type. Expected date object, got {type(date_attr).__name__}"
+            )
+
+
 def validate_date_range_or_none(start_date, end_date, format_str="%Y-%m-%d"):
     """
     Validates that start_date and end_date (if both provided) form a valid range.
+    Also validates that dates are valid date objects.
     Raises ValueError if invalid. Does nothing if either is None.
     """
+    from datetime import date
+    
+    # Validate that dates are date objects if provided
+    validate_date_attributes(
+        start_date, end_date,
+        param_names=["start_date", "end_date"]
+    )
+    
+    # Validate date range if both provided
     if start_date and end_date:
         is_valid, error_msg, _, _ = validate_historical_date_range(
             start_date.strftime(format_str),
