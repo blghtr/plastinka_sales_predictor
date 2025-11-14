@@ -20,7 +20,7 @@ All external imports and dependencies are mocked to ensure test isolation.
 
 import os
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException, status
@@ -62,32 +62,45 @@ class TestHealthCheckEndpoint:
         mock_settings.return_value = mock_settings_instance
 
         # Mock the DAL to return a valid active model metric
-        with patch.object(api_client.app.dependency_overrides[get_dal_system](), 'get_active_model_primary_metric', return_value=0.8):
-            # Act
-            response = api_client.get("/health/")
+        # Since dependency_overrides returns async generator, we need to create a mock DAL
+        # and replace the dependency override
+        from tests.deployment.app.conftest import dal as test_dal
+        
+        # Create a mock DAL with the needed method
+        mock_dal = MagicMock(spec=test_dal)
+        mock_dal.get_active_model_primary_metric = AsyncMock(return_value=0.8)
+        
+        async def mock_get_dal_system():
+            yield mock_dal
+        
+        api_client.app.dependency_overrides[get_dal_system] = mock_get_dal_system
+        
+        # Act
+        response = api_client.get("/health/")
 
-            # Assert
-            assert response.status_code == 200
-            data = response.json()
-            assert data["status"] == "healthy"
-            assert "api" in data["components"]
-            assert "database" in data["components"]
-            assert "config" in data["components"]
-            assert "active_model_metric" in data["components"]
-            assert data["components"]["api"]["status"] == "healthy"
-            assert data["components"]["database"]["status"] == "healthy"
-            assert data["components"]["config"]["status"] == "healthy"
-            assert data["components"]["active_model_metric"]["status"] == "healthy"
-            assert "version" in data
-            assert "timestamp" in data
-            assert "uptime_seconds" in data
-            mock_check_db.assert_called_once()
-            mock_check_env.assert_called_once()
+        # Assert
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert "api" in data["components"]
+        assert "database" in data["components"]
+        assert "config" in data["components"]
+        assert "active_model_metric" in data["components"]
+        assert data["components"]["api"]["status"] == "healthy"
+        assert data["components"]["database"]["status"] == "healthy"
+        assert data["components"]["config"]["status"] == "healthy"
+        assert data["components"]["active_model_metric"]["status"] == "healthy"
+        assert "version" in data
+        assert "timestamp" in data
+        assert "uptime_seconds" in data
+        mock_check_db.assert_called_once()
+        mock_check_env.assert_called_once()
 
     @patch("deployment.app.api.health.check_database")
     @patch("deployment.app.api.health.get_environment_status")
-    def test_health_check_endpoint_unhealthy_db(
-        self, mock_check_env, mock_check_db, api_client
+    @pytest.mark.asyncio
+    async def test_health_check_endpoint_unhealthy_db(
+        self, mock_check_env, mock_check_db, async_api_client
     ):
         """Test /health endpoint returns unhealthy status when database is unhealthy and returns ErrorDetailResponse."""
         # Arrange
@@ -99,7 +112,7 @@ class TestHealthCheckEndpoint:
         )
 
         # Act
-        response = api_client.get("/health/")
+        response = await async_api_client.get("/health", follow_redirects=True)
 
         # Assert
         assert response.status_code == 503
@@ -113,8 +126,9 @@ class TestHealthCheckEndpoint:
 
     @patch("deployment.app.api.health.check_database")
     @patch("deployment.app.api.health.get_environment_status")
-    def test_health_check_endpoint_degraded_env(
-        self, mock_check_env, mock_check_db, api_client
+    @pytest.mark.asyncio
+    async def test_health_check_endpoint_degraded_env(
+        self, mock_check_env, mock_check_db, async_api_client
     ):
         """Test /health endpoint returns degraded status when environment is degraded."""
         # Arrange
@@ -126,7 +140,7 @@ class TestHealthCheckEndpoint:
         )
 
         # Act
-        response = api_client.get("/health/")
+        response = await async_api_client.get("/health", follow_redirects=True)
 
         # Assert
         assert response.status_code == 200  # Degraded status returns 200
@@ -143,7 +157,8 @@ class TestHealthCheckEndpoint:
 
     @patch("deployment.app.api.health.check_database")
     @patch("deployment.app.api.health.get_environment_status")
-    def test_health_check_endpoint_unhealthy_missing_months(self, mock_check_env, mock_check_db, api_client):
+    @pytest.mark.asyncio
+    async def test_health_check_endpoint_unhealthy_missing_months(self, mock_check_env, mock_check_db, async_api_client):
         """Test /health endpoint returns unhealthy and details[missing_months] if months are missing and returns ErrorDetailResponse."""
         mock_check_db.return_value = ComponentHealth(
             status="unhealthy", details={"missing_months": {"fact_sales": ["2024-02-01"]}}
@@ -151,7 +166,7 @@ class TestHealthCheckEndpoint:
         mock_check_env.return_value = ComponentHealth(
             status="healthy", details={}
         )
-        response = api_client.get("/health/")
+        response = await async_api_client.get("/health", follow_redirects=True)
         assert response.status_code == 503
         data = response.json()
         assert data["error"]["message"] == "API is unhealthy."
@@ -389,7 +404,7 @@ class TestRetryStatsEndpoint:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_retry_statistics_healthy(self, api_client, in_memory_db, monkeypatch, auth_header_name, auth_token):
+    def test_retry_statistics_healthy(self, api_client, dal, monkeypatch, auth_header_name, auth_token):
         """Test retry stats endpoint returns 200 with stats when X-API-Key or Bearer token is valid."""
         # Arrange
         from deployment.app.services.auth import get_unified_auth
@@ -420,7 +435,7 @@ class TestRetryStatsEndpoint:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_reset_retry_stats_success(self, api_client, in_memory_db, monkeypatch, auth_header_name, auth_token):
+    def test_reset_retry_stats_success(self, api_client, dal, monkeypatch, auth_header_name, auth_token):
         """Test reset retry stats endpoint returns 200 with success message when X-API-Key or Bearer token is valid."""
         # Arrange
         from deployment.app.services.auth import get_unified_auth
@@ -445,33 +460,48 @@ class TestRetryStatsEndpoint:
 class TestComponentHealthChecks:
     """Test suite for individual component health check functions."""
 
-    def test_check_database_healthy(self, in_memory_db, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_check_database_healthy(self, dal, monkeypatch):
         """Test check_database returns healthy when connection and tables are ok."""
         from deployment.app.api.health import check_database
 
-        # Mock execute_query_with_batching to return all required tables
+        # Mock execute_raw_query to handle multiple calls:
+        # 1. Connection check (SELECT 1)
+        # 2. Table check query (SELECT table_name as name FROM information_schema.tables...)
+        # 3. check_monotonic_months queries (fact_sales, fact_stock_movement)
         required_tables = [
             "jobs", "models", "configs", "training_results", "prediction_results",
             "job_status_history", "dim_multiindex_mapping", "fact_sales",
             "fact_stock_movement", "fact_predictions",
             "processing_runs", "data_upload_results", "report_results"
         ]
-        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(return_value=[{"name": table} for table in required_tables]))
-        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(return_value=[{'data_date': '2024-01-01'}])) # Mock for check_monotonic_months
+        
+        async def side_effect_for_execute_raw_query(query, params=(), fetchall=False):
+            if query == "SELECT 1":
+                return {"1": 1}  # Connection check
+            if "SELECT table_name as name FROM information_schema.tables" in query or "information_schema.tables" in query:
+                # Return all required tables with 'name' key (matching the alias)
+                return [{"name": table} for table in required_tables]
+            if "fact_sales" in query or "fact_stock_movement" in query:
+                # Return empty for fact table queries (no missing months = healthy)
+                return []
+            return []
+        
+        monkeypatch.setattr(dal, 'execute_raw_query', AsyncMock(side_effect=side_effect_for_execute_raw_query))
 
-        result = check_database(in_memory_db)
+        result = await check_database(dal)
 
         assert result.status == "healthy"
-        in_memory_db.execute_query_with_batching.assert_called_once()
-        in_memory_db.execute_raw_query.assert_called()
+        dal.execute_raw_query.assert_called()
 
-    def test_check_database_degraded_missing_tables(self, in_memory_db, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_check_database_degraded_missing_tables(self, dal, monkeypatch):
         """Test check_database returns degraded if tables are missing."""
         # Arrange
-        def side_effect_for_missing_tables(query, params=(), fetchall=False):
+        async def side_effect_for_missing_tables(query, params=(), fetchall=False):
             if query == "SELECT 1":
                 return [{"1": 1}]
-            if "SELECT name FROM sqlite_master" in query:
+            if "SELECT table_name as name FROM information_schema.tables" in query or "information_schema.tables" in query:
                 # Return only "jobs" table, missing all others
                 return [{"name": "jobs"}]
             if "fact_sales" in query or "fact_stock_movement" in query:
@@ -479,45 +509,46 @@ class TestComponentHealthChecks:
                 return []
             return []
 
-        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=side_effect_for_missing_tables))
+        monkeypatch.setattr(dal, 'execute_raw_query', AsyncMock(side_effect=side_effect_for_missing_tables))
 
         # Mock execute_query_with_batching to return the same result for table checks
-        def batching_side_effect(query_template, ids, **kwargs):
-            if "sqlite_master" in query_template.lower():
+        async def batching_side_effect(query_template, ids, **kwargs):
+            if "information_schema" in query_template.lower() or "table_name" in query_template.lower():
                 # Return only "jobs" table from the requested tables
                 return [{"name": "jobs"}] if "jobs" in ids else []
             return []
 
-        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
+        monkeypatch.setattr(dal, 'execute_query_with_batching', AsyncMock(side_effect=batching_side_effect))
 
         # Act
         from deployment.app.api.health import check_database
 
-        result = check_database(in_memory_db)
+        result = await check_database(dal)
 
         # Assert
         assert result.status == "degraded"
         assert "missing_tables" in result.details
         assert "jobs" not in result.details["missing_tables"]
         assert "models" in result.details["missing_tables"]
-        in_memory_db.execute_raw_query.assert_called()
+        dal.execute_raw_query.assert_called()
 
-    def test_check_database_unhealthy_connection_error(self, in_memory_db, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_check_database_unhealthy_connection_error(self, dal, monkeypatch):
         """Test check_database returns unhealthy on connection error."""
         # Arrange
-        from deployment.app.db.database import DatabaseError
-        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=DatabaseError("Connection failed")))
+        from deployment.app.db.exceptions import DatabaseError
+        monkeypatch.setattr(dal, 'execute_raw_query', AsyncMock(side_effect=DatabaseError("Connection failed")))
 
         # Act
         from deployment.app.api.health import check_database
 
-        result = check_database(in_memory_db)
+        result = await check_database(dal)
 
         # Assert
         assert result.status == "unhealthy"
         assert "error" in result.details
         assert "Connection failed" in result.details["error"]
-        in_memory_db.execute_raw_query.assert_called_once()
+        dal.execute_raw_query.assert_called_once()
 
     @patch('deployment.app.utils.environment.load_dotenv')
     @patch('deployment.app.utils.environment.check_yc_token_health')
@@ -577,7 +608,8 @@ YC_OAUTH_TOKEN=oauth_token_def
         assert "API_ADMIN_API_KEY_HASH" in missing_vars_text
         assert "DATASPHERE_PROJECT_ID" in missing_vars_text
         assert "DATASPHERE_FOLDER_ID" in missing_vars_text
-        assert ("YC_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text)
+        # DATASPHERE_YC_PROFILE removed after migration to OAuth-only
+        assert "YC_OAUTH_TOKEN" in missing_vars_text
 
     @patch('deployment.app.utils.environment.load_dotenv')
     @patch('deployment.app.utils.environment.check_yc_token_health')
@@ -633,23 +665,24 @@ YC_OAUTH_TOKEN=oauth_token_def
         assert result.status == "degraded"
         assert "missing_variables" in result.details
         missing_vars_text = " ".join(result.details["missing_variables"])
-        assert "YC_OAUTH_TOKEN" in missing_vars_text or "DATASPHERE_YC_PROFILE" in missing_vars_text
+        # DATASPHERE_YC_PROFILE removed after migration to OAuth-only
+        assert "YC_OAUTH_TOKEN" in missing_vars_text
 
     @patch('deployment.app.utils.environment.load_dotenv')
-    @patch('deployment.app.utils.environment.check_yc_profile_health')
-    def test_check_environment_healthy_with_yc_profile(self, mock_check_profile, mock_load_dotenv, tmp_path):
-        """Test get_environment_status returns healthy when using YC profile auth."""
+    @patch('deployment.app.utils.environment.check_yc_token_health')
+    def test_check_environment_healthy_with_oauth_token(self, mock_check_token, mock_load_dotenv, tmp_path):
+        """Test get_environment_status returns healthy when using OAuth token auth (yc_profile removed)."""
         # Arrange: Mock load_dotenv to prevent loading real .env file
         mock_load_dotenv.return_value = None
-        mock_check_profile.return_value = ComponentHealth(status="healthy")
+        mock_check_token.return_value = ComponentHealth(status="healthy")
 
-        # Arrange
+        # Arrange - OAuth token auth (yc_profile removed after migration)
         dotenv_content = """
 DATASPHERE_PROJECT_ID=project123
 DATASPHERE_FOLDER_ID=folder456
 API_X_API_KEY_HASH=api_key_789
 API_ADMIN_API_KEY_HASH=admin_key_123
-DATASPHERE_YC_PROFILE=default
+YC_OAUTH_TOKEN=test-oauth-token
         """
         dotenv_file = tmp_path / ".env"
         dotenv_file.write_text(dotenv_content)
@@ -659,7 +692,7 @@ DATASPHERE_YC_PROFILE=default
             'DATASPHERE_FOLDER_ID': 'folder456',
             'API_X_API_KEY_HASH': 'api_key_789_hash',
             'API_ADMIN_API_KEY_HASH': 'admin_key_123_hash',
-            'DATASPHERE_YC_PROFILE': 'default'  # YC profile auth
+            'YC_OAUTH_TOKEN': 'test-oauth-token'  # OAuth token auth (yc_profile removed)
         }, clear=True):
             # Act
             result = get_environment_status()
@@ -667,15 +700,17 @@ DATASPHERE_YC_PROFILE=default
         # Assert
         assert result.status == "healthy"
         assert result.details == {}
+        mock_check_token.assert_called_once()
 
-    def test_check_database_unhealthy_missing_tables(self, in_memory_db, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_check_database_unhealthy_missing_tables(self, dal, monkeypatch):
         """Test check_database returns unhealthy if required tables are missing."""
         # Arrange
         # Simulate that the query for tables returns only one table.
-        def side_effect_for_missing_tables(query, params=(), fetchall=False):
+        async def side_effect_for_missing_tables(query, params=(), fetchall=False):
             if query == "SELECT 1":
                 return [{"1": 1}]
-            if "SELECT name FROM sqlite_master" in query:
+            if "SELECT table_name as name FROM information_schema.tables" in query or "information_schema.tables" in query:
                 # Return only "jobs" table, missing all others
                 return [{"name": "jobs"}]
             if "fact_sales" in query or "fact_stock_movement" in query:
@@ -683,36 +718,37 @@ DATASPHERE_YC_PROFILE=default
                 return []
             return []
 
-        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=side_effect_for_missing_tables))
+        monkeypatch.setattr(dal, 'execute_raw_query', AsyncMock(side_effect=side_effect_for_missing_tables))
 
         # Mock execute_query_with_batching to return the same result for table checks
         def batching_side_effect(query_template, ids, **kwargs):
-            if "sqlite_master" in query_template.lower():
+            if "information_schema.tables" in query_template.lower() or "table_name" in query_template.lower():
                 # Return only "jobs" table from the requested tables
                 return [{"name": "jobs"}] if "jobs" in ids else []
             return []
 
-        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
+        monkeypatch.setattr(dal, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
 
         # Act
         from deployment.app.api.health import check_database
 
-        result = check_database(in_memory_db)
+        result = await check_database(dal)
 
         # Assert
         assert result.status == "degraded"
         assert "missing_tables" in result.details
         assert "jobs" not in result.details["missing_tables"]
         assert "models" in result.details["missing_tables"]
-        in_memory_db.execute_raw_query.assert_called()
+        dal.execute_raw_query.assert_called()
 
-    def test_check_database_unhealthy_missing_months(self, in_memory_db, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_check_database_unhealthy_missing_months(self, dal, monkeypatch):
         """Test check_database returns unhealthy if there are missing months in fact_sales or fact_stock_movement."""
 
-        def side_effect_for_missing_months(query, params=(), fetchall=False):
+        async def side_effect_for_missing_months(query, params=(), fetchall=False):
             if query == "SELECT 1":
                 return [{"1": 1}]
-            if "SELECT name FROM sqlite_master" in query:
+            if "SELECT table_name as name FROM information_schema.tables" in query or "information_schema.tables" in query:
                 return [{"name": table} for table in params]
             if "fact_sales" in query:
                 # Simulate a gap in fact_sales
@@ -722,31 +758,32 @@ DATASPHERE_YC_PROFILE=default
                 return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
             return []
 
-        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=side_effect_for_missing_months))
+        monkeypatch.setattr(dal, 'execute_raw_query', AsyncMock(side_effect=side_effect_for_missing_months))
 
         # Mock execute_query_with_batching to return all tables as existing
         def batching_side_effect(query_template, ids, **kwargs):
-            if "sqlite_master" in query_template.lower():
+            if "information_schema.tables" in query_template.lower() or "table_name" in query_template.lower():
                 # Return all requested tables as existing
                 return [{"name": table} for table in ids]
             return []
 
-        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
+        monkeypatch.setattr(dal, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
 
         from deployment.app.api.health import check_database
-        result = check_database(in_memory_db)
+        result = await check_database(dal)
         assert result.status == "unhealthy"
         assert "missing_months_sales" in result.details
         assert result.details["missing_months_sales"] == ["2024-02"] # check_monotonic_months returns this format
         assert "missing_months_stock_movement" not in result.details
 
-    def test_check_database_healthy_no_missing_months(self, in_memory_db, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_check_database_healthy_no_missing_months(self, dal, monkeypatch):
         """Test check_database returns healthy if all months are present in both tables."""
 
-        def side_effect_for_healthy(query, params=(), fetchall=False):
+        async def side_effect_for_healthy(query, params=(), fetchall=False):
             if query == "SELECT 1":
                 return [{"1": 1}]
-            if "SELECT name FROM sqlite_master" in query:
+            if "SELECT table_name as name FROM information_schema.tables" in query or "information_schema.tables" in query:
                 return [{"name": table} for table in params]
             if "fact_sales" in query:
                 return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
@@ -754,19 +791,19 @@ DATASPHERE_YC_PROFILE=default
                 return [{"data_date": "2024-01-01"}, {"data_date": "2024-02-01"}, {"data_date": "2024-03-01"}]
             return []
 
-        monkeypatch.setattr(in_memory_db, 'execute_raw_query', MagicMock(side_effect=side_effect_for_healthy))
+        monkeypatch.setattr(dal, 'execute_raw_query', AsyncMock(side_effect=side_effect_for_healthy))
 
         # Mock execute_query_with_batching to return all tables as existing
         def batching_side_effect(query_template, ids, **kwargs):
-            if "sqlite_master" in query_template.lower():
+            if "information_schema.tables" in query_template.lower() or "table_name" in query_template.lower():
                 # Return all requested tables as existing
                 return [{"name": table} for table in ids]
             return []
 
-        monkeypatch.setattr(in_memory_db, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
+        monkeypatch.setattr(dal, 'execute_query_with_batching', MagicMock(side_effect=batching_side_effect))
 
         from deployment.app.api.health import check_database
-        result = check_database(in_memory_db)
+        result = await check_database(dal)
         assert result.status == "healthy"
 
 

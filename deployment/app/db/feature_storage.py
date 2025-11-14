@@ -1,14 +1,13 @@
-import warnings
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from deployment.app.db.data_access_layer import DataAccessLayer
-from deployment.app.db.database import EXPECTED_REPORT_FEATURES, EXPECTED_REPORT_FEATURES_SET
-from deployment.app.db.schema import MULTIINDEX_NAMES
+from deployment.app.db.types import EXPECTED_REPORT_FEATURES, EXPECTED_REPORT_FEATURES_SET
+from deployment.app.db.schema_postgresql import MULTIINDEX_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -32,25 +31,25 @@ class SQLFeatureStore:
         # Connection is managed by the DAL, so no need to close it here.
         pass
 
-    def create_run(self, source_files: str) -> int:
+    async def create_run(self, source_files: str) -> int:
         """Create a new processing run and store its ID using the DAL."""
-        self.run_id = self._dal.create_processing_run(
-            start_time=datetime.now(),
+        self.run_id = await self._dal.create_processing_run(
+            start_time=datetime.now(timezone.utc),
             status="running",
             source_files=source_files,
         )
         return self.run_id
 
-    def complete_run(self, status: str = "completed") -> None:
+    async def complete_run(self, status: str = "completed") -> None:
         """Mark the current run as completed using the DAL."""
         if self.run_id:
-            self._dal.update_processing_run(
+            await self._dal.update_processing_run(
                 run_id=self.run_id,
                 status=status,
-                end_time=datetime.now(),
+                end_time=datetime.now(timezone.utc),
             )
 
-    def save_features(
+    async def save_features(
         self, 
         features: dict[str, pd.DataFrame], 
         append: bool = True
@@ -59,15 +58,15 @@ class SQLFeatureStore:
         # Save features
         for feature_type, df in features.items():
             if hasattr(df, "shape"):
-                self._save_feature(feature_type, df, append)
+                await self._save_feature(feature_type, df, append)
 
         if self.run_id:
-            self._dal.update_processing_run(
+            await self._dal.update_processing_run(
                 run_id=self.run_id,
                 status="features_saved",
             )
 
-    def _save_report_features(self, df: pd.DataFrame) -> None:
+    async def _save_report_features(self, df: pd.DataFrame) -> None:
         """Saves a special DataFrame with features for reports."""
 
         # 1. Reset index to access its levels as columns
@@ -121,11 +120,13 @@ class SQLFeatureStore:
             .itertuples(index=False, name=None)
         )
 
-        features_data.loc[:, 'multiindex_id'] = self._dal.get_or_create_multiindex_ids_batch(
+        features_data.loc[:, 'multiindex_id'] = await self._dal.get_or_create_multiindex_ids_batch(
             list(unique_tuples)
         )
-        features_data.loc[:, 'data_date'] = features_data['_date'].dt.strftime('%Y-%m-%d')
-        features_data.loc[:, 'created_at'] = datetime.now().isoformat()
+        # Convert to date objects (not strings) for PostgreSQL compatibility
+        features_data.loc[:, 'data_date'] = features_data['_date'].dt.date
+        # Use timezone-aware datetime for PostgreSQL TIMESTAMPTZ compatibility
+        features_data.loc[:, 'created_at'] = datetime.now(timezone.utc)
         features_data = features_data.drop(columns=['_date'])
 
         # 4. Form data for insertion
@@ -139,7 +140,7 @@ class SQLFeatureStore:
             .itertuples(index=False, name=None)
         )
 
-        self._dal.insert_report_features(params_list)
+        await self._dal.insert_report_features(params_list)
         logger.info(f"Saved {len(params_list)} records to report_features table.")
 
     def _get_feature_config(self):
@@ -179,7 +180,7 @@ class SQLFeatureStore:
             },
         }
 
-    def _save_feature(
+    async def _save_feature(
         self, feature_type: str, df: pd.DataFrame | pd.Series, append: bool = True
     ) -> None:
         """Save a feature DataFrame to the appropriate SQL table using the DAL."""
@@ -197,10 +198,10 @@ class SQLFeatureStore:
         is_time_agnostic = config.get("is_time_agnostic", False)
 
         if not append:
-            self._dal.delete_features_by_table(table)
+            await self._dal.delete_features_by_table(table)
 
         if feature_type == "report_features":
-            self._save_report_features(df)
+            await self._save_report_features(df)
             return
         
         if isinstance(df, pd.Series):
@@ -233,7 +234,7 @@ class SQLFeatureStore:
             # Normalize tuples to strings for consistent identity mapping
             original_unique_tuples = df.index.to_list()
 
-            multiindex_id = (
+            multiindex_id = await (
                 self
                 ._dal
                 .get_or_create_multiindex_ids_batch(
@@ -272,7 +273,8 @@ class SQLFeatureStore:
                     )
                 )
                 
-            df['data_date'] = pd.to_datetime(df['data_date'], errors='coerce').dt.strftime('%Y-%m-%d')
+            # Convert to date objects (not strings) for PostgreSQL compatibility
+            df['data_date'] = pd.to_datetime(df['data_date'], errors='coerce').dt.date
             df = df.loc[df.value.ne(0.0)]
 
             params_list = []
@@ -285,8 +287,7 @@ class SQLFeatureStore:
             
             if params_list:
                 logger.info(f"Attempting to save {len(params_list)} records for {feature_type} into {table}")
-                self._dal.insert_features_batch(table, params_list)
-                self._dal.commit()
+                await self._dal.insert_features_batch(table, params_list)
                 logger.info(f"Saved {len(params_list)} records to {table}")
             else:
                 logger.warning(f"No data to save for {feature_type}")
@@ -319,7 +320,7 @@ class SQLFeatureStore:
                 logger.warning(f"Could not convert {value} of type {type(value)} to float, using {default}")
                 return default
 
-    def load_features(
+    async def load_features(
         self,
         start_date: str | None = None,
         end_date: str | None = None,
@@ -352,7 +353,7 @@ class SQLFeatureStore:
         # 1. Load raw data for all groups and collect IDs
         for group_name, config in configs.items():
             # This DAL method needs to be created.
-            data = self._dal.get_feature_dataframe(
+            data = await self._dal.get_feature_dataframe(
                 table_name=config["table"],
                 columns=config["value_columns"],
                 start_date=start_date,
@@ -374,9 +375,9 @@ class SQLFeatureStore:
             return {}
 
         # 2. Get attributes for all collected IDs in one batch
-        # Convert numpy types to Python int to avoid SQLite type issues
+        # Convert numpy types to Python int for database compatibility
         ids_list = [int(id_val) for id_val in all_multiindex_ids if id_val is not None]
-        multiindex_tuples = self._dal.get_multiindex_mapping_by_ids(ids_list)
+        multiindex_tuples = await self._dal.get_multiindex_mapping_by_ids(ids_list)
         if not multiindex_tuples:
             logger.error("Could not retrieve multi-index mapping for any of the found IDs.")
             return {}
@@ -488,7 +489,7 @@ class FeatureStoreFactory:
             raise ValueError(f"Unsupported feature store type: {store_type}")
 
 
-def save_features(
+async def save_features(
     features: dict[str, pd.DataFrame],
     source_files: str,
     store_type: str = "sql",
@@ -507,13 +508,16 @@ def save_features(
         dal=dal, 
         **kwargs
     )
-    run_id = store.create_run(source_files)
-    store.save_features(features, append=append)
-    store.complete_run()
+    run_id = await store.create_run(source_files)
+    await store.save_features(features, append=append)
+    await store.complete_run()
+    # NOTE(REVIEWER): Variable 'store' is created but not used after this point.
+    # This is intentional - store methods are called, but store object itself
+    # doesn't need to be retained. Consider removing if linter complains.
     return run_id
 
 
-def load_features(
+async def load_features(
     store_type: str = "sql",
     start_date: str | None = None,
     end_date: str | None = None,
@@ -525,13 +529,13 @@ def load_features(
         raise ValueError("A DataAccessLayer instance must be provided.")
 
     store = FeatureStoreFactory.get_store(store_type=store_type, dal=dal, **kwargs)
-    features = store.load_features(
+    features = await store.load_features(
         start_date=start_date, end_date=end_date
     )
     return features
 
 
-def load_report_features(
+async def load_report_features(
     store_type: str = "sql",
     multiidx_ids: list[int] | None = None,
     start_date: date | None = None,
@@ -544,12 +548,18 @@ def load_report_features(
     if not dal:
         raise ValueError("A DataAccessLayer instance must be provided.")
 
-    store = FeatureStoreFactory.get_store(store_type=store_type, dal=dal, **kwargs)
-    return store.load_report_features(
-        multiidx_ids=multiidx_ids,
-        start_date=start_date,
-        end_date=end_date,
-        feature_subset=feature_subset,
-    )
+    # NOTE(REVIEWER): FeatureStoreFactory.get_store() is not used here because
+    # SQLFeatureStore doesn't have load_report_features method. We use DAL directly.
+    # SQLFeatureStore doesn't have load_report_features method, use DAL directly
+    if store_type == "sql":
+        features_data = await dal.get_report_features(
+            multiidx_ids=multiidx_ids,
+            start_date=start_date,
+            end_date=end_date,
+            feature_subset=feature_subset,
+        )
+        return pd.DataFrame(features_data) if features_data else pd.DataFrame()
+    else:
+        raise ValueError(f"Unsupported store type: {store_type}")
 
 

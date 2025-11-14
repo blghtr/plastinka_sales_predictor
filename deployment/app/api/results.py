@@ -45,7 +45,7 @@ async def get_training_results(
     Retrieves a list of results from recent model training jobs, including metrics and parameters.
     """
     try:
-        results = dal.get_training_results()
+        results = await dal.get_training_results()
         # Deserialize JSON fields before passing to Pydantic models
         deserialized_results = [_deserialize_json_fields(res) for res in results]
         return [TrainingResultResponse(**res) for res in deserialized_results]
@@ -69,7 +69,7 @@ async def get_training_result_by_id(
     Retrieves the detailed results of a specific training job by its result ID.
     """
     try:
-        result = dal.get_training_results(result_id=result_id)
+        result = await dal.get_training_results(result_id=result_id)
         if not result:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Training result not found"
@@ -100,7 +100,7 @@ async def get_tuning_results(
     which can be ordered by a specified metric.
     """
     try:
-        results = dal.get_tuning_results(metric_name=metric_name, higher_is_better=higher_is_better, limit=limit, result_id=None)
+        results = await dal.get_tuning_results(metric_name=metric_name, higher_is_better=higher_is_better, limit=limit, result_id=None)
         # Deserialize JSON fields before passing to Pydantic models
         deserialized_results = [_deserialize_json_fields(res) for res in results]
         return [TuningResultResponse(**res) for res in deserialized_results]
@@ -124,7 +124,7 @@ async def get_tuning_result_by_id(
     Retrieves the detailed results of a specific tuning job by its result ID.
     """
     try:
-        result = dal.get_tuning_results(result_id=result_id)
+        result = await dal.get_tuning_results(result_id=result_id)
         if not result:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Tuning result not found"

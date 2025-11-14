@@ -1,15 +1,26 @@
+"""
+PostgreSQL schema for Plastinka ML Service.
+
+This module contains the PostgreSQL DDL schema converted from SQLite.
+Key conversions:
+- INTEGER PRIMARY KEY AUTOINCREMENT → BIGSERIAL PRIMARY KEY
+- TEXT for JSON fields → JSONB
+- TIMESTAMP → TIMESTAMP WITH TIME ZONE
+- BOOLEAN DEFAULT 0 → BOOLEAN DEFAULT FALSE
+- REAL → DOUBLE PRECISION
+- DECIMAL(10,2) → NUMERIC(10,2)
+"""
+
 import logging
-import os
-import sqlite3
-from pathlib import Path
+from asyncpg import Pool
 
 logger = logging.getLogger(__name__)
 
-# SQL statements for creating the database schema
+# PostgreSQL schema SQL
 SCHEMA_SQL = """
 -- Dimension Tables
 CREATE TABLE IF NOT EXISTS dim_multiindex_mapping (
-    multiindex_id INTEGER PRIMARY KEY,
+    multiindex_id BIGSERIAL PRIMARY KEY,
     barcode TEXT,  -- Штрихкод
     artist TEXT,   -- Исполнитель
     album TEXT,    -- Альбом
@@ -31,47 +42,39 @@ CREATE TABLE IF NOT EXISTS dim_multiindex_mapping (
 -- fact_prices is obsolete and now removed from the code : prices now implicitly stored as part of multiindex_id
 
 CREATE TABLE IF NOT EXISTS fact_sales (
-    multiindex_id INTEGER,
+    multiindex_id BIGINT,
     data_date DATE,
-    value REAL,
+    value DOUBLE PRECISION,
     PRIMARY KEY (multiindex_id, data_date),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
 CREATE TABLE IF NOT EXISTS fact_stock_movement (
-    multiindex_id INTEGER,
+    multiindex_id BIGINT,
     data_date DATE,
-    value REAL,
+    value DOUBLE PRECISION,
     PRIMARY KEY (multiindex_id, data_date),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
--- New fact table for predictions storage
-CREATE TABLE IF NOT EXISTS fact_predictions (
-    prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    multiindex_id INTEGER NOT NULL,
-    prediction_month DATE NOT NULL,
-    result_id TEXT NOT NULL,
-    model_id TEXT NOT NULL,
-    quantile_05 DECIMAL(10,2) NOT NULL,
-    quantile_25 DECIMAL(10,2) NOT NULL,
-    quantile_50 DECIMAL(10,2) NOT NULL,
-    quantile_75 DECIMAL(10,2) NOT NULL,
-    quantile_95 DECIMAL(10,2) NOT NULL,
-    created_at TIMESTAMP NOT NULL,
-    FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id),
-    FOREIGN KEY (model_id) REFERENCES models(model_id),
-    FOREIGN KEY (result_id) REFERENCES prediction_results(result_id),
-    UNIQUE(multiindex_id, prediction_month, model_id)
-);
+-- Note: fact_predictions table is created later, after models and prediction_results tables
 
 -- Utility Tables
 CREATE TABLE IF NOT EXISTS processing_runs (
-    run_id INTEGER PRIMARY KEY,
-    start_time TIMESTAMP,
-    end_time TIMESTAMP,
+    run_id BIGSERIAL PRIMARY KEY,
+    start_time TIMESTAMP WITH TIME ZONE,
+    end_time TIMESTAMP WITH TIME ZONE,
     status TEXT,
     source_files TEXT
+);
+
+-- New table for unique configs (must be created before jobs due to FK constraint)
+CREATE TABLE IF NOT EXISTS configs (
+    config_id TEXT PRIMARY KEY, -- Could be a hash of the parameters
+    config JSONB NOT NULL,       -- JSON string of the parameters
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    is_active BOOLEAN DEFAULT FALSE,
+    source TEXT                 -- 'manual' | 'tuning' | NULL
 );
 
 -- Job Tables
@@ -79,14 +82,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     job_id TEXT PRIMARY KEY,
     job_type TEXT NOT NULL,  -- 'data_upload', 'training', 'prediction', 'report'
     status TEXT NOT NULL,    -- 'pending', 'running', 'completed', 'failed'
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
     config_id TEXT,          -- Reference to configs table
     model_id TEXT,           -- Reference to models table (no FK constraint due to circular dependency)
-    parameters TEXT,         -- JSON of job parameters
+    parameters JSONB,       -- JSON of job parameters
     result_id TEXT,          -- ID of the result resource (if applicable)
     error_message TEXT,
-    progress REAL,           -- 0-100 percentage
+    progress DOUBLE PRECISION,  -- 0-100 percentage
     requirements_hash TEXT,  -- SHA256 hash of requirements.txt for optimization through cloning
     parent_job_id TEXT,      -- ID of source job when cloning (NULL for new jobs)
     datasphere_job_id TEXT,  -- DataSphere job ID returned by DataSphere API (NULL for non-datasphere jobs)
@@ -95,12 +98,12 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 -- Job status history table for tracking status changes over time
 CREATE TABLE IF NOT EXISTS job_status_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BIGSERIAL PRIMARY KEY,
     job_id TEXT NOT NULL,
     status TEXT NOT NULL,    -- 'pending', 'running', 'completed', 'failed'
-    progress REAL,           -- 0-100 percentage
+    progress DOUBLE PRECISION,  -- 0-100 percentage
     status_message TEXT,     -- Detailed status message
-    updated_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
 );
 
@@ -108,8 +111,8 @@ CREATE TABLE IF NOT EXISTS data_upload_results (
     result_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     records_processed INTEGER,
-    features_generated TEXT, -- JSON list of feature types
-    processing_run_id INTEGER,
+    features_generated JSONB, -- JSON list of feature types
+    processing_run_id BIGINT,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id),
     FOREIGN KEY (processing_run_id) REFERENCES processing_runs(run_id)
 );
@@ -119,19 +122,10 @@ CREATE TABLE IF NOT EXISTS models (
     model_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     model_path TEXT NOT NULL,      -- Path to the saved model file (e.g., .onnx or .pt)
-    created_at TIMESTAMP NOT NULL,
-    metadata TEXT,                 -- Optional JSON for file size, framework, etc.
-    is_active BOOLEAN DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    metadata JSONB,                -- Optional JSON for file size, framework, etc.
+    is_active BOOLEAN DEFAULT FALSE,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
-);
-
--- New table for unique configs
-CREATE TABLE IF NOT EXISTS configs (
-    config_id TEXT PRIMARY KEY, -- Could be a hash of the parameters
-    config TEXT NOT NULL,        -- JSON string of the parameters
-    created_at TIMESTAMP NOT NULL,
-    is_active BOOLEAN DEFAULT 0,
-    source TEXT                 -- 'manual' | 'tuning' | NULL
 );
 
 CREATE TABLE IF NOT EXISTS training_results (
@@ -139,9 +133,9 @@ CREATE TABLE IF NOT EXISTS training_results (
     job_id TEXT NOT NULL,
     model_id TEXT,
     config_id TEXT,
-    metrics TEXT, -- JSON dictionary of metrics
-    duration REAL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    metrics JSONB, -- JSON dictionary of metrics
+    duration DOUBLE PRECISION,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id),
     FOREIGN KEY (model_id) REFERENCES models(model_id),
     FOREIGN KEY (config_id) REFERENCES configs(config_id)
@@ -151,18 +145,37 @@ CREATE TABLE IF NOT EXISTS prediction_results (
     result_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     model_id TEXT NOT NULL,
-    prediction_date TIMESTAMP,
+    prediction_date TIMESTAMP WITH TIME ZONE,
     prediction_month DATE,     -- New field: month for which predictions were made
     output_path TEXT,       -- Path to prediction output file
-    summary_metrics TEXT,   -- JSON of prediction metrics
+    summary_metrics JSONB,   -- JSON of prediction metrics
     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+);
+
+-- New fact table for predictions storage (created after models and prediction_results)
+CREATE TABLE IF NOT EXISTS fact_predictions (
+    prediction_id BIGSERIAL PRIMARY KEY,
+    multiindex_id BIGINT NOT NULL,
+    prediction_month DATE NOT NULL,
+    result_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    quantile_05 NUMERIC(10,2) NOT NULL,
+    quantile_25 NUMERIC(10,2) NOT NULL,
+    quantile_50 NUMERIC(10,2) NOT NULL,
+    quantile_75 NUMERIC(10,2) NOT NULL,
+    quantile_95 NUMERIC(10,2) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id),
+    FOREIGN KEY (model_id) REFERENCES models(model_id),
+    FOREIGN KEY (result_id) REFERENCES prediction_results(result_id),
+    UNIQUE(multiindex_id, prediction_month, model_id)
 );
 
 CREATE TABLE IF NOT EXISTS report_results (
     result_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     report_type TEXT,
-    parameters TEXT,        -- JSON of report parameters
+    parameters JSONB,        -- JSON of report parameters
     output_path TEXT,       -- Path to generated report
     FOREIGN KEY (job_id) REFERENCES jobs(job_id)
 );
@@ -171,9 +184,9 @@ CREATE TABLE IF NOT EXISTS tuning_results (
     result_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     config_id TEXT NOT NULL,
-    metrics TEXT,
-    duration REAL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    metrics JSONB,
+    duration DOUBLE PRECISION,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id),
     FOREIGN KEY (config_id) REFERENCES configs(config_id)
 );
@@ -182,27 +195,27 @@ CREATE TABLE IF NOT EXISTS tuning_results (
 CREATE TABLE IF NOT EXISTS job_submission_locks (
     job_type TEXT NOT NULL,
     param_hash TEXT NOT NULL,
-    lock_until TIMESTAMP NOT NULL,
+    lock_until TIMESTAMP WITH TIME ZONE NOT NULL,
     PRIMARY KEY (job_type, param_hash)
 );
 
 
 CREATE TABLE IF NOT EXISTS report_features (
     data_date DATE NOT NULL,
-    multiindex_id INTEGER NOT NULL,
-    availability REAL,
-    confidence REAL,
-    masked_mean_sales_items REAL,
-    masked_mean_sales_rub REAL,
-    lost_sales REAL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    multiindex_id BIGINT NOT NULL,
+    availability DOUBLE PRECISION,
+    confidence DOUBLE PRECISION,
+    masked_mean_sales_items DOUBLE PRECISION,
+    masked_mean_sales_rub DOUBLE PRECISION,
+    lost_sales DOUBLE PRECISION,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (data_date, multiindex_id),
     FOREIGN KEY (multiindex_id) REFERENCES dim_multiindex_mapping(multiindex_id)
 );
 
 CREATE TABLE IF NOT EXISTS retry_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
     component TEXT,
     operation TEXT,
     attempt INTEGER,
@@ -265,6 +278,16 @@ CREATE INDEX IF NOT EXISTS idx_retry_events_time ON retry_events(timestamp);
 
 -- Index to help cleanups of stale locks
 CREATE INDEX IF NOT EXISTS idx_job_submission_locks_until ON job_submission_locks(lock_until);
+
+-- GIN indexes for JSONB fields to improve query performance
+CREATE INDEX IF NOT EXISTS idx_jobs_parameters_gin ON jobs USING GIN (parameters);
+CREATE INDEX IF NOT EXISTS idx_configs_config_gin ON configs USING GIN (config);
+CREATE INDEX IF NOT EXISTS idx_training_results_metrics_gin ON training_results USING GIN (metrics);
+CREATE INDEX IF NOT EXISTS idx_tuning_results_metrics_gin ON tuning_results USING GIN (metrics);
+CREATE INDEX IF NOT EXISTS idx_prediction_results_summary_metrics_gin ON prediction_results USING GIN (summary_metrics);
+CREATE INDEX IF NOT EXISTS idx_models_metadata_gin ON models USING GIN (metadata);
+CREATE INDEX IF NOT EXISTS idx_data_upload_results_features_gin ON data_upload_results USING GIN (features_generated);
+CREATE INDEX IF NOT EXISTS idx_report_results_parameters_gin ON report_results USING GIN (parameters);
 """
 
 MULTIINDEX_NAMES = [
@@ -281,83 +304,31 @@ MULTIINDEX_NAMES = [
 ]
 
 
-def init_db(db_path: str = None, connection: sqlite3.Connection = None):
+async def init_postgres_schema(pool: Pool) -> bool:
     """
-    Initialize the database with schema.
-
+    Initialize PostgreSQL database with schema.
+    
     This function is idempotent - running it multiple times is safe.
     Tables and indexes are created only if they don't already exist.
-
+    
     Args:
-        db_path: Path to SQLite database file (optional, if connection is provided)
-        connection: Optional existing database connection. If provided, db_path is ignored.
-
+        pool: PostgreSQL connection pool
+        
     Returns:
         bool: True if successful, False otherwise
     """
-    conn = None
-    conn_created_internally = False
-    original_row_factory = None
-
     try:
-        if connection:
-            conn = connection
-        elif db_path:
-            # Убираем SQLite префиксы из пути
-            sqlite_prefixes = ["sqlite:///", "sqlite://", "sqlite:"]
-            parsed_db_path = db_path
+        async with pool.acquire() as conn:
+            # Enable foreign key constraints (PostgreSQL has them enabled by default, but ensure)
+            await conn.execute("SET session_replication_role = 'replica';")
             
-            for prefix in sqlite_prefixes:
-                if parsed_db_path.startswith(prefix):
-                    parsed_db_path = parsed_db_path[len(prefix):]
-                    break
-
-            if not parsed_db_path:
-                raise ValueError(
-                    f"Database path became empty after parsing scheme from: {db_path}"
-                )
-
-            actual_file_path = Path(parsed_db_path)
-            actual_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-            conn = sqlite3.connect(db_path)
-            conn_created_internally = True
-
-            try:
-                os.chmod(str(actual_file_path), 0o600)
-                logger.info(f"Set database file permissions for {actual_file_path} to 0o600.")
-            except OSError as e:
-                logger.warning(f"Could not set database file permissions for {actual_file_path}: {e}")
-
-        if conn:
-            original_row_factory = conn.row_factory
-            conn.row_factory = None
-
-            conn.execute("PRAGMA foreign_keys = ON;")
-            cursor = conn.cursor()
-            cursor.executescript(SCHEMA_SQL)
-            conn.commit()
-
+            # Execute schema SQL
+            await conn.execute(SCHEMA_SQL)
+            
+            logger.info("PostgreSQL schema initialized successfully")
             return True
-        else:
-            logger.error("No database connection established")
-            return False
-
+            
     except Exception as e:
-        logger.error(f"Database initialization failed: {e}", exc_info=True)
-        if conn and conn_created_internally: # Only rollback if we created the connection
-            conn.rollback()
+        logger.error(f"PostgreSQL schema initialization failed: {e}", exc_info=True)
         return False
-    finally:
-        if connection and original_row_factory is not None:
-            connection.row_factory = original_row_factory
 
-        if conn and conn_created_internally: # Only close if we created the connection
-            try:
-                conn.close()
-            except Exception as close_e:
-                logger.error(f"Error closing database connection: {close_e}")
-
-
-if __name__ == "__main__":
-    init_db()

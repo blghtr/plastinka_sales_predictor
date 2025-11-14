@@ -54,55 +54,14 @@ def check_datasphere_authentication() -> tuple[bool, list[str]]:
     Returns (has_auth, missing_description).
     """
     has_oauth = bool(os.environ.get("YC_OAUTH_TOKEN"))
-    has_yc_profile = bool(os.environ.get("DATASPHERE_YC_PROFILE"))
-
-    if has_oauth or has_yc_profile:
+    if has_oauth:
         return True, []
-
-    return False, ["YC_OAUTH_TOKEN or DATASPHERE_YC_PROFILE (DataSphere Authentication)"]
+    return False, ["YC_OAUTH_TOKEN (DataSphere Authentication)"]
 
 
 def check_yc_profile_health() -> ComponentHealth:
-    """
-    Check if the Yandex Cloud CLI profile is valid and accessible.
-    """
-    profile_name = os.environ.get("DATASPHERE_YC_PROFILE", "datasphere-prod")
-
-    try:
-        # Check if yc CLI is available
-        import subprocess
-        result = subprocess.run(
-            ["yc", "config", "profile", "get", profile_name],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-
-        if result.returncode == 0:
-            return ComponentHealth(status="healthy", details={"profile": profile_name})
-        else:
-            return ComponentHealth(
-                status="unhealthy",
-                details={
-                    "error": f"Profile '{profile_name}' not found or invalid",
-                    "stderr": result.stderr
-                }
-            )
-    except subprocess.TimeoutExpired:
-        return ComponentHealth(
-            status="unhealthy",
-            details={"error": f"Timeout checking profile '{profile_name}'"}
-        )
-    except FileNotFoundError:
-        return ComponentHealth(
-            status="unhealthy",
-            details={"error": "yc CLI not found. Please install Yandex Cloud CLI"}
-        )
-    except Exception as e:
-        return ComponentHealth(
-            status="unhealthy",
-            details={"error": f"Error checking YC profile: {str(e)}"}
-        )
+    """Deprecated: profile-based authentication removed."""
+    return ComponentHealth(status="healthy")
 
 
 def check_yc_token_health() -> ComponentHealth:
@@ -176,23 +135,17 @@ def get_environment_status() -> ComponentHealth:
 
     # Check authentication method and validate accordingly
     has_oauth = bool(os.environ.get("YC_OAUTH_TOKEN"))
-    has_yc_profile = bool(os.environ.get("DATASPHERE_YC_PROFILE"))
 
     if has_oauth:
         # Check YC token health
         token_health = check_yc_token_health()
         if token_health.status != "healthy":
             return token_health
-    elif has_yc_profile:
-        # Check YC profile health
-        profile_health = check_yc_profile_health()
-        if profile_health.status != "healthy":
-            return profile_health
     else:
         # This shouldn't happen due to check_datasphere_authentication above
         return ComponentHealth(
             status="unhealthy",
-            details={"error": "No authentication method configured"}
+            details={"error": "YC_OAUTH_TOKEN is not set"}
         )
 
     return ComponentHealth(status="healthy")
@@ -208,7 +161,7 @@ def get_missing_variables_simple() -> list[str]:
 
     if not has_auth:
         # Add auth option to the missing list for script display
-        missing.append("YC_OAUTH_TOKEN or DATASPHERE_YC_PROFILE")
+        missing.append("YC_OAUTH_TOKEN")
 
     return missing
 

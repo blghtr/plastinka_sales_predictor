@@ -104,7 +104,7 @@ resource "null_resource" "create_env_file" {
       echo "# DataSphere Configuration (REQUIRED)" > "${local.project_root_env_path}"
       echo "DATASPHERE_PROJECT_ID=${local.project_id}" >> "${local.project_root_env_path}"
       echo "DATASPHERE_FOLDER_ID=${var.yc_folder_id}" >> "${local.project_root_env_path}"
-      echo "DATASPHERE_YC_PROFILE=datasphere-prod" >> "${local.project_root_env_path}"
+      # DATASPHERE_YC_PROFILE removed – using YC_OAUTH_TOKEN only
       echo "" >> "${local.project_root_env_path}"
       echo "# API Security (REQUIRED)" >> "${local.project_root_env_path}"
       echo "# These will be automatically generated and populated by the Python script." >> "${local.project_root_env_path}"
@@ -116,39 +116,7 @@ resource "null_resource" "create_env_file" {
   }
 }
 
-resource "null_resource" "configure_yc_cli_profile" {
-  # Only run when token changes
-  triggers = {
-    yc_token_md5 = md5(var.yc_token != null ? var.yc_token : "")
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      profileName="datasphere-prod"
-      cloudId="${var.yc_cloud_id}"
-      ycToken="${var.yc_token}" # Using var.yc_token as it's passed via TF_VAR_yc_token
-      
-      # Check if profile exists
-      if yc config profile get "$profileName" >/dev/null 2>&1; then
-          echo "yc CLI profile '$profileName' already exists. Updating..."
-      else
-          echo "yc CLI profile '$profileName' does not exist. Creating..."
-          yc config profile create "$profileName"
-      fi
-
-      # Set OAuth token
-      if [ -n "$ycToken" ]; then
-          echo "Setting OAuth token for profile '$profileName'."
-          yc config set token "$ycToken" --profile "$profileName"
-      else
-          echo "TF_VAR_yc_token is not set. Skipping OAuth token setup."
-      fi
-
-      echo "yc CLI profile configuration complete for '$profileName'."
-    EOT
-    interpreter = ["bash", "-c"]
-  }
-}
+// configure_yc_cli_profile removed – no CLI profiles
 
 resource "null_resource" "generate_api_keys" {
   # Запускается всегда, когда запускается create_env_file
@@ -176,6 +144,98 @@ resource "null_resource" "generate_api_keys" {
 
   depends_on = [
     null_resource.create_env_file,
-    null_resource.configure_yc_cli_profile
+    # configure_yc_cli_profile removed
   ]
 }
+
+# ============================================================================
+# POSTGRESQL CLUSTER FOR ML SERVICE
+# ============================================================================
+
+# PostgreSQL cluster - создается только если не предоставлен existing_postgres_cluster_id
+resource "yandex_mdb_postgresql_cluster" "ml_postgres" {
+  count       = var.existing_postgres_cluster_id == null ? 1 : 0
+  name        = var.postgres_cluster_name
+  description = "PostgreSQL cluster for Plastinka ML Service"
+  environment = "PRODUCTION"
+  network_id  = null  # Will use default network, can be configured via subnet_id
+  folder_id   = var.yc_folder_id
+
+  labels = {
+    env     = "prod"
+    project = "plastinka-sales-predictor"
+    service = "ml-database"
+  }
+
+  config {
+    version = var.postgres_version
+
+    postgresql_config = {
+      max_connections                   = 100
+      shared_buffers                   = 256MB
+      effective_cache_size             = 1GB
+      maintenance_work_mem             = 64MB
+      checkpoint_completion_target     = 0.9
+      wal_buffers                      = 16MB
+      default_statistics_target        = 100
+      random_page_cost                 = 4.0
+      effective_io_concurrency         = 2
+      work_mem                         = 4MB
+      min_wal_size                     = 1GB
+      max_wal_size                     = 4GB
+      max_worker_processes             = 4
+      max_parallel_workers_per_gather  = 2
+      max_parallel_workers            = 4
+      max_parallel_maintenance_workers = 2
+    }
+
+    resources {
+      resource_preset_id = var.postgres_resource_preset_id
+      disk_type_id       = var.postgres_disk_type_id
+      disk_size          = var.postgres_disk_size
+    }
+
+    backup_window_start {
+      hours   = 2
+      minutes = 0
+    }
+
+    backup_retain_period_days = var.postgres_backup_retention_period
+  }
+
+  database {
+    name  = var.postgres_database_name
+    owner = var.postgres_user_name
+  }
+
+  user {
+    name     = var.postgres_user_name
+    password = random_password.postgres_password[0].result
+    grants   = []
+    permission {
+      database_name = var.postgres_database_name
+    }
+  }
+
+  host {
+    zone      = var.postgres_zone_id
+    subnet_id = var.postgres_subnet_id
+  }
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      labels
+    ]
+  }
+}
+
+# Generate random password for PostgreSQL user
+resource "random_password" "postgres_password" {
+  count   = var.existing_postgres_cluster_id == null ? 1 : 0
+  length  = 32
+  special = true
+}
+
+# Store PostgreSQL password in Yandex Lockbox secret (optional, for production)
+# For now, password will be output and should be stored securely

@@ -356,24 +356,41 @@ class TestDatabaseSettings:
         # Act
         settings = DatabaseSettings()
 
-        # Assert
-        assert settings.filename == "plastinka.db"
+        # Assert - PostgreSQL fields (filename field removed after migration)
+        assert settings.postgres_host == "localhost"
+        assert settings.postgres_port == 5432
+        assert settings.postgres_database == "plastinka_ml"
+        assert settings.postgres_user == "postgres"
+        assert settings.postgres_password == ""
+        assert settings.postgres_pool_min_size == 5
+        assert settings.postgres_pool_max_size == 20
+        assert settings.postgres_ssl_mode == "prefer"
 
-    @patch.dict(os.environ, {"DB_FILENAME": "custom.db"})
+    @patch.dict(os.environ, {"DB_POSTGRES_HOST": "custom-host", "DB_POSTGRES_PORT": "5433", "DB_POSTGRES_DATABASE": "custom_db"})
     def test_database_settings_from_environment(self):
         """Test DatabaseSettings loads values from environment variables."""
         # Act
         settings = DatabaseSettings()
 
-        # Assert
-        assert settings.filename == "custom.db"
+        # Assert - PostgreSQL fields from environment
+        assert settings.postgres_host == "custom-host"
+        assert settings.postgres_port == 5433
+        assert settings.postgres_database == "custom_db"
+        # Other fields use defaults
+        assert settings.postgres_user == "postgres"
 
     @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
     @patch("deployment.app.config.load_config_file")
     def test_database_settings_custom_sources(self, mock_load_config_file):
         """Test DatabaseSettings custom configuration sources."""
-        # Arrange
-        mock_load_config_file.return_value = {"db": {"filename": "config.db"}}
+        # Arrange - PostgreSQL structure (filename field removed after migration)
+        mock_load_config_file.return_value = {
+            "db": {
+                "postgres_host": "config-host",
+                "postgres_port": 5434,
+                "postgres_database": "config_db"
+            }
+        }
         # Clear the LRU cache so get_config_values can be called again
         get_config_values.cache_clear()
 
@@ -382,7 +399,9 @@ class TestDatabaseSettings:
 
         # Assert
         mock_load_config_file.assert_called_once_with("/test/config.yaml")
-        assert settings.filename == "config.db"
+        assert settings.postgres_host == "config-host"
+        assert settings.postgres_port == 5434
+        assert settings.postgres_database == "config_db"
 
 
 class TestDataSphereSettings:
@@ -401,11 +420,10 @@ class TestDataSphereSettings:
         # Act
         settings = DataSphereSettings()
 
-        # Assert
+        # Assert - yc_profile and auth_method removed after migration to OAuth-only
         assert settings.project_id == ""
         assert settings.folder_id == ""
         assert settings.oauth_token == ""
-        assert settings.yc_profile == "datasphere-prod"
         assert settings.max_polls == 72
         assert settings.poll_interval == 300.0
         assert settings.download_diagnostics_on_success is False
@@ -421,7 +439,6 @@ class TestDataSphereSettings:
             "DATASPHERE_PROJECT_ID": "test-project",
             "DATASPHERE_FOLDER_ID": "test-folder",
             "YC_OAUTH_TOKEN": "test-token",
-            "DATASPHERE_YC_PROFILE": "test-profile",
             "DATASPHERE_MAX_POLLS": "200",
             "DATASPHERE_POLL_INTERVAL": "10.0",
             "DATASPHERE_DOWNLOAD_DIAGNOSTICS_ON_SUCCESS": "true",
@@ -432,35 +449,32 @@ class TestDataSphereSettings:
         # Act
         settings = DataSphereSettings()
 
-        # Assert
+        # Assert - yc_profile removed after migration to OAuth-only
         assert settings.project_id == "test-project"
         assert settings.folder_id == "test-folder"
         assert settings.oauth_token == "test-token"
-        assert settings.yc_profile == "test-profile"
         assert settings.max_polls == 200
         assert settings.poll_interval == 10.0
         assert settings.download_diagnostics_on_success is True
 
     def test_datasphere_settings_client_property(self):
         """Test DataSphereSettings api_client property returns correct dictionary."""
-        # Arrange
+        # Arrange - yc_profile and auth_method removed after migration to OAuth-only
         settings = DataSphereSettings(
             project_id="test-project",
             folder_id="test-folder",
             oauth_token="test-token",
-            yc_profile="test-profile",
         )
 
         # Act
         client_config = settings.api_client
 
-        # Assert
-        # auth_method can be determined dynamically; accept 'auto', 'oauth_token', or 'yc_profile'
+        # Assert - client property returns only oauth_token (yc_profile and auth_method removed)
         assert client_config["project_id"] == "test-project"
         assert client_config["folder_id"] == "test-folder"
         assert client_config["oauth_token"] == "test-token"
-        assert client_config["yc_profile"] == "test-profile"
-        assert client_config["auth_method"] in {"auto", "oauth_token", "yc_profile"}
+        assert "yc_profile" not in client_config
+        assert "auth_method" not in client_config
 
     @patch.dict(os.environ, {"CONFIG_FILE_PATH": "/test/config.yaml"})
     @patch("deployment.app.config.load_config_file")
@@ -616,13 +630,10 @@ class TestAppSettings:
             settings = AppSettings()
 
         # Act & Assert - normalize path separators for Windows compatibility
-        expected_db_path = "/test/data/database/plastinka.db"
-        actual_db_path = settings.database_path.replace("\\", "/")
-        assert actual_db_path == expected_db_path
-
-        expected_db_url = "sqlite:////test/data/database/plastinka.db"
-        actual_db_url = settings.database_url.replace("\\", "/")
-        assert actual_db_url == expected_db_url
+        # database_path and database_url removed after PostgreSQL migration
+        # Verify PostgreSQL settings instead
+        assert settings.db.postgres_host == "localhost"
+        assert settings.db.postgres_database == "plastinka_ml"
 
         expected_models_dir = "/test/data/models"
         actual_models_dir = settings.models_dir.replace("\\", "/")
@@ -823,7 +834,7 @@ class TestIntegration:
         # Arrange
         mock_get_config_values.return_value = {
             "api": {"host": "nested-host"},
-            "db": {"filename": "nested.db"},
+            "db": {"postgres_host": "nested-host", "postgres_database": "nested_db"},
         }
 
         # Act
@@ -846,7 +857,11 @@ class TestIntegration:
             env="testing",
             data_root_dir="/test/data",
             api=APISettings(host="test-host", port=9000),
-            db=DatabaseSettings(filename="test.db"),
+            db=DatabaseSettings(
+                postgres_host="test-host",
+                postgres_port=5432,
+                postgres_database="test_db"
+            ),
         )
 
         # Assert - Verify the configuration was loaded correctly
@@ -855,13 +870,10 @@ class TestIntegration:
         assert settings.data_root_dir == "/test/data"
         assert settings.api.host == "test-host"
         assert settings.api.port == 9000
-        assert settings.db.filename == "test.db"
+        assert settings.db.postgres_host == "test-host"
+        assert settings.db.postgres_port == 5432
+        assert settings.db.postgres_database == "test_db"
 
         # Verify computed properties work (normalize path separators)
-        database_path = settings.database_path.replace("\\", "/")
-        assert "/test/data" in database_path
-        assert "test.db" in database_path
-        assert settings.database_url.startswith("sqlite:///")
-
         models_dir = settings.models_dir.replace("\\", "/")
         assert models_dir == "/test/data/models"

@@ -25,9 +25,7 @@ from fastapi import (
 )
 
 from deployment.app.config import get_settings
-from deployment.app.db.database import (
-    DatabaseError,
-)
+from deployment.app.db.exceptions import DatabaseError
 from deployment.app.models.api_models import (
     DataUploadFormParameters,
     DataUploadResponse,
@@ -144,7 +142,7 @@ async def create_data_upload_job(
     }
 
     # Enforce refractory: job_type + parameter hash (before any processing)
-    acquired, retry_after = dal.try_acquire_job_submission_lock(
+    acquired, retry_after = await dal.try_acquire_job_submission_lock(
         JobType.DATA_UPLOAD.value, prospective_params
     )
     if not acquired:
@@ -193,7 +191,7 @@ async def create_data_upload_job(
             await sales_file.seek(0)
 
         # Create a new job *after* lock acquisition
-        job_id = dal.create_job(
+        job_id = await dal.create_job(
             JobType.DATA_UPLOAD,
             parameters=prospective_params,
         )
@@ -303,7 +301,7 @@ async def create_data_upload_job(
 
         # Fail the job with the detailed reason
         if job_id:
-            dal.update_job_status(
+            await dal.update_job_status(
                 job_id, JobStatus.FAILED.value, error_message=detailed_error_reason
             )
 
@@ -329,8 +327,8 @@ async def create_data_upload_job(
             exc_info=True,
         )
         # Если ошибка произошла после создания задания, помечаем его как FAILED
-        if job_id and not dal.get_job(job_id)["status"] == JobStatus.FAILED.value:
-            dal.update_job_status(
+        if job_id and not (await dal.get_job(job_id))["status"] == JobStatus.FAILED.value:
+            await dal.update_job_status(
                 job_id,
                 JobStatus.FAILED.value,
                 error_message=f"Unexpected error during setup: {str(e)}",
@@ -375,7 +373,7 @@ async def create_training_job(
 
     try:
         # 1. Determine adjusted training end date automatically
-        dataset_end_date = dal.adjust_dataset_boundaries(
+        dataset_end_date = await dal.adjust_dataset_boundaries(
             start_date=dataset_start_date,
             end_date=dataset_end_date,
         )
@@ -384,7 +382,7 @@ async def create_training_job(
         )
 
         # 2. Get the effective configuration
-        config = dal.get_effective_config(get_settings(), logger)
+        config = await dal.get_effective_config(get_settings(), logger)
         if config is None:
             raise HTTPException(
                 status_code=fastapi_status.HTTP_400_BAD_REQUEST,
@@ -404,7 +402,7 @@ async def create_training_job(
             job_params["prediction_month"] = get_next_month(dataset_end_date)
 
         # Enforce refractory: job_type + parameter hash (after config validation)
-        acquired, retry_after = dal.try_acquire_job_submission_lock(JobType.TRAINING.value, job_params)
+        acquired, retry_after = await dal.try_acquire_job_submission_lock(JobType.TRAINING.value, job_params)
         if not acquired:
             raise HTTPException(
                 status_code=fastapi_status.HTTP_429_TOO_MANY_REQUESTS,
@@ -416,7 +414,7 @@ async def create_training_job(
                 headers={"Retry-After": str(retry_after)},
             )
 
-        job_id = dal.create_job(JobType.TRAINING, parameters=job_params)
+        job_id = await dal.create_job(JobType.TRAINING, parameters=job_params)
         logger.info(f"Job record created with ID: {job_id}")
 
         # 4. Start the background task with the *adjusted* end date
@@ -493,7 +491,7 @@ async def create_tuning_job(
         dataset_end_date = params.dataset_end_date
         mode = params.mode
         time_budget_s = params.time_budget_s
-        dataset_end_date = dal.adjust_dataset_boundaries(
+        dataset_end_date = await dal.adjust_dataset_boundaries(
             start_date=dataset_start_date,
             end_date=dataset_end_date,
         )
@@ -501,7 +499,7 @@ async def create_tuning_job(
             f"Determined adjusted dataset_end_date: {dataset_end_date.isoformat() if dataset_end_date else 'None'}"
         )
 
-        config = dal.get_effective_config(get_settings(), logger)
+        config = await dal.get_effective_config(get_settings(), logger)
         if config is None:
             raise HTTPException(
                 status_code=fastapi_status.HTTP_400_BAD_REQUEST,
@@ -523,7 +521,7 @@ async def create_tuning_job(
             job_params["dataset_end_date"] = dataset_end_date
 
         # Enforce refractory: job_type + parameter hash (after config validation)
-        acquired, retry_after = dal.try_acquire_job_submission_lock(JobType.TUNING.value, job_params)
+        acquired, retry_after = await dal.try_acquire_job_submission_lock(JobType.TUNING.value, job_params)
         if not acquired:
             raise HTTPException(
                 status_code=fastapi_status.HTTP_429_TOO_MANY_REQUESTS,
@@ -536,7 +534,7 @@ async def create_tuning_job(
             )
 
         # 3. Создание задания в БД
-        job_id = dal.create_job(JobType.TUNING, parameters=job_params)
+        job_id = await dal.create_job(JobType.TUNING, parameters=job_params)
         logger.info(f"Tuning job created: {job_id}")
 
         # 4. Подготовка динамических параметров задачи
@@ -594,7 +592,7 @@ async def create_prediction_report_job(
         prediction_month = params.prediction_month
         if prediction_month is None:
             # If no month is provided, get the latest one from prediction_results
-            latest_month = dal.get_latest_prediction_month()
+            latest_month = await dal.get_latest_prediction_month()
             if not latest_month:
                 raise HTTPException(
                     status_code=fastapi_status.HTTP_404_NOT_FOUND,
@@ -614,7 +612,7 @@ async def create_prediction_report_job(
         )
 
         # Generate the report directly
-        report_df = generate_report(params=params, dal=dal) # Pass DAL to report generator
+        report_df = await generate_report(params=params, dal=dal) # Pass DAL to report generator
 
         # Convert DataFrame to CSV string
         csv_data = report_df.to_csv(index=False)
@@ -655,7 +653,7 @@ async def get_job_status(
     If the job is completed, the response will include the results.
     """
     try:
-        job = dal.get_job(job_id)
+        job = await dal.get_job(job_id)
 
         if not job:
             raise HTTPException(
@@ -669,12 +667,25 @@ async def get_job_status(
             )
 
         # Build basic response
+        # Handle created_at and updated_at - they may be datetime objects or strings
+        created_at = job["created_at"]
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        elif isinstance(created_at, date) and not isinstance(created_at, datetime):
+            created_at = datetime.combine(created_at, datetime.min.time())
+        
+        updated_at = job["updated_at"]
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        elif isinstance(updated_at, date) and not isinstance(updated_at, datetime):
+            updated_at = datetime.combine(updated_at, datetime.min.time())
+        
         response = JobDetails(
             job_id=job["job_id"],
             job_type=job["job_type"],
             status=job["status"],
-            created_at=datetime.fromisoformat(job["created_at"]),
-            updated_at=datetime.fromisoformat(job["updated_at"]),
+            created_at=created_at,
+            updated_at=updated_at,
             progress=job["progress"] or 0.0,
             error=job["error_message"],
         )
@@ -684,7 +695,7 @@ async def get_job_status(
             result = {}
 
             if job["job_type"] == JobType.DATA_UPLOAD.value:
-                data_result = dal.get_data_upload_result(job["result_id"])
+                data_result = await dal.get_data_upload_result(job["result_id"])
                 if data_result:
                     result = {
                         "records_processed": data_result["records_processed"],
@@ -695,7 +706,7 @@ async def get_job_status(
                     }
 
             elif job["job_type"] == JobType.TRAINING.value:
-                training_result = dal.get_training_results(result_id=job["result_id"])
+                training_result = await dal.get_training_results(result_id=job["result_id"])
                 if training_result:
                     # Handle JSON deserialization for metrics
                     metrics = training_result.get("metrics", None)
@@ -722,7 +733,7 @@ async def get_job_status(
                     }
 
             elif job["job_type"] == JobType.PREDICTION.value:
-                prediction_result = dal.get_prediction_result(job["result_id"])
+                prediction_result = await dal.get_prediction_result(job["result_id"])
                 if prediction_result:
                     result = {
                         "model_id": prediction_result["model_id"],
@@ -734,7 +745,7 @@ async def get_job_status(
                     }
 
             elif job["job_type"] == JobType.REPORT.value:
-                report_result = dal.get_report_result(job["result_id"])
+                report_result = await dal.get_report_result(job["result_id"])
                 if report_result:
                     # Ensure all fields for ReportResponse are populated if they exist in DB
                     result = {
@@ -826,7 +837,7 @@ async def list_all_jobs(
     Retrieves a list of all jobs, which can be filtered by `job_type` and `status`.
     """
     try:
-        jobs_data = dal.list_jobs(
+        jobs_data = await dal.list_jobs(
             job_type=job_type.value if job_type else None,
             status=status.value if status else None,
             limit=limit,
@@ -835,12 +846,25 @@ async def list_all_jobs(
         # Convert job data to JobDetails objects
         jobs = []
         for job in jobs_data:
+            # Handle created_at and updated_at - they may be datetime objects or strings
+            created_at = job["created_at"]
+            if isinstance(created_at, str):
+                created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            elif isinstance(created_at, date) and not isinstance(created_at, datetime):
+                created_at = datetime.combine(created_at, datetime.min.time())
+            
+            updated_at = job["updated_at"]
+            if isinstance(updated_at, str):
+                updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            elif isinstance(updated_at, date) and not isinstance(updated_at, datetime):
+                updated_at = datetime.combine(updated_at, datetime.min.time())
+            
             job_details = JobDetails(
                 job_id=job["job_id"],
                 job_type=job["job_type"],
                 status=job["status"],
-                created_at=datetime.fromisoformat(job["created_at"]),
-                updated_at=datetime.fromisoformat(job["updated_at"]),
+                created_at=created_at,
+                updated_at=updated_at,
                 progress=job["progress"] or 0.0,
                 error=job["error_message"],
             )

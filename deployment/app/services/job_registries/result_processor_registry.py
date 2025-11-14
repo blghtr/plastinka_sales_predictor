@@ -64,7 +64,7 @@ async def process_training_results(
             logger.info(f"[{job_id}] Model saved with ID: {model_id_for_status}")
 
             if predictions_path:
-                prediction_result_info = save_predictions_to_db(
+                prediction_result_info = await save_predictions_to_db(
                     predictions_path=predictions_path,
                     job_id=job_id,
                     model_id=model_id_for_status,

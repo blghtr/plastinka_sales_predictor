@@ -6,215 +6,204 @@ to ensure they handle transient failures correctly.
 """
 
 import pytest
-import sqlite3
 from unittest.mock import patch, MagicMock
-from deployment.app.db.database import execute_query, execute_many, execute_query_with_batching, execute_many_with_batching
-from deployment.app.db.database import DatabaseError
+
+import asyncpg
+
+from deployment.app.db.exceptions import DatabaseError
+from deployment.app.db.queries.core import execute_many, execute_query
 from deployment.app.db.data_access_layer import DataAccessLayer
 
 
 class TestRetryFunctionality:
     """Test retry behavior for database operations."""
 
-    def test_execute_query_retry_on_transient_failure(self, in_memory_db):
-        """Test that execute_query retries on transient SQLite errors."""
-        dal = in_memory_db
-        
-        # Create a test table
-        execute_query("CREATE TABLE IF NOT EXISTS test_retry (id INTEGER PRIMARY KEY, name TEXT)", dal._connection)
-        
-        # Insert test data
-        execute_query("INSERT INTO test_retry (id, name) VALUES (1, 'test')", dal._connection)
-        
-        # Test that normal query works
-        result = execute_query("SELECT * FROM test_retry", dal._connection, fetchall=True)
-        assert len(result) == 1
-        assert result[0]["name"] == "test"
+    @pytest.mark.asyncio
+    async def test_execute_query_retry_on_transient_failure(self, dal):
+        """Test that execute_query retries on transient PostgreSQL errors."""
+        async with dal._pool.acquire() as conn:
+            # Create a test table and clean it up
+            await conn.execute("DROP TABLE IF EXISTS test_retry")
+            await conn.execute("CREATE TABLE test_retry (id BIGSERIAL PRIMARY KEY, name TEXT)")
+            
+            # Get initial count
+            initial_count = await conn.fetchval("SELECT COUNT(*) FROM test_retry")
+            
+            # Insert test data
+            await execute_query("INSERT INTO test_retry (name) VALUES ($1)", conn, ("test",))
+            
+            # Test that normal query works
+            result = await execute_query("SELECT * FROM test_retry", conn, fetchall=True)
+            assert len(result) == initial_count + 1
+            assert result[-1]["name"] == "test"
+            
+            # Clean up
+            await conn.execute("DROP TABLE test_retry")
 
-    def test_execute_query_fails_on_invalid_sql(self, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_execute_query_fails_on_invalid_sql(self, dal):
         """Test that execute_query fails immediately on invalid SQL."""
-        dal = in_memory_db
-        
-        # Should fail immediately without retries for syntax errors
-        with pytest.raises(DatabaseError):
-            execute_query("SELECT * FROM nonexistent_table", dal._connection)
+        async with dal._pool.acquire() as conn:
+            # Should fail immediately without retries for syntax errors
+            with pytest.raises(DatabaseError):
+                await execute_query("SELECT * FROM nonexistent_table", conn)
 
-    def test_execute_many_retry_on_transient_failure(self, in_memory_db):
-        """Test that execute_many retries on transient SQLite errors."""
-        dal = in_memory_db
-        
-        # Create a test table
-        execute_query("CREATE TABLE IF NOT EXISTS test_retry_many (id INTEGER PRIMARY KEY, name TEXT)", dal._connection)
-        
-        # Test that normal execute_many works
-        params_list = [(1, "test1"), (2, "test2")]
-        execute_many("INSERT INTO test_retry_many (id, name) VALUES (?, ?)", params_list, dal._connection)
-        
-        # Verify data was inserted
-        result = execute_query("SELECT * FROM test_retry_many", dal._connection, fetchall=True)
-        assert len(result) == 2
+    @pytest.mark.asyncio
+    async def test_execute_many_retry_on_transient_failure(self, dal):
+        """Test that execute_many retries on transient PostgreSQL errors."""
+        async with dal._pool.acquire() as conn:
+            # Create a test table and clean it up
+            await conn.execute("DROP TABLE IF EXISTS test_retry_many")
+            await conn.execute("CREATE TABLE test_retry_many (id BIGSERIAL PRIMARY KEY, name TEXT)")
+            
+            # Test that normal execute_many works
+            params_list = [("test1",), ("test2",)]
+            await execute_many("INSERT INTO test_retry_many (name) VALUES ($1)", params_list, conn)
+            
+            # Verify data was inserted
+            result = await execute_query("SELECT * FROM test_retry_many", conn, fetchall=True)
+            assert len(result) == 2
+            
+            # Clean up
+            await conn.execute("DROP TABLE test_retry_many")
 
-    def test_execute_query_with_batching_retry(self, in_memory_db):
-        """Test that execute_query_with_batching retries on failures."""
-        dal = in_memory_db
-        
-        # Create a test table
-        execute_query("CREATE TABLE IF NOT EXISTS test_retry_batch (id INTEGER PRIMARY KEY, name TEXT)", dal._connection)
-        
-        # Insert test data
-        execute_query("INSERT INTO test_retry_batch (id, name) VALUES (1, 'test1')", dal._connection)
-        execute_query("INSERT INTO test_retry_batch (id, name) VALUES (2, 'test2')", dal._connection)
-        execute_query("INSERT INTO test_retry_batch (id, name) VALUES (3, 'test3')", dal._connection)
-        
-        # Test that batching works
-        result = execute_query_with_batching(
-            "SELECT * FROM test_retry_batch WHERE id IN ({placeholders})",
-            [1, 2, 3], connection=dal._connection
-        )
-        assert len(result) == 3
-
-    def test_execute_many_with_batching_retry(self, in_memory_db):
-        """Test that execute_many_with_batching retries on failures."""
-        dal = in_memory_db
-        
-        # Create a test table
-        execute_query("CREATE TABLE IF NOT EXISTS test_retry_many_batch (id INTEGER PRIMARY KEY, name TEXT)", dal._connection)
-        
-        # Test that batching works
-        params_list = [(1, "test1"), (2, "test2"), (3, "test3")]
-        execute_many_with_batching(
-            "INSERT INTO test_retry_many_batch (id, name) VALUES (?, ?)",
-            params_list, connection=dal._connection
-        )
-        
-        # Verify data was inserted
-        result = execute_query("SELECT * FROM test_retry_many_batch", dal._connection, fetchall=True)
-        assert len(result) == 3
-
-    def test_retry_different_error_types(self, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_retry_different_error_types(self, dal):
         """Test that retry works with different types of transient errors."""
-        dal = in_memory_db
-        
-        # Create a test table
-        execute_query("CREATE TABLE IF NOT EXISTS test_retry_errors (id INTEGER PRIMARY KEY, name TEXT)", dal._connection)
-        
-        # Test that normal query works
-        result = execute_query("SELECT * FROM test_retry_errors", dal._connection, fetchall=True)
-        assert result == []  # Empty table
+        async with dal._pool.acquire() as conn:
+            # Create a test table and clean it up
+            await conn.execute("DROP TABLE IF EXISTS test_retry_errors")
+            await conn.execute("CREATE TABLE test_retry_errors (id BIGSERIAL PRIMARY KEY, name TEXT)")
+            
+            # Test that normal query works
+            result = await execute_query("SELECT * FROM test_retry_errors", conn, fetchall=True)
+            assert result == []  # Empty table
+            
+            # Clean up
+            await conn.execute("DROP TABLE test_retry_errors")
 
-    def test_retry_does_not_retry_permanent_errors(self, in_memory_db):
-        """Test that retry does not retry on permanent errors."""
-        dal = in_memory_db
+    @pytest.mark.asyncio
+    async def test_retry_does_not_retry_permanent_errors(self, dal):
+        """Test that retry does not retry on permanent errors (unique constraint violations).
         
-        # Create a table with unique constraint
-        execute_query("CREATE TABLE IF NOT EXISTS test_unique (id INTEGER PRIMARY KEY, name TEXT UNIQUE)", dal._connection)
-        
-        # Insert first record
-        execute_query("INSERT INTO test_unique (id, name) VALUES (1, 'test')", dal._connection)
-        
-        # Try to insert duplicate - should fail immediately without retries
-        with pytest.raises(DatabaseError):
-            execute_query("INSERT INTO test_unique (id, name) VALUES (2, 'test')", dal._connection)
+        Unique constraint violations (PostgreSQL error code 23505) are permanent errors
+        and should not be retried. The _db_should_give_up function should recognize
+        integrity constraint violations via error codes (23xxx) and exception types.
+        """
+        async with dal._pool.acquire() as conn:
+            # Create a table with unique constraint and clean it up
+            await conn.execute("DROP TABLE IF EXISTS test_unique")
+            await conn.execute("CREATE TABLE test_unique (id BIGSERIAL PRIMARY KEY, name TEXT UNIQUE)")
+            
+            # Insert first record
+            await execute_query("INSERT INTO test_unique (name) VALUES ($1)", conn, ("test",))
+            
+            # Try to insert duplicate - should fail immediately without retries
+            # UniqueViolationError (23505) should be recognized as permanent error
+            with pytest.raises(DatabaseError) as exc_info:
+                await execute_query("INSERT INTO test_unique (name) VALUES ($1)", conn, ("test",))
+            
+            # Verify that the error is a constraint violation (not a retry timeout)
+            assert exc_info.value is not None
+            
+            # Clean up
+            await conn.execute("DROP TABLE test_unique")
 
-    def test_retry_backoff_timing(self, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_retry_backoff_timing(self, dal):
         """Test that retry uses exponential backoff timing."""
-        dal = in_memory_db
-        
-        # Create a test table
-        execute_query("CREATE TABLE IF NOT EXISTS test_retry_timing (id INTEGER PRIMARY KEY, name TEXT)", dal._connection)
-        
-        # Test that normal query works
-        result = execute_query("SELECT * FROM test_retry_timing", dal._connection, fetchall=True)
-        assert result == []  # Empty table
+        async with dal._pool.acquire() as conn:
+            # Create a test table
+            await conn.execute("CREATE TABLE IF NOT EXISTS test_retry_timing (id BIGSERIAL PRIMARY KEY, name TEXT)")
+            
+            # Test that normal query works
+            result = await execute_query("SELECT * FROM test_retry_timing", conn, fetchall=True)
+            assert result == []  # Empty table
 
-    def test_retry_max_delay_cap(self, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_retry_max_delay_cap(self, dal):
         """Test that retry respects max_delay cap."""
-        dal = in_memory_db
-        
-        # Create a test table
-        execute_query("CREATE TABLE IF NOT EXISTS test_retry_max_delay (id INTEGER PRIMARY KEY, name TEXT)", dal._connection)
-        
-        # Test that normal query works
-        result = execute_query("SELECT * FROM test_retry_max_delay", dal._connection, fetchall=True)
-        assert result == []  # Empty table
+        async with dal._pool.acquire() as conn:
+            # Create a test table
+            await conn.execute("CREATE TABLE IF NOT EXISTS test_retry_max_delay (id BIGSERIAL PRIMARY KEY, name TEXT)")
+            
+            # Test that normal query works
+            result = await execute_query("SELECT * FROM test_retry_max_delay", conn, fetchall=True)
+            assert result == []  # Empty table
 
-    def test_retry_component_logging(self, in_memory_db, caplog):
+    @pytest.mark.asyncio
+    async def test_retry_component_logging(self, dal, caplog):
         """Test that retry events are logged with correct component."""
-        dal = in_memory_db
-        
-        # Create a test table
-        execute_query("CREATE TABLE IF NOT EXISTS test_retry_logging (id INTEGER PRIMARY KEY, name TEXT)", dal._connection)
-        
-        # Test that normal query works and logs are generated
-        result = execute_query("SELECT * FROM test_retry_logging", dal._connection, fetchall=True)
-        assert result == []  # Empty table
-        
-        # The test passes if no exceptions are raised
-        # Logging is tested at the integration level
+        async with dal._pool.acquire() as conn:
+            # Create a test table
+            await conn.execute("CREATE TABLE IF NOT EXISTS test_retry_logging (id BIGSERIAL PRIMARY KEY, name TEXT)")
+            
+            # Test that normal query works and logs are generated
+            result = await execute_query("SELECT * FROM test_retry_logging", conn, fetchall=True)
+            assert result == []  # Empty table
+            
+            # The test passes if no exceptions are raised
+            # Logging is tested at the integration level
 
-    def test_dal_methods_use_retry(self, in_memory_db, sample_config):
+    @pytest.mark.asyncio
+    async def test_dal_methods_use_retry(self, dal, sample_config):
         """Test that DAL methods use retry functionality."""
-        dal = in_memory_db
-        
         # Create some test data using valid config
-        config_id = dal.create_or_get_config(sample_config)
+        config_id = await dal.create_or_get_config(sample_config)
         assert config_id is not None
         
         # Test that DAL methods work
-        result = dal.get_active_config()
+        result = await dal.get_active_config()
         # May be None if no active config, but should not raise an error
         
         # Test that we can create and retrieve configs
-        configs = dal.get_configs(limit=5)
+        configs = await dal.get_configs(limit=5)
         assert isinstance(configs, list)
 
-    def test_retry_with_real_database_operations(self, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_retry_with_real_database_operations(self, dal):
         """Test retry functionality with real database operations."""
-        dal = in_memory_db
-        
         # Test various database operations that should work
         # Create a job
-        job_id = dal.create_job("test_job", {"param": "value"})
+        job_id = await dal.create_job("test_job", {"param": "value"})
         assert job_id is not None
         
         # Get the job
-        job = dal.get_job(job_id)
+        job = await dal.get_job(job_id)
         assert job is not None
         assert job["job_type"] == "test_job"
         
         # Update job status
-        dal.update_job_status(job_id, "completed")
+        await dal.update_job_status(job_id, "completed")
         
         # List jobs
-        jobs = dal.list_jobs()
+        jobs = await dal.list_jobs()
         assert len(jobs) > 0
 
-    def test_retry_with_complex_queries(self, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_retry_with_complex_queries(self, dal):
         """Test retry functionality with complex queries."""
-        dal = in_memory_db
-        
         # Test that complex queries work
         # This tests the CTE query fix we implemented
-        results = dal.get_top_configs(limit=5)
+        results = await dal.get_top_configs(limit=5)
         assert isinstance(results, list)
         
         # Test other complex operations
-        models = dal.get_all_models(limit=5)
+        models = await dal.get_all_models(limit=5)
         assert isinstance(models, list)
 
-    def test_retry_monitoring_integration(self, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_retry_monitoring_integration(self, dal):
         """Test that retry monitoring works correctly."""
-        dal = in_memory_db
-        
         # Perform some database operations to trigger monitoring
-        dal.create_job("monitoring_test", {"test": "data"})
+        await dal.create_job("monitoring_test", {"test": "data"})
         
         # Test that basic monitoring functions work
         # The fetch_recent_retry_events function has a parameter issue, so we'll skip it
         # and just verify that the job creation worked
-        jobs = dal.list_jobs()
+        jobs = await dal.list_jobs()
         assert len(jobs) > 0
         
         # Verify the job was created
         test_jobs = [job for job in jobs if job["job_type"] == "monitoring_test"]
-        assert len(test_jobs) > 0 
+        assert len(test_jobs) > 0

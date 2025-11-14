@@ -1,8 +1,10 @@
 """
 Фикстуры и моки для тестов deployment/app
 
-- temp_db, temp_db_with_data, isolated_db_session — создают временные SQLite БД с полной схемой и cleanup.
-- in_memory_db — для мокирования БД в интеграционных тестах.
+- PostgreSQL fixtures are available in tests/deployment/app/db/conftest.py:
+  - postgres_pool: PostgreSQL connection pool
+  - test_db_schema: Applies PostgreSQL schema before each test
+  - dal: Async DataAccessLayer instance with PostgreSQL pool
 - mocked_db — предоставляет моки для всех основных операций с БД, гарантирует передачу connection между слоями.
 - Все фикстуры имеют scope='function' для предотвращения state leakage.
 - pyfakefs и патчинг aiofiles используются только в тестах, где это необходимо.
@@ -22,7 +24,7 @@ import pandas as pd
 import pytest
 from passlib.context import CryptContext
 
-from deployment.app.db.data_access_layer import DataAccessLayer
+from deployment.app.db.data_access_layer import DataAccessLayer, UserContext, UserRoles
 from deployment.app.db.feature_storage import SQLFeatureStore
 from deployment.app.models.api_models import (
     LRSchedulerConfig,
@@ -102,134 +104,18 @@ def sample_config(create_training_params_fn):
     return create_training_params_fn().model_dump(mode="json")
 
 
-@pytest.fixture
-def in_memory_db():
-    """
-    Provides a DAL instance connected to a temporary, file-based SQLite DB.
-    This solves the 'SQLite objects created in a thread...' issue by using a file,
-    while ensuring complete test isolation.
-    """
-    # Create a temporary file that will be automatically deleted
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        db_path = tmp.name
-    # The DAL will initialize the schema in this new file
-    dal = DataAccessLayer(db_path=db_path)
-    try:
-        yield dal
-    finally:
-        dal.close()
-        # Ensure the file is cleaned up
-        try:
-            os.remove(db_path)
-        except OSError:
-            pass
+# SQLite fixtures removed as part of PostgreSQL migration.
+# Use PostgreSQL fixtures from tests/deployment/app/db/conftest.py instead:
+# - postgres_pool: PostgreSQL connection pool
+# - test_db_schema: Applies PostgreSQL schema before each test
+# - dal: Async DataAccessLayer instance with PostgreSQL pool
 
 
-@pytest.fixture
-def file_based_db():
-    """
-    УНИФИЦИРОВАННАЯ фикстура для реальной временной БД на диске.
-    Создает полнофункциональную БД с несколькими моделями, конфигами и результатами.
-    Возвращает объект DataAccessLayer.
-    """
-    temp_dir = tempfile.TemporaryDirectory()
-    db_path = os.path.join(temp_dir.name, "test.db")
-    dal = DataAccessLayer(db_path=db_path)
-    dal.init_db()
-
-    try:
-        # --- Параметр-сеты (configs) ---
-        config_data_1 = TrainingConfig(
-            nn_model_config=ModelConfig(
-                num_encoder_layers=3,
-                num_decoder_layers=2,
-                decoder_output_dim=128,
-                temporal_width_past=12,
-                temporal_width_future=6,
-                temporal_hidden_size_past=64,
-                temporal_hidden_size_future=64,
-                temporal_decoder_hidden=128,
-                batch_size=32,
-                dropout=0.2,
-                use_reversible_instance_norm=True,
-                use_layer_norm=True,
-            ),
-            optimizer_config=OptimizerConfig(lr=0.01, weight_decay=0.0001),
-            lr_shed_config=LRSchedulerConfig(T_0=10, T_mult=2),
-            train_ds_config=TrainingDatasetConfig(alpha=0.1, span=12),
-            lags=12,
-            quantiles=[0.05, 0.25, 0.5, 0.75, 0.95]
-        ).model_dump(mode="json")
-        config_data_2 = TrainingConfig(
-            nn_model_config=ModelConfig(
-                num_encoder_layers=4,
-                num_decoder_layers=3,
-                decoder_output_dim=256,
-                temporal_width_past=24,
-                temporal_width_future=12,
-                temporal_hidden_size_past=128,
-                temporal_hidden_size_future=128,
-                temporal_decoder_hidden=256,
-                batch_size=64,
-                dropout=0.3,
-                use_reversible_instance_norm=False,
-                use_layer_norm=False,
-            ),
-            optimizer_config=OptimizerConfig(lr=0.005, weight_decay=0.00001),
-            lr_shed_config=LRSchedulerConfig(T_0=20, T_mult=1),
-            train_ds_config=TrainingDatasetConfig(alpha=0.01, span=24),
-            lags=24,
-            quantiles=[0.01, 0.5, 0.99]
-        ).model_dump(mode="json")
-
-        config_id_1 = dal.create_or_get_config(config_data_1, is_active=True)
-        config_id_2 = dal.create_or_get_config(config_data_2, is_active=False)
-
-        # --- Модели ---
-        job_id = "job-test"
-        model_id_1 = "model-1"
-        model_id_2 = "model-2"
-        model_path_1 = os.path.join(temp_dir.name, "model_1.onnx")
-        model_path_2 = os.path.join(temp_dir.name, "model_2.onnx")
-        with open(model_path_1, "w") as f:
-            f.write("dummy model 1")
-        with open(model_path_2, "w") as f:
-            f.write("dummy model 2")
-
-        dal.create_model_record(model_id_1, job_id, model_path_1, datetime.now(), is_active=True)
-        dal.create_model_record(model_id_2, job_id, model_path_2, datetime.now(), is_active=False)
-
-        # --- Результаты тренировки (для метрик) ---
-        metrics_data_1 = {"mape": 9.9, "val_loss": 0.08}
-        metrics_data_2 = {"mape": 9.8, "val_loss": 0.03}
-        dal.create_training_result(job_id, model_id_1, config_id_1, metrics_data_1, None)
-        dal.create_training_result(job_id, model_id_2, config_id_2, metrics_data_2, None)
-
-        # --- Запись о job ---
-        dal.create_job(job_id, "training", "completed")
-
-        setup_data = {
-            "temp_dir_path": temp_dir.name,
-            "db_path": db_path,
-            "dal": dal,
-            "job_id": job_id,
-            "model_id_1": model_id_1,
-            "model_id_2": model_id_2,
-            "config_id_1": config_id_1,
-            "config_id_2": config_id_2,
-        }
-
-        yield setup_data
-
-    finally:
-        try:
-            dal.close()
-        except Exception:
-            pass
-        try:
-            temp_dir.cleanup()
-        except Exception:
-            pass
+# file_based_db fixture removed as part of PostgreSQL migration.
+# Use PostgreSQL fixtures from tests/deployment/app/db/conftest.py instead:
+# - postgres_pool: PostgreSQL connection pool
+# - test_db_schema: Applies PostgreSQL schema before each test
+# - dal: Async DataAccessLayer instance with PostgreSQL pool
 
 
 @pytest.fixture
@@ -246,19 +132,9 @@ def sample_job_data():
 
 
 
-@pytest.fixture(scope="function", autouse=True)
-def clean_retry_events_table(in_memory_db):
-    """
-    Autouse fixture to clean the retry_events table before and after each test.
-    Ensures test isolation for operations that persist to this table.
-    """
-    # Use the DAL provided by in_memory_db
-    dal = in_memory_db
-    # Clean up before the test
-    dal.execute_raw_query("DELETE FROM retry_events")
-    yield # Yield control to the test function
-    # Clean up after the test
-    dal.execute_raw_query("DELETE FROM retry_events")
+# clean_retry_events_table fixture removed as part of PostgreSQL migration.
+# The test_db_schema fixture in tests/deployment/app/db/conftest.py handles
+# test isolation by dropping and recreating tables before each test.
 
 
 
@@ -312,47 +188,142 @@ def set_session_db_path(session_monkeypatch, tmp_path_factory):
 
 
 
-@pytest.fixture
-def temp_db():
+# temp_db and temp_db_with_data fixtures removed as part of PostgreSQL migration.
+# PostgreSQL fixtures are defined in tests/deployment/app/db/conftest.py:
+# - postgres_pool: PostgreSQL connection pool
+# - test_db_schema: Applies PostgreSQL schema before each test
+# - dal: Async DataAccessLayer instance with PostgreSQL pool
+#
+# For tests in subdirectories, we need to make dal available here.
+# Pytest will automatically find conftest.py files in parent directories,
+# but db/conftest.py is in a sibling directory, so we copy the fixture definitions here.
+import pytest_asyncio
+import asyncio
+import os
+import logging
+from typing import AsyncGenerator
+import asyncpg
+from asyncpg import Pool
+
+from deployment.app.db.schema_postgresql import SCHEMA_SQL
+
+logger = logging.getLogger(__name__)
+
+# Copy postgres_pool fixture from db/conftest.py
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def postgres_pool() -> AsyncGenerator[Pool, None]:
     """
-    Creates a temporary SQLite database file with the full schema and yields a dict with paths and a live DataAccessLayer instance.
-    Cleans up after use.
+    Create a PostgreSQL connection pool for testing.
+    Copied from tests/deployment/app/db/conftest.py to make it available to subdirectories.
     """
-    import tempfile
-    temp_dir_path = tempfile.mkdtemp()
-    db_path = os.path.join(temp_dir_path, "test_temp.db")
-    dal = DataAccessLayer(db_path=db_path)
+    host = os.getenv("TEST_POSTGRES_HOST", "localhost")
+    port = int(os.getenv("TEST_POSTGRES_PORT", "5432"))
+    database = os.getenv("TEST_POSTGRES_DATABASE", "plastinka_ml_test")
+    user = os.getenv("TEST_POSTGRES_USER", "postgres")
+    password = os.getenv("TEST_POSTGRES_PASSWORD", "postgres")
+    
     try:
-        yield {
-            "temp_dir_path": temp_dir_path,
-            "db_path": db_path,
-            "dal": dal,
-        }
+        # Create a test database if it doesn't exist (only once)
+        admin_pool = await asyncpg.create_pool(
+            host=host,
+            port=port,
+            database="postgres",  # Connect to default database
+            user=user,
+            password=password,
+            min_size=1,
+            max_size=1,
+        )
+        
+        async with admin_pool.acquire() as conn:
+            # Check if test database exists
+            db_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = $1", database
+            )
+            
+            if not db_exists:
+                # Create test database
+                await conn.execute(f'CREATE DATABASE "{database}"')
+                logger.info(f"Created test database: {database}")
+        
+        await admin_pool.close()
+        
+        # Create pool for test database
+        pool = await asyncpg.create_pool(
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
+            min_size=2,
+            max_size=10,
+        )
+        
+        # Apply schema once at session start
+        async with pool.acquire() as conn:
+            await conn.execute(SCHEMA_SQL)
+            logger.info("PostgreSQL schema applied at session start")
+        
+        logger.info(f"PostgreSQL test pool created: {database}")
+        yield pool
+        
+    except Exception as e:
+        logger.error(f"Failed to create PostgreSQL test pool: {e}", exc_info=True)
+        pytest.skip(f"PostgreSQL not available: {e}")
     finally:
-        dal.close()
-        gc.collect()
-        shutil.rmtree(temp_dir_path, ignore_errors=True)
+        if 'pool' in locals():
+            await pool.close()
+            logger.info("PostgreSQL test pool closed")
+
+# Copy test_db_schema fixture from db/conftest.py
+@pytest_asyncio.fixture(scope="function", loop_scope="session")
+async def test_db_schema(postgres_pool: Pool) -> None:
+    """
+    Clean up tables before each test for test isolation.
+    Copied from tests/deployment/app/db/conftest.py to make it available to subdirectories.
+    """
+    async with postgres_pool.acquire() as conn:
+        truncate_order = [
+            "retry_events", "report_features", "job_submission_locks", "tuning_results",
+            "report_results", "prediction_results", "training_results", "data_upload_results",
+            "job_status_history", "jobs", "models", "configs", "processing_runs",
+            "fact_predictions", "fact_stock_movement", "fact_sales", "dim_multiindex_mapping",
+        ]
+        for table in truncate_order:
+            try:
+                await conn.execute(f'TRUNCATE TABLE "{table}" CASCADE')
+            except Exception as e:
+                logger.warning(f"Failed to truncate table {table}: {e}")
+        logger.debug("Test database tables truncated")
+
+@pytest_asyncio.fixture(scope="function", loop_scope="session")
+async def dal(postgres_pool: Pool, test_db_schema) -> AsyncGenerator[DataAccessLayer, None]:
+    """
+    DataAccessLayer fixture for tests in deployment/app/* subdirectories.
+    """
+    user_context = UserContext(roles=[UserRoles.SYSTEM])
+    dal_instance = DataAccessLayer(user_context=user_context, pool=postgres_pool)
+    yield dal_instance
 
 @pytest.fixture
-def temp_db_with_data(temp_db, sample_config):
+async def temp_db_with_data(dal, sample_config):
     """
     Like temp_db, but pre-populates jobs, models, and configs. Provides all IDs needed for most test contracts.
+    Updated for PostgreSQL/async DAL.
     """
-    dal = temp_db["dal"]
     model_id = str(uuid.uuid4())
     job_for_model_id = str(uuid.uuid4())
 
     # Create two jobs
-    job_id_1 = dal.create_job(
+    job_id_1 = await dal.create_job(
         job_type="training",
-        status="pending",
+        parameters={},
     )
-    job_for_model_id = dal.create_job(
+    job_for_model_id = await dal.create_job(
         job_type="training",
-        status="pending",
+        parameters={},
     )
     # Create a model for job_for_model_id
-    dal.create_model_record(
+    await dal.create_model_record(
         model_id=model_id,
         job_id=job_for_model_id,
         model_path="/fake/path/model.onnx",
@@ -360,88 +331,23 @@ def temp_db_with_data(temp_db, sample_config):
         is_active=True,
     )
     # Create a config
-    config_id = dal.create_or_get_config(
+    config_id = await dal.create_or_get_config(
         sample_config,
         is_active=True,
     )
-    temp_db["job_id"] = job_id_1
-    temp_db["model_id"] = model_id
-    temp_db["job_for_model_id"] = job_for_model_id
-    temp_db["config_id"] = config_id
-    yield temp_db
+    result = {
+        "dal": dal,
+        "job_id": job_id_1,
+        "model_id": model_id,
+        "job_for_model_id": job_for_model_id,
+        "config_id": config_id,
+    }
+    yield result
 
-@pytest.fixture
-def isolated_db_session():
-    """
-    Function-scoped fixture that creates a new, isolated SQLite DB file for each test and yields a dict with both the DataAccessLayer instance and the db_path.
-    Use .get('dal') for DB operations, .get('db_path') for path-based tests.
-    """
-    import tempfile
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
-    db_path = temp_file.name
-    temp_file.close()
-    dal = DataAccessLayer(db_path=db_path)
-    try:
-        yield {"dal": dal, "db_path": db_path}
-    finally:
-        dal.close()
-        gc.collect()
-        try:
-            os.remove(db_path)
-        except Exception:
-            pass
-
-@pytest.fixture
-def db_with_sales_data(in_memory_db):
-    """Provides a db with controlled sales data for date logic tests."""
-    dal = in_memory_db
-
-    # For simplicity, we'll manually insert into dim_multiindex_mapping.
-    from deployment.app.db.database import get_or_create_multiindex_id
-    get_or_create_multiindex_id(
-        barcode="barcode1",
-        artist="artist1",
-        album="album1",
-        cover_type="dummy", # Add dummy values for required fields
-        price_category="dummy",
-        release_type="dummy",
-        recording_decade="dummy",
-        release_decade="dummy",
-        style="dummy",
-        recording_year=2000,
-        connection=dal._connection, # Pass the connection
-    )
-
-    # Prepare sales data as a pandas DataFrame
-    # Create the correct MultiIndex format for feature storage
-    from deployment.app.db.schema import MULTIINDEX_NAMES
-
-    # Create a tuple with all the required fields
-    multiindex_tuple = ("barcode1", "artist1", "album1", "dummy", "dummy", "dummy", "dummy", "dummy", "dummy", 2000)
-
-    sales_data_list = [
-        {"data_date": "2023-10-31", "value": 10},
-        {"data_date": "2023-11-01", "value": 5},
-        {"data_date": "2023-11-02", "value": 5},
-        {"data_date": "2023-11-30", "value": 5},  # Add data for end of November to make it complete
-    ]
-
-    # Create a DataFrame with MultiIndex in index and DatetimeIndex in columns
-    # This matches the expected format for _save_feature
-    df_sales = pd.DataFrame(sales_data_list)
-    df_sales["data_date"] = pd.to_datetime(df_sales["data_date"])
-    
-    # Create the correct format: MultiIndex in index, DatetimeIndex in columns
-    pivot_df = pd.DataFrame(
-        data=df_sales["value"].values.reshape(1, -1),
-        index=pd.MultiIndex.from_tuples([multiindex_tuple], names=MULTIINDEX_NAMES),
-        columns=df_sales["data_date"]
-    )
-
-    # Use SQLFeatureStore to save the features
-    feature_store = SQLFeatureStore(dal=dal)
-    feature_store.save_features({"sales": pivot_df})
-
-    return dal
+# isolated_db_session and db_with_sales_data fixtures removed as part of PostgreSQL migration.
+# Use PostgreSQL fixtures from tests/deployment/app/db/conftest.py instead:
+# - postgres_pool: PostgreSQL connection pool
+# - test_db_schema: Applies PostgreSQL schema before each test
+# - dal: Async DataAccessLayer instance with PostgreSQL pool
 
 # NOTE: All DB fixtures yield dicts. Use .get('conn') for DB operations, .get('db_path') for path-based tests.

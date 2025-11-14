@@ -3,6 +3,8 @@ Utility for monitoring and tracking retry statistics.
 Provides functionality to collect, analyze, and log retry patterns.
 """
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -11,9 +13,13 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from threading import RLock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deployment.app.config import get_settings
+from deployment.app.db.connection import get_db_pool
+
+if TYPE_CHECKING:
+    from deployment.app.db.data_access_layer import DataAccessLayer, UserContext, UserRoles
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +51,7 @@ class RetryMonitor:
             persistence_file: Path to file for persisting statistics (None to disable)
             save_interval_seconds: Interval for saving statistics to file
             persistence_backend: Type of persistence backend ("json" | "db")
-            db_path: Path to SQLite database for "db" backend
+            db_path: Path to database for "db" backend (PostgreSQL)
         """
         self._retry_events = []
         self._capacity = capacity
@@ -240,10 +246,8 @@ class RetryMonitor:
             # Persist the event depending on backend - use separate connection to avoid locks
             if self._persistence_backend == "db":
                 try:
-                    # Use a separate connection to avoid database locks
-                    from deployment.app.db.database import get_db_connection
-                    with get_db_connection(db_path_override=self._db_path) as separate_conn:
-                        self._insert_event_db(event, separate_conn)
+                    # Use async DAL to insert event
+                    asyncio.create_task(self._insert_event_db_async(event))
                 except Exception as db_exc:
                     logger.error(
                         "Failed to persist retry event to DB: %s", db_exc, exc_info=True
@@ -566,12 +570,19 @@ class RetryMonitor:
         """Fetch recent retry_events rows up to self._capacity using DAL."""
         
         try:
-            from deployment.app.db.database import get_db_connection
-            from deployment.app.dependencies import get_dal_system_sync
-
-            with get_db_connection(db_path_override=self._db_path) as conn:
-                dal = get_dal_system_sync(connection=conn)
-                return dal.fetch_recent_retry_events(limit=self._capacity)
+            from deployment.app.db.data_access_layer import DataAccessLayer, UserContext, UserRoles
+            pool = get_db_pool()
+            dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.SYSTEM]), pool=pool)
+            
+            # Run async method in event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop is already running, create a task
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, dal.fetch_recent_retry_events(limit=self._capacity))
+                    return future.result()
+            else:
+                return asyncio.run(dal.fetch_recent_retry_events(limit=self._capacity))
         except Exception as e:
             logger.error("Failed to fetch retry events from DB: %s", e, exc_info=True)
             return []
@@ -637,16 +648,25 @@ class RetryMonitor:
                 # Restore original list to avoid side-effects
                 self._retry_events = original_events
 
-    def _insert_event_db(self, event_data: dict[str, Any], connection) -> None:
-        """Internal: Inserts a single event into the DB via DAL."""
-        if not self._db_path:
-            return  # DB path not configured, skipping event persistence
-
+    async def _insert_event_db_async(self, event_data: dict[str, Any]) -> None:
+        """Internal: Inserts a single event into the DB via async DAL."""
         try:
-            from deployment.app.dependencies import get_dal_system_sync
-
-            dal = get_dal_system_sync(connection=connection)
-            dal.insert_retry_event(event_data)
+            from deployment.app.db.data_access_layer import DataAccessLayer, UserContext, UserRoles
+            pool = get_db_pool()
+            dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.SYSTEM]), pool=pool)
+            await dal.insert_retry_event(event_data)
+        except Exception as e:
+            logger.error("Failed to insert retry event to DB: %s", e, exc_info=True)
+    
+    def _insert_event_db(self, event_data: dict[str, Any], connection) -> None:
+        """Internal: Inserts a single event into the DB via DAL (deprecated, use _insert_event_db_async)."""
+        # This method is kept for backward compatibility but now uses async version
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._insert_event_db_async(event_data))
+            else:
+                asyncio.run(self._insert_event_db_async(event_data))
         except Exception as e:
             logger.error(
                 f"[RetryMonitor._insert_event_db] Failed to insert retry event into DB: {e}",
@@ -663,14 +683,13 @@ DEFAULT_PERSISTENCE_PATH = os.path.join(
     "retry_statistics.json",
 )
 
-# Ensure main database path exists and instantiate monitor with DB backend only
-
-db_path = get_settings().database_path
+# Ensure main database connection pool exists and instantiate monitor with DB backend
+# For PostgreSQL, we use connection pool, so db_path is not needed (can be None)
 retry_monitor = RetryMonitor(
     persistence_backend="db",
-    db_path=db_path,
+    db_path=None,  # PostgreSQL uses connection pool, not file path
 )
-logger.info("RetryMonitor initialized with DB backend at %s", db_path)
+logger.info("RetryMonitor initialized with DB backend (PostgreSQL)")
 
 
 def record_retry(

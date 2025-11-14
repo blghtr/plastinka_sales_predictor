@@ -1,6 +1,6 @@
 import pandas as pd
 from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -10,20 +10,27 @@ from deployment.app.services.report_service import generate_report
 
 @pytest.fixture
 def mock_dal():
-    """Provides a mock for the DataAccessLayer."""
-    mock = MagicMock()
-    mock.get_active_model.return_value = {"model_id": "test_model"}
+    """Provides a mock for the async DataAccessLayer."""
+    mock = AsyncMock()
+    mock.get_active_model = AsyncMock(
+        return_value={"model_id": "test_model"}
+    )
     # Default mock values, can be overridden in tests
-    mock.get_prediction_results_by_month.return_value = [{"job_id": "job1"}]
-    mock.get_predictions.return_value = [
-        {"multiindex_id": 1, "quantile_50": 15.0},
-        {"multiindex_id": 2, "quantile_50": 8.0},
-    ]
+    mock.get_prediction_results_by_month = AsyncMock(
+        return_value=[{"job_id": "job1"}]
+    )
+    mock.get_predictions = AsyncMock(
+        return_value=[
+            {"multiindex_id": 1, "quantile_50": 15.0},
+            {"multiindex_id": 2, "quantile_50": 8.0},
+        ]
+    )
     return mock
 
 
+@pytest.mark.asyncio
 @patch('deployment.app.db.feature_storage.load_features')
-def test_generate_report_success(mock_load_features, mock_dal):
+async def test_generate_report_success(mock_load_features, mock_dal):
     """Test successful report generation from pre-calculated features."""
     # Arrange
     params = ReportParams(
@@ -36,7 +43,12 @@ def test_generate_report_success(mock_load_features, mock_dal):
     mock_load_features.return_value = {
         "report_features": pd.DataFrame({
             "multiindex_id": [1, 1, 2, 2],
-            "data_date": [date(2023, 1, 1), date(2023, 1, 2), date(2023, 1, 1), date(2023, 1, 2)],
+            "data_date": [
+                date(2023, 1, 1),
+                date(2023, 1, 2),
+                date(2023, 1, 1),
+                date(2023, 1, 2)
+            ],
             "masked_mean_sales_items": [10.0, 11.0, 5.0, 5.4],
             "lost_sales": [100, 120, 50, 50],
             "availability": [0.8, 0.9, 1.0, 1.0],
@@ -45,7 +57,7 @@ def test_generate_report_success(mock_load_features, mock_dal):
     }
 
     # Act
-    report_df = generate_report(params, mock_dal)
+    report_df = await generate_report(params, mock_dal)
 
     # Assert
     assert not report_df.empty
@@ -56,12 +68,12 @@ def test_generate_report_success(mock_load_features, mock_dal):
 
     # Check aggregation results
     report_item1 = report_df[report_df['multiindex_id'] == 1].iloc[0]
-    assert report_item1['Средние продажи (шт)'] == pytest.approx(10.5)  # (10.0 + 11.0) / 2
-    assert report_item1['Потерянные продажи (руб)'] == pytest.approx(220)  # 100 + 120
+    assert report_item1['Средние продажи (шт)'] == pytest.approx(10.5)
+    assert report_item1['Потерянные продажи (руб)'] == pytest.approx(220)
 
     report_item2 = report_df[report_df['multiindex_id'] == 2].iloc[0]
-    assert report_item2['Средние продажи (шт)'] == pytest.approx(5.2)  # (5.0 + 5.4) / 2
-    assert report_item2['Потерянные продажи (руб)'] == pytest.approx(100)  # 50 + 50
+    assert report_item2['Средние продажи (шт)'] == pytest.approx(5.2)
+    assert report_item2['Потерянные продажи (руб)'] == pytest.approx(100)
 
     # Assert mock calls
     mock_dal.get_prediction_results_by_month.assert_called_once_with(
@@ -82,21 +94,24 @@ def test_generate_report_success(mock_load_features, mock_dal):
     assert load_features_kwargs['end_date'] == '2023-01-31'
 
 
-def test_generate_report_no_prediction_results(mock_dal):
+@pytest.mark.asyncio
+async def test_generate_report_no_prediction_results(mock_dal):
     """Test report generation when no prediction results are found."""
     # Arrange
     mock_dal.get_prediction_results_by_month.return_value = []
     params = ReportParams(
-        report_type=ReportType.PREDICTION_REPORT, prediction_month=date(2023, 2, 1)
+        report_type=ReportType.PREDICTION_REPORT,
+        prediction_month=date(2023, 2, 1)
     )
 
     # Act & Assert
     with pytest.raises(ValueError, match="No predictions found"):
-        generate_report(params, mock_dal)
+        await generate_report(params, mock_dal)
 
 
+@pytest.mark.asyncio
 @patch('deployment.app.db.feature_storage.load_features')
-def test_generate_report_no_feature_data(mock_load_features, mock_dal):
+async def test_generate_report_no_feature_data(mock_load_features, mock_dal):
     """Test report generation when no feature data is found."""
     # Arrange
     params = ReportParams(
@@ -106,7 +121,7 @@ def test_generate_report_no_feature_data(mock_load_features, mock_dal):
     mock_load_features.return_value = {}  # No 'report_features' key
 
     # Act
-    report_df = generate_report(params, mock_dal)
+    report_df = await generate_report(params, mock_dal)
 
     # Assert
     assert not report_df.empty
@@ -117,25 +132,33 @@ def test_generate_report_no_feature_data(mock_load_features, mock_dal):
     assert pd.isna(report_df["Потерянные продажи (руб)"]).all()
 
 
-def test_generate_report_invalid_type():
+@pytest.mark.asyncio
+async def test_generate_report_invalid_type():
     """Test that an unsupported report type raises a ValueError."""
     # Arrange
-    params = ReportParams(report_type=ReportType.PREDICTION_REPORT, prediction_month=date(2023, 1, 1))
-    # Manually set an invalid report type to test the function's validation, bypassing pydantic's validation
+    params = ReportParams(
+        report_type=ReportType.PREDICTION_REPORT,
+        prediction_month=date(2023, 1, 1)
+    )
+    # Manually set an invalid report type
     object.__setattr__(params, 'report_type', 'invalid_report_type')
-    mock_dal = MagicMock()
+    mock_dal = AsyncMock()
 
     # Act & Assert
     with pytest.raises(ValueError, match="Unsupported report type"):
-        generate_report(params, mock_dal)
+        await generate_report(params, mock_dal)
 
 
-def test_generate_report_no_month():
+@pytest.mark.asyncio
+async def test_generate_report_no_month():
     """Test that a missing prediction month raises a ValueError."""
     # Arrange
-    params = ReportParams(report_type=ReportType.PREDICTION_REPORT, prediction_month=None)
-    mock_dal = MagicMock()
+    params = ReportParams(
+        report_type=ReportType.PREDICTION_REPORT,
+        prediction_month=None
+    )
+    mock_dal = AsyncMock()
 
     # Act & Assert
     with pytest.raises(ValueError, match="Prediction month must be provided"):
-        generate_report(params, mock_dal)
+        await generate_report(params, mock_dal)

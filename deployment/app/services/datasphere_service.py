@@ -129,7 +129,7 @@ async def _prepare_job_datasets(
             dal=dal,
         )
         logger.info(f"[{job_id}] Datasets prepared in {output_dir}.")
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=10,
@@ -137,7 +137,7 @@ async def _prepare_job_datasets(
         )
     except Exception as e:
         logger.error(f"[{job_id}] Failed to prepare datasets: {e}", exc_info=True)
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id,
             JobStatus.FAILED.value,
             error_message=f"Failed to prepare datasets: {e}",
@@ -152,7 +152,7 @@ async def _initialize_datasphere_client(job_id: str, dal: DataAccessLayer) -> Da
     logger.info(f"[{job_id}] Stage 3: Initializing DataSphere client...")
     settings = get_settings()
     if not settings.datasphere or not settings.datasphere.client:
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id,
             JobStatus.FAILED.value,
             error_message="DataSphere client configuration is missing.",
@@ -168,7 +168,7 @@ async def _initialize_datasphere_client(job_id: str, dal: DataAccessLayer) -> Da
             timeout=settings.datasphere.client_init_timeout_seconds,
         )
         logger.info(f"[{job_id}] DataSphere client initialized successfully.")
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=15,
@@ -179,7 +179,7 @@ async def _initialize_datasphere_client(job_id: str, dal: DataAccessLayer) -> Da
     except asyncio.TimeoutError:
         error_msg = f"DataSphere client initialization timed out after {settings.datasphere.client_init_timeout_seconds} seconds."
         logger.error(f"[{job_id}] {error_msg}")
-        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(
             error_msg
         ) from asyncio.TimeoutError  # Keep original exception type for context
@@ -189,7 +189,7 @@ async def _initialize_datasphere_client(job_id: str, dal: DataAccessLayer) -> Da
         logger.error(
             f"Error importing DataSphereClient or its dependencies: {e}. Ensure all necessary packages are installed."
         )
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id,
             JobStatus.FAILED.value,
             error_message=f"Client Initialization Failed due to import error: {e}",
@@ -200,7 +200,7 @@ async def _initialize_datasphere_client(job_id: str, dal: DataAccessLayer) -> Da
     except Exception as e:
         error_msg = f"Failed to initialize DataSphere client: {str(e)}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         # Keep original exception type if it's a custom DataSphereClientError or similar
         if "DataSphereClientError" in str(type(e)):  # Basic check
             raise
@@ -223,7 +223,7 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path, job_c
     if not input_dir_path.exists() or not input_dir_path.is_dir():
         error_msg = f"Input directory '{input_dir_path}' is invalid for job {job_id}."
         logger.error(f"[{job_id}] {error_msg}")
-        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg)
 
     # Check required files
@@ -237,11 +237,11 @@ async def _verify_datasphere_job_inputs(job_id: str, input_dir_path: Path, job_c
             f"Missing required input files for job {job_id}: {', '.join(missing_required)}"
         )
         logger.error(f"[{job_id}] {error_msg}")
-        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
 
     logger.info(f"[{job_id}] All required input files verified successfully.")
-    dal.update_job_status(
+    await dal.update_job_status(
         job_id,
         JobStatus.RUNNING.value,
         progress=20,
@@ -271,11 +271,11 @@ async def _prepare_job_inputs_unified(
     except Exception as e:
         error_msg = f"Failed during input preparation with '{job_config.input_preparator_name}': {e}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg) from e
 
     logger.info(f"[{job_id}] DataSphere job submission inputs prepared.")
-    dal.update_job_status(
+    await dal.update_job_status(
         job_id,
         JobStatus.RUNNING.value,
         progress=18,
@@ -342,7 +342,7 @@ async def _archive_input_directory(
                     zipf.write(file_path, relative_path)
 
         logger.info(f"[{job_id}] Input directory archived to: {archive_path}")
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=23,
@@ -352,7 +352,7 @@ async def _archive_input_directory(
     except Exception as e:
         error_msg = f"Failed to archive input directory: {str(e)}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg) from e
 
 
@@ -421,7 +421,7 @@ async def _submit_datasphere_job(
     if not os.path.exists(ready_config_path):
         error_msg = f"DataSphere job config YAML not found at: {ready_config_path}"
         logger.error(f"[{job_id}] {error_msg}")
-        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise FileNotFoundError(error_msg)
 
     try:
@@ -432,7 +432,7 @@ async def _submit_datasphere_job(
         )
 
         # Update status
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=25,
@@ -444,7 +444,7 @@ async def _submit_datasphere_job(
         if not isinstance(e, FileNotFoundError | RuntimeError):
             error_msg = f"DataSphere job creation failed: {str(e)}"
             logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-            dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+            await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
             raise RuntimeError(error_msg) from e
         raise
 
@@ -573,7 +573,7 @@ async def _download_datasphere_job_results(
     except asyncio.TimeoutError:
         error_msg = f"DataSphere job results download timed out after {get_settings().datasphere.client_download_timeout_seconds} seconds for DS Job ID: {ds_job_id}."
         logger.error(f"[{job_id}] {error_msg}")
-        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
+        await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=error_msg)
         raise RuntimeError(error_msg) from asyncio.TimeoutError
     except Exception as e:
         logger.error(
@@ -695,7 +695,7 @@ async def _process_datasphere_job(
             logger.error(
                 f"[{job_id}] Error getting status for DS Job {ds_job_id} (poll {polls}/{max_polls}): {status_exc}. Will retry."
             )
-            dal.update_job_status(
+            await dal.update_job_status(
                 job_id,
                 JobStatus.RUNNING.value,
                 status_message=f"DS Job {ds_job_id}: Error polling status ({status_exc}) - Retrying...",
@@ -706,7 +706,7 @@ async def _process_datasphere_job(
         current_progress = 25 + int(
             (polls / max_polls) * 65
         )  # Progress from 25% to 90% during polling
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id,
             JobStatus.RUNNING.value,
             progress=current_progress,
@@ -757,7 +757,7 @@ async def _process_datasphere_job(
             )
             error_detail += f" Logs/diagnostics may be available in {logs_dir}."
 
-            dal.update_job_status(
+            await dal.update_job_status(
                 job_id, JobStatus.FAILED.value, error_message=error_detail
             )
             raise RuntimeError(error_detail)
@@ -765,7 +765,7 @@ async def _process_datasphere_job(
     if not completed:
         timeout_message = f"DS Job {ds_job_id} execution timed out after {polls} polls ({max_polls * poll_interval}s)."
         logger.error(f"[{job_id}] {timeout_message}")
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id, status=JobStatus.FAILED.value, error_message=str(timeout_message)
         )
         raise TimeoutError(timeout_message)
@@ -790,13 +790,13 @@ async def _perform_model_cleanup(job_id: str, current_model_id: str, dal: DataAc
 
             # Get IDs of models to keep (most recent ones, including potentially the current one if it becomes active later)
             # Note: The current model (current_model_id) is initially inactive.
-            recent_kept_models_info = dal.get_recent_models(limit=num_models_to_keep)
+            recent_kept_models_info = await dal.get_recent_models(limit=num_models_to_keep)
             kept_model_ids = {
                 m["model_id"] for m in recent_kept_models_info
             }  # Use a set for faster lookups
 
             # Fetch all models (or a reasonable limit) to find candidates for deletion
-            all_models_info = dal.get_all_models(limit=1000)
+            all_models_info = await dal.get_all_models(limit=1000)
             models_to_delete_ids = []
 
             for model_info in all_models_info:
@@ -818,7 +818,7 @@ async def _perform_model_cleanup(job_id: str, current_model_id: str, dal: DataAc
                 logger.info(
                     f"[{job_id}] Found {len(models_to_delete_ids)} older, non-active models to prune: {models_to_delete_ids}"
                 )
-                delete_result = dal.delete_models_by_ids(models_to_delete_ids)
+                delete_result = await dal.delete_models_by_ids(models_to_delete_ids)
                 deleted_count = delete_result.get("deleted_count", "N/A")
                 failed_deletions = delete_result.get("failed_ids", [])
                 logger.info(
@@ -865,7 +865,7 @@ async def _cleanup_directories(job_id: str, dir_paths: list[str]) -> list[str]:
     return cleanup_errors
 
 
-def save_predictions_to_db(
+async def save_predictions_to_db(
     predictions_path: str, job_id: str, model_id: str, dal: DataAccessLayer
 ) -> dict:
     """
@@ -949,11 +949,11 @@ def save_predictions_to_db(
             )
 
         # Get prediction month from job parameters using DAL method
-        prediction_month: date = dal.get_job_prediction_month(job_id)
+        prediction_month: date = await dal.get_job_prediction_month(job_id)
 
         prediction_result_id = None
         try:
-            prediction_result_id = dal.create_prediction_result(
+            prediction_result_id = await dal.create_prediction_result(
                 job_id=job_id,
                 prediction_month=prediction_month,
                 model_id=model_id,
@@ -968,7 +968,7 @@ def save_predictions_to_db(
 
         if prediction_result_id is not None:
             try:
-                insert_result = dal.insert_predictions(
+                insert_result = await dal.insert_predictions(
                         result_id=prediction_result_id,
                         model_id=model_id,
                         prediction_month=prediction_month,
@@ -1049,7 +1049,7 @@ async def run_job(
                 )
 
                 # Initialize job status
-                dal.update_job_status(
+                await dal.update_job_status(
                     job_id,
                     JobStatus.PENDING.value,
                     progress=0,
@@ -1098,7 +1098,7 @@ async def run_job(
                 logger.info(
                     f"[{job_id}] Created project input link: {project_input_link_path}"
                 )
-                dal.update_job_status(
+                await dal.update_job_status(
                     job_id,
                     JobStatus.RUNNING.value,
                     progress=24,
@@ -1186,7 +1186,7 @@ async def run_job(
                         )
                         cancel_message += f" Error attempting to cancel DataSphere job {current_ds_job_id}: {cancel_e}."
 
-                dal.update_job_status(
+                await dal.update_job_status(
                     job_id,
                     JobStatus.FAILED.value,
                     error_message=cancel_message,
@@ -1199,9 +1199,9 @@ async def run_job(
                     f"[{job_id}] {error_msg}",
                     exc_info=isinstance(e, RuntimeError | ImportError),
                 )
-                job_details = dal.get_job(job_id)
+                job_details = await dal.get_job(job_id)
                 if job_details and job_details.get("status") != JobStatus.FAILED.value:
-                    dal.update_job_status(
+                    await dal.update_job_status(
                         job_id,
                         JobStatus.FAILED.value,
                         error_message=error_msg,
@@ -1211,9 +1211,9 @@ async def run_job(
             except Exception as e:
                 error_msg = f"Unexpected error in job pipeline: {str(e)}"
                 logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-                job_details = dal.get_job(job_id)
+                job_details = await dal.get_job(job_id)
                 if job_details and job_details.get("status") != JobStatus.FAILED.value:
-                    dal.update_job_status(
+                    await dal.update_job_status(
                         job_id,
                         JobStatus.FAILED.value,
                         error_message=error_msg,
@@ -1240,7 +1240,7 @@ async def run_job(
         # This will catch errors in creating the temporary directories themselves.
         error_msg = f"Failed to set up temporary directories for job: {str(e)}"
         logger.error(f"[{job_id}] {error_msg}", exc_info=True)
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id,
             JobStatus.FAILED.value,
             error_message=error_msg,
@@ -1324,7 +1324,7 @@ async def save_model_file_and_db(
         }
 
         # Create a record in the database with the permanent path
-        dal.create_model_record(
+        await dal.create_model_record(
             model_id=model_id,
             job_id=job_id,
             model_path=str(permanent_model_path),  # Save the permanent path

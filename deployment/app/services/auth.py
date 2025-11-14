@@ -1,8 +1,9 @@
 """
 Authentication service for API security.
 
-This module provides secure authentication using bcrypt hashing for both API keys
-and admin tokens. It supports Authorization header authentication with proper
+This module provides secure authentication using bcrypt hashing for both API
+keys and admin tokens. It supports Authorization header authentication with
+proper
 Swagger UI integration.
 """
 
@@ -43,14 +44,21 @@ bearer_scheme = HTTPBearer(
 docs_security = HTTPBasic()
 
 
-def get_docs_user(credentials: HTTPBasicCredentials = Depends(docs_security), settings: AppSettings = Depends(get_settings)):
+def get_docs_user(
+    credentials: HTTPBasicCredentials = Depends(docs_security),
+    settings: AppSettings = Depends(get_settings),
+):
     """Dependency to protect documentation endpoints with Basic Auth."""
     # Use secrets.compare_digest to prevent timing attacks
-    correct_username = secrets.compare_digest(credentials.username.encode("utf8"), b"admin")
+    correct_username = secrets.compare_digest(
+        credentials.username.encode("utf8"), b"admin"
+    )
     # IMPORTANT: This compares against the RAW token, not the hash.
     # The admin_api_key_hash setting should hold the raw token for this to work.
     # Ensure the config `admin_api_key_hash` holds the raw token value.
-    correct_password = pwd_context.verify(credentials.password, settings.api.admin_api_key_hash)
+    correct_password = pwd_context.verify(
+        credentials.password, settings.api.admin_api_key_hash
+    )
 
     if not (correct_username and correct_password):
         raise HTTPException(
@@ -93,8 +101,10 @@ async def get_current_api_key_validated(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ErrorDetail(
-                message="API key is required in Authorization header.",
-                code="authentication_error"
+                message=(
+                    "API key is required in Authorization header."
+                ),
+                code="authentication_error",
             ).to_dict(),
             headers={"WWW-Authenticate": "ApiKey"},
         )
@@ -116,7 +126,8 @@ async def get_current_api_key_validated(
             headers={"WWW-Authenticate": "ApiKey"},
         )
 
-    return {"type": "api_key", "value": api_key}
+    # Do not propagate the raw API key further into the app
+    return {"type": "api_key"}
 
 
 async def get_admin_token_validated(
@@ -151,15 +162,19 @@ async def get_admin_token_validated(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ErrorDetail(
-                message="Bearer token is required for admin access.",
-                code="authentication_error"
+                message=(
+                    "Bearer token is required for admin access."
+                ),
+                code="authentication_error",
             ).to_dict(),
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     # Securely verify the admin token against the hash
     try:
-        is_valid = pwd_context.verify(credentials.credentials, settings.api.admin_api_key_hash)
+        is_valid = pwd_context.verify(
+            credentials.credentials, settings.api.admin_api_key_hash
+        )
     except Exception as e:
         logger.warning(f"Error verifying admin token: {e}")
         is_valid = False
@@ -174,7 +189,8 @@ async def get_admin_token_validated(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return {"type": "admin_token", "value": credentials.credentials}
+    # Do not propagate the raw admin token further into the app
+    return {"type": "admin_token"}
 
 
 async def get_unified_auth(
@@ -189,8 +205,11 @@ async def get_unified_auth(
     # Try admin token first
     if credentials and settings.api.admin_api_key_hash:
         try:
-            if pwd_context.verify(credentials.credentials, settings.api.admin_api_key_hash):
-                return {"type": "admin_token", "value": credentials.credentials}
+            if pwd_context.verify(
+                credentials.credentials, settings.api.admin_api_key_hash
+            ):
+                # Do not return the raw token
+                return {"type": "admin_token"}
         except Exception:
             # Fall through to check API key or raise error
             pass
@@ -198,8 +217,11 @@ async def get_unified_auth(
     # Then try API key
     if api_key and settings.api.x_api_key_hash:
         try:
-            if pwd_context.verify(api_key, settings.api.x_api_key_hash):
-                return {"type": "api_key", "value": api_key}
+            if pwd_context.verify(
+                api_key, settings.api.x_api_key_hash
+            ):
+                # Do not return the raw API key
+                return {"type": "api_key"}
         except Exception:
             # Fall through to raise error
             pass
@@ -208,8 +230,11 @@ async def get_unified_auth(
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=ErrorDetail(
-            message="Invalid or missing credentials. Provide a valid Bearer token or X-API-Key.",
-            code="authentication_error"
+            message=(
+                "Invalid or missing credentials. Provide a valid Bearer token or "
+                "X-API-Key."
+            ),
+            code="authentication_error",
         ).to_dict(),
         headers={"WWW-Authenticate": "Bearer, ApiKey"},
     )
@@ -223,12 +248,12 @@ async def require_api_key(
     Dependency that requires API key authentication.
 
     Returns:
-        The API key value
+        The authentication type ("api_key")
 
     Raises:
         HTTPException: If API key authentication fails
     """
-    return auth_result["value"]
+    return auth_result["type"]
 
 
 async def require_admin_token(
@@ -238,12 +263,12 @@ async def require_admin_token(
     Dependency that requires admin token authentication.
 
     Returns:
-        The admin token value
+        The authentication type ("admin_token")
 
     Raises:
         HTTPException: If admin token authentication fails
     """
-    return auth_result["value"]
+    return auth_result["type"]
 
 
 async def require_any_auth(
@@ -253,7 +278,7 @@ async def require_any_auth(
     Dependency that accepts either API key or admin token authentication.
 
     Returns:
-        Dict containing authentication type and value
+        Dict containing authentication type
 
     Raises:
         HTTPException: If authentication fails

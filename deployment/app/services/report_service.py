@@ -10,7 +10,7 @@ from deployment.app.models.api_models import ReportParams, ReportType
 logger = logging.getLogger(__name__)
 
 
-def generate_report(params: ReportParams, dal: DataAccessLayer) -> pd.DataFrame:
+async def generate_report(params: ReportParams, dal: DataAccessLayer) -> pd.DataFrame:
     """
     Generate a prediction report by fetching pre-calculated features.
 
@@ -33,13 +33,13 @@ def generate_report(params: ReportParams, dal: DataAccessLayer) -> pd.DataFrame:
     )
 
     # Get active model
-    active_model = dal.get_active_model()
+    active_model = await dal.get_active_model()
     if not active_model:
         raise ValueError("No active model found. Cannot generate report.")
     model_id = active_model["model_id"]
 
     # --- Refactored prediction fetching ---
-    prediction_results = dal.get_prediction_results_by_month(
+    prediction_results = await dal.get_prediction_results_by_month(
         prediction_month=prediction_month, model_id=model_id
     )
     if not prediction_results:
@@ -50,7 +50,7 @@ def generate_report(params: ReportParams, dal: DataAccessLayer) -> pd.DataFrame:
 
     job_ids = list(set(r["job_id"] for r in prediction_results))
 
-    predictions_list = dal.get_predictions(
+    predictions_list = await dal.get_predictions(
         job_ids=job_ids, model_id=model_id, prediction_month=prediction_month
     )
     if not predictions_list:
@@ -77,7 +77,7 @@ def generate_report(params: ReportParams, dal: DataAccessLayer) -> pd.DataFrame:
         day=calendar.monthrange(start_date.year, start_date.month)[1]
     )
 
-    all_features = feature_storage.load_features(
+    all_features = await feature_storage.load_features(
         dal=dal,
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),

@@ -15,43 +15,32 @@ from deployment.app.db.feature_storage import (
     EXPECTED_REPORT_FEATURES,
     SQLFeatureStore,
 )
-from deployment.app.db.schema import MULTIINDEX_NAMES
+from deployment.app.db.schema_postgresql import MULTIINDEX_NAMES
 
 
 @pytest.fixture
-def comprehensive_feature_store_env():
+async def comprehensive_feature_store_env(dal):
     """
-    Set up a test environment with a temporary SQLite database, DAL,
+    Set up a test environment with PostgreSQL database, DAL,
     and multiple products in the multi-index mapping.
     """
-    temp_db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    dal = DataAccessLayer(db_path=temp_db_file)
-    conn = dal._connection
-    cursor = conn.cursor()
-
     # Insert multiple products for comprehensive testing
     products_data = [
-        (1, '111', 'Artist A', 'Album A', 'CD', 'Std', 'Studio', '2010s', '2020s', 'Rock', '2015'),
-        (2, '222', 'Artist B', 'Album B', 'Vinyl', 'Ltd', 'Live', '2000s', '2020s', 'Pop', '2008'),
-        (3, '333', 'Artist A', 'Album C', 'CD', 'Std', 'Studio', '2010s', '2020s', 'Rock', '2018'),
+        (1, '111', 'Artist A', 'Album A', 'CD', 'Std', 'Studio', '2010s', '2020s', 'Rock', 2015),
+        (2, '222', 'Artist B', 'Album B', 'Vinyl', 'Ltd', 'Live', '2000s', '2020s', 'Pop', 2008),
+        (3, '333', 'Artist A', 'Album C', 'CD', 'Std', 'Studio', '2010s', '2020s', 'Rock', 2018),
     ]
-    # Correctly build the INSERT statement with named columns
-    columns_str = ', '.join(MULTIINDEX_NAMES)
-    placeholders = ', '.join('?' * (len(MULTIINDEX_NAMES) + 1))
-    cursor.executemany(f"""
-    INSERT INTO dim_multiindex_mapping (multiindex_id, {columns_str})
-    VALUES ({placeholders})
-    """, products_data)
-    conn.commit()
+    
+    # Use DAL to insert products
+    # get_or_create_multiindex_ids_batch expects a list of tuples with all attributes
+    product_attrs_list = [product[1:] for product in products_data]
+    await dal.get_or_create_multiindex_ids_batch(product_attrs_list)
 
     yield dal
 
-    dal.close()
-    if os.path.exists(temp_db_file):
-        os.unlink(temp_db_file)
 
-
-def test_save_and_load_all_features_end_to_end(comprehensive_feature_store_env):
+@pytest.mark.asyncio
+async def test_save_and_load_all_features_end_to_end(comprehensive_feature_store_env):
     """
     A comprehensive end-to-end test for SQLFeatureStore.
     It saves multiple feature types (pivoted and flat) using the public API
@@ -107,12 +96,15 @@ def test_save_and_load_all_features_end_to_end(comprehensive_feature_store_env):
     }
 
     # 2. Save them using the PUBLIC API
-    with SQLFeatureStore(dal=dal, run_id=1) as store:
-        store.save_features(features_to_save)
+    dal = comprehensive_feature_store_env
+    store = SQLFeatureStore(dal=dal, run_id=1)
+    await store.create_run(source_files="test_sales.csv,test_stock.csv")
+    await store.save_features(features_to_save)
+    await store.complete_run()
 
     # 3. ACT: Load them back using the PUBLIC API
-    with SQLFeatureStore(dal=dal) as store:
-        loaded_features = store.load_features(start_date="2023-01-01", end_date="2023-01-02")
+    store2 = SQLFeatureStore(dal=dal)
+    loaded_features = await store2.load_features(start_date="2023-01-01", end_date="2023-01-02")
 
     # 4. ASSERT
     assert "sales" in loaded_features

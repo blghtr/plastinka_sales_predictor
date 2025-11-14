@@ -171,14 +171,12 @@ async def test_process_training_results_happy_path(temp_workspace, caplog, monke
     Path(output_files["model"]).write_text("fake model")
     Path(output_files["predictions"]).write_text("barcode,pred\n123,10")
     mock_save_model = AsyncMock()
-    mock_save_preds = MagicMock()
+    mock_save_preds = AsyncMock()  # Must be AsyncMock since save_predictions_to_db is async
     mock_create_tr = MagicMock()
     mock_update_status = MagicMock()
     mock_cleanup = AsyncMock()
     monkeypatch.setattr("deployment.app.services.datasphere_service.save_model_file_and_db", mock_save_model)
     monkeypatch.setattr("deployment.app.services.datasphere_service.save_predictions_to_db", mock_save_preds)
-    monkeypatch.setattr("deployment.app.db.database.create_training_result", mock_create_tr)
-    monkeypatch.setattr("deployment.app.db.database.update_job_status", mock_update_status)
     monkeypatch.setattr("deployment.app.services.datasphere_service._perform_model_cleanup", mock_cleanup)
 
     import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
@@ -244,8 +242,6 @@ async def test_process_training_results_missing_model_logs_warning(temp_workspac
     mock_cleanup = AsyncMock()
     monkeypatch.setattr("deployment.app.services.datasphere_service.save_model_file_and_db", mock_save_model)
     monkeypatch.setattr("deployment.app.services.datasphere_service.save_predictions_to_db", mock_save_preds)
-    monkeypatch.setattr("deployment.app.db.database.create_training_result", mock_create_tr)
-    monkeypatch.setattr("deployment.app.db.database.update_job_status", mock_update_status)
     monkeypatch.setattr("deployment.app.services.datasphere_service._perform_model_cleanup", mock_cleanup)
     import deployment.app.services.job_registries.result_processor_registry as result_proc_reg
     importlib.reload(result_proc_reg)
@@ -302,11 +298,7 @@ async def test_process_tuning_results_happy_path(temp_workspace, caplog, monkeyp
     mock_dal.create_or_get_config.return_value = "cfg-1"
     mock_dal.update_job_status = MagicMock()
 
-    # Mock the database functions
-    mock_create_tr = MagicMock()
-    mock_update_status = MagicMock()
-    monkeypatch.setattr("deployment.app.db.database.create_tuning_result", mock_create_tr)
-    monkeypatch.setattr("deployment.app.db.database.update_job_status", mock_update_status)
+    # Mock the database functions (not needed - using mock_dal)
 
     result_proc_reg.process_tuning_results(
         job_id=job_id,
@@ -331,8 +323,7 @@ def test_process_tuning_results_missing_best_configs_raises_and_fails_job(temp_w
     poll_interval = 1.0
     # Create a mock DAL for testing
     mock_dal = MagicMock()
-    mock_update_status = MagicMock()
-    monkeypatch.setattr("deployment.app.db.database.update_job_status", mock_update_status)
+    # Mock update_job_status not needed - using mock_dal
     with pytest.raises(RuntimeError):
         result_proc_reg.process_tuning_results(
             job_id=job_id,
@@ -357,8 +348,7 @@ def test_process_tuning_results_invalid_metrics_type_fails_job(temp_workspace, c
     poll_interval = 1.0
     # Create a mock DAL for testing
     mock_dal = MagicMock()
-    mock_update_status = MagicMock()
-    monkeypatch.setattr("deployment.app.db.database.update_job_status", mock_update_status)
+    # Mock update_job_status not needed - using mock_dal
     with pytest.raises(RuntimeError):
         result_proc_reg.process_tuning_results(
             job_id=job_id,
@@ -385,8 +375,7 @@ def test_process_tuning_results_metrics_length_mismatch_fails_job(temp_workspace
     poll_interval = 1.0
     # Create a mock DAL for testing
     mock_dal = MagicMock()
-    mock_update_status = MagicMock()
-    monkeypatch.setattr("deployment.app.db.database.update_job_status", mock_update_status)
+    # Mock update_job_status not needed - using mock_dal
     with pytest.raises(RuntimeError):
         result_proc_reg.process_tuning_results(
             job_id=job_id,

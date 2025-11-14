@@ -1,8 +1,10 @@
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
 from passlib.context import CryptContext
 
@@ -34,11 +36,12 @@ def pytest_configure(config):
 @pytest.fixture(scope="function")
 def api_client(
     session_monkeypatch,
-    in_memory_db,
+    dal,
 ):
     """
-    Provides a FastAPI TestClient with a fully initialized in-memory database for API tests.
+    Provides a FastAPI TestClient with a fully initialized PostgreSQL database for API tests.
     This fixture ensures that each test runs with a clean, isolated database.
+    Uses async DAL from tests/deployment/app/db/conftest.py.
     """
     # Set necessary environment variables for authentication
     admin_raw = "test_admin_token"
@@ -51,7 +54,30 @@ def api_client(
     # Patch logger to avoid file system access during tests
     session_monkeypatch.setattr("deployment.app.logger_config.configure_logging", lambda: None)
 
-    # Import app and dependencies within the fixture to use the patched environment
+    # Mock database initialization to prevent startup errors
+    # The app tries to initialize DB pool on startup, but we use test fixtures instead
+    async def mock_init_db_pool():
+        return None
+    
+    async def mock_close_db_pool():
+        pass
+    
+    async def mock_init_postgres_schema(pool):
+        return True
+    
+    # Replace lifespan with empty function to prevent DB initialization
+    from contextlib import asynccontextmanager
+    
+    @asynccontextmanager
+    async def empty_lifespan(app):
+        # No-op lifespan for tests
+        yield
+    
+    session_monkeypatch.setattr("deployment.app.db.connection.init_db_pool", mock_init_db_pool)
+    session_monkeypatch.setattr("deployment.app.db.connection.close_db_pool", mock_close_db_pool)
+    session_monkeypatch.setattr("deployment.app.db.schema_postgresql.init_postgres_schema", mock_init_postgres_schema)
+    
+    # Import app and dependencies BEFORE patching lifespan to avoid import-time execution
     from deployment.app.dependencies import (
         get_dal,
         get_dal_for_general_user,
@@ -59,27 +85,124 @@ def api_client(
         get_dal_system,
     )
     from deployment.app.main import app
+    
+    # Patch lifespan AFTER app is imported to avoid execution during import
+    session_monkeypatch.setattr("deployment.app.main.lifespan", empty_lifespan)
+    # Also patch the app's lifespan attribute directly
+    app.router.lifespan_context = empty_lifespan
 
-    # Override dependencies to use the *same* isolated in-memory DAL instance for the whole test
-    app.dependency_overrides[get_dal] = lambda: in_memory_db
-    app.dependency_overrides[get_dal_system] = lambda: in_memory_db
-    app.dependency_overrides[get_dal_for_general_user] = lambda: in_memory_db
-    app.dependency_overrides[get_dal_for_admin_user] = lambda: in_memory_db
+    # Override dependencies to use the *same* isolated async DAL instance for the whole test
+    # Dependencies return AsyncGenerator, so we need to create async generator functions
+    async def override_get_dal():
+        yield dal
+    
+    async def override_get_dal_system():
+        yield dal
+    
+    async def override_get_dal_for_general_user(api_key_valid=None):
+        yield dal
+    
+    async def override_get_dal_for_admin_user(admin_token=None):
+        yield dal
+    
+    app.dependency_overrides[get_dal] = override_get_dal
+    app.dependency_overrides[get_dal_system] = override_get_dal_system
+    app.dependency_overrides[get_dal_for_general_user] = override_get_dal_for_general_user
+    app.dependency_overrides[get_dal_for_admin_user] = override_get_dal_for_admin_user
 
     # Yield the test api_client
+    # Note: lifespan is mocked to be empty, so no DB initialization happens
     with TestClient(app) as api_client:
         yield api_client
 
     # Clean up dependency overrides after the test
     app.dependency_overrides.clear()
 
-    # Explicitly close DAL connections after each test
-    # This is crucial for in-memory SQLite to prevent resource leaks
-    # and ensure a clean state for the next test.
-    # The DAL factory creates a new connection for each request, so we need to close them.
-    # This might require modifying the DAL factory to return a context manager
-    # or to have a way to track and close all connections created during a test.
-    # For now, this is a placeholder for explicit cleanup if needed.
+
+@pytest_asyncio.fixture(scope="function")
+async def async_api_client(
+    session_monkeypatch,
+    dal,
+):
+    """
+    Provides an httpx.AsyncClient for async API tests.
+    This fixture ensures proper async/await handling and event loop compatibility.
+    Uses ASGITransport to directly test the FastAPI app without network.
+    """
+    # Set necessary environment variables for authentication
+    admin_raw = "test_admin_token"
+    admin_hash = CryptContext(schemes=["bcrypt"]).hash(admin_raw)
+    session_monkeypatch.setenv("API_ADMIN_API_KEY_HASH", admin_hash)
+
+    x_api_hash = CryptContext(schemes=["bcrypt"]).hash("test_x_api_key_conftest")
+    session_monkeypatch.setenv("API_X_API_KEY_HASH", x_api_hash)
+
+    # Patch logger to avoid file system access during tests
+    session_monkeypatch.setattr("deployment.app.logger_config.configure_logging", lambda: None)
+
+    # Mock database initialization to prevent startup errors
+    async def mock_init_db_pool():
+        return None
+    
+    async def mock_close_db_pool():
+        pass
+    
+    async def mock_init_postgres_schema(pool):
+        return True
+    
+    # Replace lifespan with empty function to prevent DB initialization
+    from contextlib import asynccontextmanager
+    
+    @asynccontextmanager
+    async def empty_lifespan(app):
+        # No-op lifespan for tests
+        yield
+    
+    session_monkeypatch.setattr("deployment.app.db.connection.init_db_pool", mock_init_db_pool)
+    session_monkeypatch.setattr("deployment.app.db.connection.close_db_pool", mock_close_db_pool)
+    session_monkeypatch.setattr("deployment.app.db.schema_postgresql.init_postgres_schema", mock_init_postgres_schema)
+    
+    # Import app and dependencies BEFORE patching lifespan to avoid import-time execution
+    from deployment.app.dependencies import (
+        get_dal,
+        get_dal_for_general_user,
+        get_dal_for_admin_user,
+        get_dal_system,
+    )
+    from deployment.app.main import app
+    
+    # Patch lifespan AFTER app is imported to avoid execution during import
+    session_monkeypatch.setattr("deployment.app.main.lifespan", empty_lifespan)
+    # Also patch the app's lifespan attribute directly
+    app.router.lifespan_context = empty_lifespan
+
+    # Override dependencies to use the *same* isolated async DAL instance for the whole test
+    async def override_get_dal():
+        yield dal
+    
+    async def override_get_dal_system():
+        yield dal
+    
+    async def override_get_dal_for_general_user(api_key_valid=None):
+        yield dal
+    
+    async def override_get_dal_for_admin_user(admin_token=None):
+        yield dal
+    
+    app.dependency_overrides[get_dal] = override_get_dal
+    app.dependency_overrides[get_dal_system] = override_get_dal_system
+    app.dependency_overrides[get_dal_for_general_user] = override_get_dal_for_general_user
+    app.dependency_overrides[get_dal_for_admin_user] = override_get_dal_for_admin_user
+
+    # Create async client with ASGITransport for proper async handling
+    from httpx import ASGITransport, AsyncClient
+    
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as async_client:
+        yield async_client
+
+    # Clean up dependency overrides after the test
+    app.dependency_overrides.clear()
 
 
 

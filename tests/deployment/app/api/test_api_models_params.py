@@ -15,7 +15,8 @@ class TestConfigEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_active_config_success(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_active_config_success(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
         config_data = {
             "nn_model_config": {
@@ -37,10 +38,10 @@ class TestConfigEndpoints:
             "train_ds_config": {"alpha": 0.05, "span": 12},
             "lags": 12
         }
-        config_id = in_memory_db.create_or_get_config(config_data, is_active=True)
+        config_id = await dal.create_or_get_config(config_data, is_active=True)
 
         # Act
-        response = api_client.get("/api/v1/models-configs/configs/active", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/models-configs/configs/active", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -51,12 +52,13 @@ class TestConfigEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_active_config_not_found(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_active_config_not_found(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
-        # in_memory_db is clean by default, so no active config exists
+        # dal is clean by default, so no active config exists
 
         # Act
-        response = api_client.get("/api/v1/models-configs/configs/active", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/models-configs/configs/active", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 404
@@ -65,7 +67,8 @@ class TestConfigEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_activate_config_success(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_activate_config_success(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
         config_data = {
             "nn_model_config": {
@@ -87,26 +90,28 @@ class TestConfigEndpoints:
             "train_ds_config": {"alpha": 0.05, "span": 12},
             "lags": 12
         }
-        config_id = in_memory_db.create_or_get_config(config_data)
+        config_id = await dal.create_or_get_config(config_data)
 
         # Act
-        response = api_client.post(f"/api/v1/models-configs/configs/{config_id}/set-active", headers={auth_header_name: auth_token})
+        response = await async_api_client.post(f"/api/v1/models-configs/configs/{config_id}/set-active", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
-        assert in_memory_db.get_active_config()["config_id"] == config_id
+        active_config = await dal.get_active_config()
+        assert active_config["config_id"] == config_id
 
     @pytest.mark.parametrize("auth_header_name, auth_token", [
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_activate_config_not_found(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_activate_config_not_found(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
         config_id = "non-existent-config"
-        # in_memory_db is clean by default, so no config with this ID exists
+        # dal is clean by default, so no config with this ID exists
 
         # Act
-        response = api_client.post(f"/api/v1/models-configs/configs/{config_id}/set-active", headers={auth_header_name: auth_token})
+        response = await async_api_client.post(f"/api/v1/models-configs/configs/{config_id}/set-active", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 404
@@ -115,12 +120,20 @@ class TestConfigEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_best_config(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_best_config(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
         # Create a job and model for FK constraints
-        job_id = in_memory_db.create_job(job_type="training", status="completed")
+        job_id = await dal.create_job(job_type="training", parameters={})
+        await dal.update_job_status(job_id, "completed")
         model_id = "test-model-id"
-        in_memory_db.create_model_record(model_id=model_id, job_id=job_id, model_path="/fake/path", created_at=datetime.now())
+        await dal.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/fake/path",
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         # Create configs and training results with different metrics
         config_data_1 = {
@@ -143,8 +156,14 @@ class TestConfigEndpoints:
             "train_ds_config": {"alpha": 0.05, "span": 12},
             "lags": 12
         }
-        config_id_1 = in_memory_db.create_or_get_config(config_data_1)
-        in_memory_db.create_training_result(job_id=job_id, model_id=model_id, config_id=config_id_1, metrics={"val_MIWS_MIC_Ratio": 0.8}, duration=100)
+        config_id_1 = await dal.create_or_get_config(config_data_1)
+        await dal.create_training_result(
+            job_id=job_id,
+            model_id=model_id,
+            config_id=config_id_1,
+            metrics={"val_MIWS_MIC_Ratio": 0.8},
+            duration=100,
+        )
 
         config_data_2 = {
             "nn_model_config": {
@@ -166,11 +185,17 @@ class TestConfigEndpoints:
             "train_ds_config": {"alpha": 0.1, "span": 12},
             "lags": 12
         }
-        config_id_2 = in_memory_db.create_or_get_config(config_data_2)
-        in_memory_db.create_training_result(job_id=job_id, model_id=model_id, config_id=config_id_2, metrics={"val_MIWS_MIC_Ratio": 0.9}, duration=100)
+        config_id_2 = await dal.create_or_get_config(config_data_2)
+        await dal.create_training_result(
+            job_id=job_id,
+            model_id=model_id,
+            config_id=config_id_2,
+            metrics={"val_MIWS_MIC_Ratio": 0.9},
+            duration=100,
+        )
 
         # Act
-        response = api_client.get("/api/v1/models-configs/configs/best", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/models-configs/configs/best", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -186,7 +211,8 @@ class TestConfigEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_configs_list(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_configs_list(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
         config_data_1 = {
             "nn_model_config": {
@@ -208,7 +234,7 @@ class TestConfigEndpoints:
             "train_ds_config": {"alpha": 0.05, "span": 12},
             "lags": 12
         }
-        config_id_1 = in_memory_db.create_or_get_config(config_data_1)
+        config_id_1 = await dal.create_or_get_config(config_data_1)
 
         config_data_2 = {
             "nn_model_config": {
@@ -230,10 +256,10 @@ class TestConfigEndpoints:
             "train_ds_config": {"alpha": 0.1, "span": 12},
             "lags": 12
         }
-        config_id_2 = in_memory_db.create_or_get_config(config_data_2)
+        config_id_2 = await dal.create_or_get_config(config_data_2)
 
         # Act
-        response = api_client.get("/api/v1/models-configs/configs", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/models-configs/configs", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -248,7 +274,8 @@ class TestConfigEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_delete_configs(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_delete_configs(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
         config_data_1 = {
             "nn_model_config": {
@@ -270,7 +297,7 @@ class TestConfigEndpoints:
             "train_ds_config": {"alpha": 0.05, "span": 12},
             "lags": 12
         }
-        config_id_1 = in_memory_db.create_or_get_config(config_data_1)
+        config_id_1 = await dal.create_or_get_config(config_data_1)
 
         config_data_2 = {
             "nn_model_config": {
@@ -292,15 +319,15 @@ class TestConfigEndpoints:
             "train_ds_config": {"alpha": 0.1, "span": 12},
             "lags": 12
         }
-        config_id_2 = in_memory_db.create_or_get_config(config_data_2)
+        config_id_2 = await dal.create_or_get_config(config_data_2)
 
         # Act
-        response = api_client.post("/api/v1/models-configs/configs/delete", json={"ids": [config_id_1]}, headers={auth_header_name: auth_token})
+        response = await async_api_client.post("/api/v1/models-configs/configs/delete", json={"ids": [config_id_1]}, headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
         # Check that deletion was successful
-        remaining_configs = in_memory_db.get_configs()
+        remaining_configs = await dal.get_configs()
         assert len(remaining_configs) == 1
         assert remaining_configs[0]["config_id"] == config_id_2
 
@@ -308,7 +335,8 @@ class TestConfigEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_upload_config(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_upload_config(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
         request_data = {
             "json_payload": {
@@ -336,12 +364,13 @@ class TestConfigEndpoints:
         }
 
         # Act
-        response = api_client.post("/api/v1/models-configs/configs/upload", json=request_data, headers={auth_header_name: auth_token})
+        response = await async_api_client.post("/api/v1/models-configs/configs/upload", json=request_data, headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
         config_id = response.json()["config_id"]
-        assert in_memory_db.get_configs()[0]["config_id"] == config_id
+        configs = await dal.get_configs()
+        assert configs[0]["config_id"] == config_id
 
 class TestModelEndpoints:
     """Tests for model-related endpoints in /api/v1/models-configs."""
@@ -350,14 +379,22 @@ class TestModelEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_active_model(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_active_model(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
-        job_id = in_memory_db.create_job(job_type="training", status="completed")
+        job_id = await dal.create_job(job_type="training", parameters={})
+        await dal.update_job_status(job_id, "completed")
         model_data = {"model_id": "active-model", "model_path": "/fake/path", "metadata": {}}
-        in_memory_db.create_model_record(model_id=model_data["model_id"], job_id=job_id, model_path=model_data["model_path"], is_active=True, created_at=datetime.now())
+        await dal.create_model_record(
+            model_id=model_data["model_id"],
+            job_id=job_id,
+            model_path=model_data["model_path"],
+            created_at=datetime.now(),
+            is_active=True,
+        )
 
         # Act
-        response = api_client.get("/api/v1/models-configs/models/active", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/models-configs/models/active", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -368,27 +405,38 @@ class TestModelEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_activate_model(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_activate_model(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
-        job_id = in_memory_db.create_job(job_type="training", status="completed")
+        job_id = await dal.create_job(job_type="training", parameters={})
+        await dal.update_job_status(job_id, "completed")
         model_id = "model-to-activate"
-        in_memory_db.create_model_record(model_id=model_id, job_id=job_id, model_path="/fake/path", created_at=datetime.now())
+        await dal.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/fake/path",
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         # Act
-        response = api_client.post(f"/api/v1/models-configs/models/{model_id}/set-active", headers={auth_header_name: auth_token})
+        response = await async_api_client.post(f"/api/v1/models-configs/models/{model_id}/set-active", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
-        assert in_memory_db.get_active_model()["model_id"] == model_id
+        active_model = await dal.get_active_model()
+        assert active_model["model_id"] == model_id
 
     @pytest.mark.parametrize("auth_header_name, auth_token", [
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_best_model(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_best_model(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
-        job_id = in_memory_db.create_job(job_type="training", status="completed")
-        config_id = in_memory_db.create_or_get_config({
+        job_id = await dal.create_job(job_type="training", parameters={})
+        await dal.update_job_status(job_id, "completed")
+        config_id = await dal.create_or_get_config({
             "nn_model_config": {
                 "num_encoder_layers": 1,
                 "num_decoder_layers": 1,
@@ -411,15 +459,39 @@ class TestModelEndpoints:
 
         # Create models and training results with different metrics
         model_data_1 = {"model_id": "model1", "model_path": "/fake/path1"}
-        in_memory_db.create_model_record(model_id=model_data_1["model_id"], job_id=job_id, model_path=model_data_1["model_path"], created_at=datetime.now())
-        in_memory_db.create_training_result(job_id=job_id, model_id=model_data_1["model_id"], config_id=config_id, metrics={"val_MIWS_MIC_Ratio": 0.8}, duration=100)
+        await dal.create_model_record(
+            model_id=model_data_1["model_id"],
+            job_id=job_id,
+            model_path=model_data_1["model_path"],
+            created_at=datetime.now(),
+            is_active=False,
+        )
+        await dal.create_training_result(
+            job_id=job_id,
+            model_id=model_data_1["model_id"],
+            config_id=config_id,
+            metrics={"val_MIWS_MIC_Ratio": 0.8},
+            duration=100,
+        )
 
         model_data_2 = {"model_id": "model2", "model_path": "/fake/path2"}
-        in_memory_db.create_model_record(model_id=model_data_2["model_id"], job_id=job_id, model_path=model_data_2["model_path"], created_at=datetime.now())
-        in_memory_db.create_training_result(job_id=job_id, model_id=model_data_2["model_id"], config_id=config_id, metrics={"val_MIWS_MIC_Ratio": 0.9}, duration=100)
+        await dal.create_model_record(
+            model_id=model_data_2["model_id"],
+            job_id=job_id,
+            model_path=model_data_2["model_path"],
+            created_at=datetime.now(),
+            is_active=False,
+        )
+        await dal.create_training_result(
+            job_id=job_id,
+            model_id=model_data_2["model_id"],
+            config_id=config_id,
+            metrics={"val_MIWS_MIC_Ratio": 0.9},
+            duration=100,
+        )
 
         # Act
-        response = api_client.get("/api/v1/models-configs/models/best", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/models-configs/models/best", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -433,19 +505,33 @@ class TestModelEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_recent_models(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_recent_models(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
-        job_id = in_memory_db.create_job(job_type="training", status="completed")
+        job_id = await dal.create_job(job_type="training", parameters={})
+        await dal.update_job_status(job_id, "completed")
 
         # Create models with different creation times
         model_data_1 = {"model_id": "m1", "model_path": "/fake/path1", "created_at": "2023-01-01T00:00:00"}
-        in_memory_db.create_model_record(model_data_1["model_id"], job_id, model_data_1["model_path"], created_at=datetime.now())
+        await dal.create_model_record(
+            model_id=model_data_1["model_id"],
+            job_id=job_id,
+            model_path=model_data_1["model_path"],
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         model_data_2 = {"model_id": "m2", "model_path": "/fake/path2", "created_at": "2023-01-02T00:00:00"}
-        in_memory_db.create_model_record(model_id=model_data_2["model_id"], job_id=job_id, model_path=model_data_2["model_path"], created_at=datetime.now())
+        await dal.create_model_record(
+            model_id=model_data_2["model_id"],
+            job_id=job_id,
+            model_path=model_data_2["model_path"],
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         # Act
-        response = api_client.get("/api/v1/models-configs/models/recent", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/models-configs/models/recent", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -458,18 +544,32 @@ class TestModelEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_all_models(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_all_models(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
-        job_id = in_memory_db.create_job(job_type="training", status="completed")
+        job_id = await dal.create_job(job_type="training", parameters={})
+        await dal.update_job_status(job_id, "completed")
 
         model_data_1 = {"model_id": "m1", "model_path": "/fake/path1"}
-        in_memory_db.create_model_record(model_id=model_data_1["model_id"], job_id=job_id, model_path=model_data_1["model_path"], created_at=datetime.now())
+        await dal.create_model_record(
+            model_id=model_data_1["model_id"],
+            job_id=job_id,
+            model_path=model_data_1["model_path"],
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         model_data_2 = {"model_id": "m2", "model_path": "/fake/path2"}
-        in_memory_db.create_model_record(model_id=model_data_2["model_id"], job_id=job_id, model_path=model_data_2["model_path"], created_at=datetime.now())
+        await dal.create_model_record(
+            model_id=model_data_2["model_id"],
+            job_id=job_id,
+            model_path=model_data_2["model_path"],
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         # Act
-        response = api_client.get("/api/v1/models-configs/models", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/models-configs/models", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -480,29 +580,45 @@ class TestModelEndpoints:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_delete_models(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_delete_models(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange
-        job_id = in_memory_db.create_job(job_type="training", status="completed")
+        job_id = await dal.create_job(job_type="training", parameters={})
+        await dal.update_job_status(job_id, "completed")
 
         model_id_1 = "model-to-delete-1"
-        in_memory_db.create_model_record(model_id=model_id_1, job_id=job_id, model_path="/fake/path1", created_at=datetime.now())
+        await dal.create_model_record(
+            model_id=model_id_1,
+            job_id=job_id,
+            model_path="/fake/path1",
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         model_id_2 = "model-to-delete-2"
-        in_memory_db.create_model_record(model_id=model_id_2, job_id=job_id, model_path="/fake/path2", created_at=datetime.now())
+        await dal.create_model_record(
+            model_id=model_id_2,
+            job_id=job_id,
+            model_path="/fake/path2",
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         # Act
-        response = api_client.post("/api/v1/models-configs/models/delete", json={"ids": [model_id_1]}, headers={auth_header_name: auth_token})
+        response = await async_api_client.post("/api/v1/models-configs/models/delete", json={"ids": [model_id_1]}, headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
         assert response.json()["successful"] == 1
-        assert in_memory_db.get_all_models()[0]["model_id"] == model_id_2
+        all_models = await dal.get_all_models()
+        assert all_models[0]["model_id"] == model_id_2
 
     @pytest.mark.parametrize("auth_header_name, auth_token", [
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_upload_model(self, monkeypatch, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_upload_model(self, monkeypatch, async_api_client, dal, auth_header_name, auth_token):
         # 1. Mock settings
         mock_settings = unittest.mock.MagicMock()
         mock_settings.models_dir = "/fake_storage"
@@ -524,7 +640,7 @@ class TestModelEndpoints:
         data = {"model_id": model_id, "is_active": "false", "description": "Test model", "version": "1.0"}
 
         # 4. Make the request
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/models-configs/models/upload",
             files=files,
             data=data,
@@ -534,7 +650,8 @@ class TestModelEndpoints:
         # 5. Assertions
         assert response.status_code == 200
         # Verify model record was created in the database
-        model_from_db = in_memory_db.get_all_models()[0]
+        all_models = await dal.get_all_models()
+        model_from_db = all_models[0]
         assert model_from_db["model_id"] == model_id
         assert model_from_db["model_path"] == f"/fake_storage/{model_id}.onnx"
         assert model_from_db["job_id"] is not None # Job ID should be generated if not provided

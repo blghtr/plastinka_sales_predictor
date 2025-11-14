@@ -31,11 +31,11 @@ async def process_data_files(
     temp_dir = Path(temp_dir_path)
     stock_path = Path(stock_file_path)
     settings = get_settings()
-    job_params = dal.get_job_params(job_id)
+    job_params = await dal.get_job_params(job_id)
     overwrite = job_params.get('overwrite', False)
     try:
         # Update job status to running
-        dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=0)
+        await dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=0)
 
         # Check if files exist
         if not stock_path.exists():
@@ -44,7 +44,7 @@ async def process_data_files(
             if not Path(p).exists():
                 raise FileNotFoundError(f"Sales file not found at {p}")
 
-        dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=20)
+        await dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=20)
 
         # Process the data using the existing pipeline
         sales_dir_path = temp_dir / "sales"
@@ -55,13 +55,13 @@ async def process_data_files(
             fill_missing_days=settings.fill_missing_days,
         )
 
-        dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=80)
+        await dal.update_job_status(job_id, JobStatus.RUNNING.value, progress=80)
 
         # Save features using our SQL feature storage
         stock_filename = stock_path.name
         sales_filenames = [Path(p).name for p in sales_files_paths]
         source_files = ", ".join([stock_filename] + sales_filenames)
-        run_id = save_features(
+        run_id = await save_features(
             features, 
             source_files, 
             store_type="sql", 
@@ -70,7 +70,7 @@ async def process_data_files(
         )
 
         # Create result record
-        result_id = dal.create_data_upload_result(
+        result_id = await dal.create_data_upload_result(
             job_id=job_id,
             records_processed=sum(
                 df.shape[0] for df in features.values() if hasattr(df, "shape")
@@ -80,13 +80,13 @@ async def process_data_files(
         )
 
         # Update job as completed
-        dal.update_job_status(
+        await dal.update_job_status(
             job_id, JobStatus.COMPLETED.value, progress=100, result_id=result_id
         )
 
     except Exception as e:
         # Update job as failed with error message
-        dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=str(e))
+        await dal.update_job_status(job_id, JobStatus.FAILED.value, error_message=str(e))
         # Re-raise for logging
         raise
     

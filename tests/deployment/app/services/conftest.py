@@ -11,14 +11,10 @@ To: This new architecture that supports PyTorch, DataSphere SDK, and ML framewor
 """
 
 import os
-import sqlite3
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from deployment.app.db.database import dict_factory
-from deployment.app.db.schema import init_db
 from deployment.app.models.api_models import (
     LRSchedulerConfig,
     ModelConfig,
@@ -35,23 +31,11 @@ _GLOBAL_MOCKS_REGISTRY = {}
 # =================================================================================
 
 
-class MockConnectionWrapper:
-    """
-    A wrapper for sqlite3.Connection that makes its close() method a no-op.
-    This is used in tests to prevent shared database connections from being
-    prematurely closed by internal functions in database.py, while still
-    allowing the fixture to close the actual connection at teardown.
-    """
-    def __init__(self, conn):
-        self._conn = conn
-
-    def close(self):
-        # Do nothing during tests to keep the underlying connection open
-        pass
-
-    def __getattr__(self, name):
-        # Delegate all other attribute access to the wrapped connection
-        return getattr(self._conn, name)
+# SQLite fixtures removed as part of PostgreSQL migration.
+# Use PostgreSQL fixtures from tests/deployment/app/db/conftest.py instead:
+# - postgres_pool: PostgreSQL connection pool
+# - test_db_schema: Applies PostgreSQL schema before each test
+# - dal: Async DataAccessLayer instance with PostgreSQL pool
 
 
 @pytest.fixture
@@ -110,7 +94,7 @@ def session_monkeypatch():
 
 
 @pytest.fixture
-def mock_datasphere_env(temp_workspace, monkeypatch, in_memory_db):
+def mock_datasphere_env(temp_workspace, monkeypatch, dal):
     """
     Replacement for mock_service_env without session-scoped pyfakefs.
 
@@ -176,7 +160,6 @@ def mock_datasphere_env(temp_workspace, monkeypatch, in_memory_db):
         "deployment.app.services.datasphere_service.get_settings", lambda: mock_settings
     )
     monkeypatch.setattr("deployment.app.config.get_settings", lambda: mock_settings)
-    monkeypatch.setattr("deployment.app.db.database.get_settings", lambda: mock_settings)
 
     # --- DataSphere api_client Mock ---
     mock_client = MagicMock()
@@ -200,38 +183,11 @@ def mock_datasphere_env(temp_workspace, monkeypatch, in_memory_db):
     monkeypatch.setattr("deployment.app.services.datasphere_service.DataSphereClient", MagicMock(return_value=mock_client))
 
     # --- Database Mocks ---
-    # Create a single, persistent in-memory database connection for the test
-    persistent_db_conn = sqlite3.connect(":memory:")
-    persistent_db_conn.row_factory = dict_factory
-    init_db(connection=persistent_db_conn)
-    persistent_db_conn.execute("PRAGMA foreign_keys = ON;")
-    persistent_db_conn.commit()
+    # Use PostgreSQL DAL from fixture (dal parameter)
+    # The dal fixture provides an async DataAccessLayer with PostgreSQL pool
 
-    # No longer patching persistent_db_conn.close directly due to AttributeError on undo.
-    # Instead, we wrap the connection so its close() method is a no-op for internal calls.
-    mock_get_db_connection = MagicMock(return_value=MockConnectionWrapper(persistent_db_conn))
-    mocks["get_db_connection"] = mock_get_db_connection
-
-    # --- DataSphere Service Function Mocks ---
-    # These functions will now receive a real connection from get_db_connection,
-    # but we still mock them if the DAL is used to call them directly.
-    # The actual database interactions will be handled by the real database functions
-    # after the initial connection is provided by our mock_get_db_connection.
-
-    # Create a DataAccessLayer instance for the tests
-    from deployment.app.db.data_access_layer import (
-        DataAccessLayer,
-        UserContext,
-        UserRoles,
-    )
-
-    dal = DataAccessLayer(
-        user_context=UserContext(roles=[UserRoles.SYSTEM]),
-        connection=persistent_db_conn
-    )
-
-    # Always provide a MagicMock for save_predictions_to_db for test compatibility
-    mocks["save_predictions_to_db"] = MagicMock()
+    # Always provide an AsyncMock for save_predictions_to_db for test compatibility (must be async)
+    mocks["save_predictions_to_db"] = AsyncMock(return_value={"result_id": "mock_result_id", "predictions_count": 0})
     monkeypatch.setattr("deployment.app.services.datasphere_service.save_predictions_to_db", mocks["save_predictions_to_db"])
 
     # Mock the save_model_file_and_db function to also accept connection
@@ -244,17 +200,8 @@ def mock_datasphere_env(temp_workspace, monkeypatch, in_memory_db):
     # Note: update_job_status is not available in datasphere_service module
     # The function is called through the DAL, so we don't need to patch it here
 
-    mocks["mocked_db_conn"] = persistent_db_conn # Expose for direct use in run_job calls
     mocks["mocked_dal"] = dal # Expose the DAL object for direct use
     yield mocks
-
-    # --- Teardown for persistent_db_conn ---
-    if persistent_db_conn:
-        # Ensure the actual close is called only at the very end of the fixture's lifecycle
-        # after all monkeypatches are undone.
-        # The monkeypatch for 'close' method is automatically undone by the fixture scope.
-        # The wrapper's close() is a no-op, so this is safe.
-        persistent_db_conn.close()
 
 
 # =================================================================================

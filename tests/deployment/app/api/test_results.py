@@ -12,11 +12,13 @@ class TestResultsApi:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_training_results(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_training_results(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange - Create real data in the database
-        job_id = in_memory_db.create_job(job_type="training", status="completed")
+        job_id = await dal.create_job(job_type="training", parameters={})
+        await dal.update_job_status(job_id, "completed")
         model_id = "model1"
-        config_id = in_memory_db.create_or_get_config({
+        config_id = await dal.create_or_get_config({
             "nn_model_config": {
                 "num_encoder_layers": 1,
                 "num_decoder_layers": 1,
@@ -37,15 +39,25 @@ class TestResultsApi:
             "lags": 12
         })
 
-        in_memory_db.create_model_record(model_id, job_id, "/fake/path/model.onnx", datetime.now())
+        await dal.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/fake/path/model.onnx",
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         metrics = {"acc": 0.9, "val_loss": 0.1}
-        result_id = in_memory_db.create_training_result(
-            job_id, model_id, config_id, metrics, 100
+        result_id = await dal.create_training_result(
+            job_id=job_id,
+            model_id=model_id,
+            config_id=config_id,
+            metrics=metrics,
+            duration=100,
         )
 
         # Act
-        response = api_client.get("/api/v1/results/training", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/results/training", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -62,11 +74,13 @@ class TestResultsApi:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_training_result_by_id(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_training_result_by_id(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange - Create real data in the database
-        job_id = in_memory_db.create_job(job_type="training", status="completed")
+        job_id = await dal.create_job(job_type="training", parameters={})
+        await dal.update_job_status(job_id, "completed")
         model_id = "model1"
-        config_id = in_memory_db.create_or_get_config({
+        config_id = await dal.create_or_get_config({
             "nn_model_config": {
                 "num_encoder_layers": 1,
                 "num_decoder_layers": 1,
@@ -87,15 +101,25 @@ class TestResultsApi:
             "lags": 12
         })
 
-        in_memory_db.create_model_record(model_id, job_id, "/fake/path/model.onnx", datetime.now())
+        await dal.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/fake/path/model.onnx",
+            created_at=datetime.now(),
+            is_active=False,
+        )
 
         metrics = {"acc": 0.9, "val_loss": 0.1}
-        result_id = in_memory_db.create_training_result(
-            job_id, model_id, config_id, metrics, 100
+        result_id = await dal.create_training_result(
+            job_id=job_id,
+            model_id=model_id,
+            config_id=config_id,
+            metrics=metrics,
+            duration=100,
         )
 
         # Act
-        response = api_client.get(f"/api/v1/results/training/{result_id}", headers={auth_header_name: auth_token})
+        response = await async_api_client.get(f"/api/v1/results/training/{result_id}", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -111,12 +135,13 @@ class TestResultsApi:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_training_result_not_found(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_training_result_not_found(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange - No data in database
         result_id = "not-found"
 
         # Act
-        response = api_client.get(f"/api/v1/results/training/{result_id}", headers={auth_header_name: auth_token})
+        response = await async_api_client.get(f"/api/v1/results/training/{result_id}", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 404
@@ -125,10 +150,12 @@ class TestResultsApi:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_tuning_results(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_tuning_results(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange - Create real tuning data in the database
-        job_id = in_memory_db.create_job(job_type="tuning", status="completed")
-        config_id = in_memory_db.create_or_get_config({
+        job_id = await dal.create_job(job_type="tuning", parameters={})
+        await dal.update_job_status(job_id, "completed")
+        config_id = await dal.create_or_get_config({
             "nn_model_config": {
                 "num_encoder_layers": 1,
                 "num_decoder_layers": 1,
@@ -150,12 +177,15 @@ class TestResultsApi:
         })
 
         metrics = {"val_loss": 0.1, "train_loss": 0.2}
-        result_id = in_memory_db.create_tuning_result(
-            job_id, config_id, metrics, 200
+        result_id = await dal.create_tuning_result(
+            job_id=job_id,
+            config_id=config_id,
+            metrics=metrics,
+            duration=200,
         )
 
         # Act
-        response = api_client.get("/api/v1/results/tuning", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/results/tuning", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -171,10 +201,12 @@ class TestResultsApi:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_tuning_result_by_id(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_tuning_result_by_id(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange - Create real tuning data in the database
-        job_id = in_memory_db.create_job(job_type="tuning", status="completed")
-        config_id = in_memory_db.create_or_get_config({
+        job_id = await dal.create_job(job_type="tuning", parameters={})
+        await dal.update_job_status(job_id, "completed")
+        config_id = await dal.create_or_get_config({
             "nn_model_config": {
                 "num_encoder_layers": 1,
                 "num_decoder_layers": 1,
@@ -196,12 +228,15 @@ class TestResultsApi:
         })
 
         metrics = {"val_loss": 0.1, "train_loss": 0.2}
-        result_id = in_memory_db.create_tuning_result(
-            job_id, config_id, metrics, 200
+        result_id = await dal.create_tuning_result(
+            job_id=job_id,
+            config_id=config_id,
+            metrics=metrics,
+            duration=200,
         )
 
         # Act
-        response = api_client.get(f"/api/v1/results/tuning/{result_id}", headers={auth_header_name: auth_token})
+        response = await async_api_client.get(f"/api/v1/results/tuning/{result_id}", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -216,12 +251,13 @@ class TestResultsApi:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_tuning_result_not_found(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_tuning_result_not_found(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange - No data in database
         result_id = "not-found"
 
         # Act
-        response = api_client.get(f"/api/v1/results/tuning/{result_id}", headers={auth_header_name: auth_token})
+        response = await async_api_client.get(f"/api/v1/results/tuning/{result_id}", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 404
@@ -230,10 +266,12 @@ class TestResultsApi:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_tuning_results_with_query_params(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_get_tuning_results_with_query_params(self, async_api_client, dal, auth_header_name, auth_token):
         # Arrange - Create real tuning data in the database
-        job_id = in_memory_db.create_job(job_type="tuning", status="completed")
-        config_id = in_memory_db.create_or_get_config({
+        job_id = await dal.create_job(job_type="tuning", parameters={})
+        await dal.update_job_status(job_id, "completed")
+        config_id = await dal.create_or_get_config({
             "nn_model_config": {
                 "num_encoder_layers": 1,
                 "num_decoder_layers": 1,
@@ -255,12 +293,15 @@ class TestResultsApi:
         })
 
         metrics = {"val_loss": 0.1, "train_loss": 0.2}
-        result_id = in_memory_db.create_tuning_result(
-            job_id, config_id, metrics, 200
+        result_id = await dal.create_tuning_result(
+            job_id=job_id,
+            config_id=config_id,
+            metrics=metrics,
+            duration=200,
         )
 
         # Act
-        response = api_client.get(
+        response = await async_api_client.get(
             "/api/v1/results/tuning?metric_name=val_loss&higher_is_better=false&limit=5",
             headers={auth_header_name: auth_token}
         )

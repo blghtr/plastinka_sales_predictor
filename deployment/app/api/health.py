@@ -74,21 +74,31 @@ class RetryStatsResponse(BaseModel):
 start_time = time.time()
 
 
-def check_monotonic_months(table_name: str, dal: DataAccessLayer) -> list[str]:
+async def check_monotonic_months(table_name: str, dal: DataAccessLayer) -> list[str]:
     """
     Проверяет, что месяцы в data_date идут подряд без пропусков (по всей таблице).
     Возвращает список пропущенных месяцев в формате YYYY-MM-01.
     """
     
-    dates_rows = dal.execute_raw_query(
-        f"SELECT DISTINCT data_date FROM {table_name}", fetchall=True
+    dates_rows = await dal.execute_raw_query(
+        f'SELECT DISTINCT data_date FROM "{table_name}"', fetchall=True
     )
     dates = sorted(row["data_date"] for row in dates_rows) if dates_rows else []
 
     if not dates:
         return []
-    # Преобразуем к datetime.date
-    date_objs = [date.fromisoformat(d) for d in dates]
+    # Преобразуем к datetime.date (PostgreSQL может вернуть date или datetime)
+    date_objs = []
+    for d in dates:
+        if isinstance(d, str):
+            date_objs.append(date.fromisoformat(d))
+        elif isinstance(d, datetime):
+            date_objs.append(d.date())
+        elif isinstance(d, date):
+            date_objs.append(d)
+        else:
+            # Fallback
+            date_objs.append(date.fromisoformat(str(d)))
     unique_months = set([d.strftime("%Y-%m") for d in date_objs])
     # Строим полный диапазон месяцев
     min_date, max_date = date_objs[0], date_objs[-1]
@@ -106,7 +116,7 @@ def check_monotonic_months(table_name: str, dal: DataAccessLayer) -> list[str]:
     return missing
 
 
-def check_database(dal: DataAccessLayer) -> ComponentHealth:
+async def check_database(dal: DataAccessLayer) -> ComponentHealth:
     """Perform database health checks."""
     logger.info("Performing database health check...")
     status = "healthy"
@@ -114,9 +124,9 @@ def check_database(dal: DataAccessLayer) -> ComponentHealth:
 
     try:
         # 1. Basic connection check: try to execute a simple query
-        dal.execute_raw_query("SELECT 1", fetchall=False)
+        await dal.execute_raw_query("SELECT 1", fetchall=False)
 
-        # 2. Check for required tables
+        # 2. Check for required tables (PostgreSQL uses information_schema)
         required_tables = [
             "jobs",
             "models",
@@ -133,12 +143,25 @@ def check_database(dal: DataAccessLayer) -> ComponentHealth:
             "report_results",
         ]
 
-        # Construct the query to check for these tables efficiently using batching
-        query_template = "SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})"
-        tables_found_rows = dal.execute_query_with_batching(
-            query_template, required_tables
+        # PostgreSQL query to check for tables
+        placeholders = ", ".join(f"${i+1}" for i in range(len(required_tables)))
+        query = f"""
+            SELECT table_name as name
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name IN ({placeholders})
+        """
+        tables_found_rows = await dal.execute_raw_query(
+            query, params=tuple(required_tables), fetchall=True
         )
-        tables_found = [row["name"] for row in tables_found_rows] if tables_found_rows else []
+        # Defensive parsing: handle both 'name' (alias) and 'table_name' (original column)
+        # Also handle case where rows might be empty or have unexpected structure
+        tables_found = []
+        if tables_found_rows:
+            for row in tables_found_rows:
+                # Try alias first, then fallback to original column name
+                table_name = row.get("name") or row.get("table_name")
+                if table_name:
+                    tables_found.append(table_name)
 
         missing_tables = [table for table in required_tables if table not in tables_found]
         if missing_tables:
@@ -147,7 +170,7 @@ def check_database(dal: DataAccessLayer) -> ComponentHealth:
             logger.warning(f"Database degraded: missing tables {missing_tables}")
 
         # 3. Check for monotonic growth of months in fact tables
-        missing_months_sales = check_monotonic_months("fact_sales", dal)
+        missing_months_sales = await check_monotonic_months("fact_sales", dal)
         if missing_months_sales:
             status = "unhealthy"
             details["missing_months_sales"] = missing_months_sales
@@ -155,7 +178,7 @@ def check_database(dal: DataAccessLayer) -> ComponentHealth:
                 f"Database unhealthy: missing months in fact_sales: {missing_months_sales}"
             )
 
-        missing_months_stock_movement = check_monotonic_months(
+        missing_months_stock_movement = await check_monotonic_months(
             "fact_stock_movement", dal
         )
         if missing_months_stock_movement:
@@ -198,12 +221,12 @@ async def health_check(
     # Check individual components
     components = {
         "api": ComponentHealth(status="healthy"),
-        "database": check_database(dal),
+        "database": await check_database(dal),
         "config": get_environment_status(),
     }
 
     # Check active model metric
-    active_model_metric = dal.get_active_model_primary_metric()
+    active_model_metric = await dal.get_active_model_primary_metric()
     settings = get_settings()
 
     if active_model_metric is None:

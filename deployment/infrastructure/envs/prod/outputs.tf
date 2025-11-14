@@ -51,7 +51,48 @@ output "import_status" {
   value = {
     community      = var.existing_community_id != null ? "existing" : "created"
     project        = var.existing_project_id != null ? "existing" : "created"
+    postgres_cluster = var.existing_postgres_cluster_id != null ? "existing" : "created"
   }
+}
+
+# =============================================================================
+# POSTGRESQL OUTPUTS
+# =============================================================================
+
+output "postgres_cluster_id" {
+  description = "PostgreSQL cluster ID"
+  value       = var.existing_postgres_cluster_id != null ? var.existing_postgres_cluster_id : (length(yandex_mdb_postgresql_cluster.ml_postgres) > 0 ? yandex_mdb_postgresql_cluster.ml_postgres[0].id : null)
+}
+
+output "postgres_host" {
+  description = "PostgreSQL cluster FQDN"
+  value       = var.existing_postgres_cluster_id != null ? null : (length(yandex_mdb_postgresql_cluster.ml_postgres) > 0 ? yandex_mdb_postgresql_cluster.ml_postgres[0].host[0].fqdn : null)
+}
+
+output "postgres_port" {
+  description = "PostgreSQL port"
+  value       = 6432  # Default Yandex Managed PostgreSQL port
+}
+
+output "postgres_database" {
+  description = "PostgreSQL database name"
+  value       = var.postgres_database_name
+}
+
+output "postgres_user" {
+  description = "PostgreSQL user name"
+  value       = var.postgres_user_name
+}
+
+output "postgres_password" {
+  description = "PostgreSQL user password (sensitive)"
+  value       = var.existing_postgres_cluster_id != null ? null : (length(random_password.postgres_password) > 0 ? random_password.postgres_password[0].result : null)
+  sensitive   = true
+}
+
+output "postgres_connection_string" {
+  description = "PostgreSQL connection string (without password)"
+  value       = var.existing_postgres_cluster_id != null ? null : (length(yandex_mdb_postgresql_cluster.ml_postgres) > 0 ? "postgresql://${var.postgres_user_name}@${yandex_mdb_postgresql_cluster.ml_postgres[0].host[0].fqdn}:6432/${var.postgres_database_name}" : null)
 }
 
  

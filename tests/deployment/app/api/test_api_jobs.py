@@ -21,7 +21,7 @@ All external imports and dependencies are mocked to ensure test isolation.
 
 import json
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -32,7 +32,7 @@ from aiofiles.threadpool import AsyncBufferedIOBase, wrap
 from pyfakefs.fake_file import FakeFileWrapper
 
 from deployment.app.config import get_settings
-from deployment.app.db.database import DatabaseError
+from deployment.app.db.exceptions import DatabaseError
 from deployment.app.models.api_models import JobStatus, JobType
 from fastapi import status as fastapi_status
 
@@ -100,12 +100,12 @@ def get_full_mock_job_data(job_id, job_type, status):
 class TestDataUploadEndpoint:
     """Test suite for /api/v1/jobs/data-upload endpoint."""
 
-    def test_create_data_upload_job_success(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_data_upload_job_success(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test successful creation of a data upload job."""
         # Arrange
-
 
         # Mock background task and other dependencies
         mock_add_task = MagicMock()
@@ -123,19 +123,13 @@ class TestDataUploadEndpoint:
         stock_content = b"stock data"
         sales_content1 = b"sales data 1"
 
-        files = [
-            (
-                "stock_file",
-                ("stock.xlsx", BytesIO(stock_content), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            ),
-            (
-                "sales_files",
-                ("sales1.xlsx", BytesIO(sales_content1), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            ),
-        ]
+        files = {
+            "stock_file": ("stock_file", BytesIO(stock_content), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            "sales_files": ("sales.xlsx", BytesIO(sales_content1), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        }
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/data-upload",
             files=files,
             headers={"X-API-Key": TEST_X_API_KEY},
@@ -149,22 +143,23 @@ class TestDataUploadEndpoint:
         assert resp_data["status"] == JobStatus.PENDING.value
 
         # Verify the job was actually created in the database
-        job_from_db = in_memory_db.get_job(job_id)
+        job_from_db = await dal.get_job(job_id)
         assert job_from_db is not None
         assert job_from_db["job_id"] == job_id
 
         mock_add_task.assert_called_once()
 
-    def test_create_data_upload_job_refractory_period_active(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_data_upload_job_refractory_period_active(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test data upload job returns 429 when refractory period is active."""
         # Arrange
         # Mock the lock acquisition to return False (not acquired)
         monkeypatch.setattr(
-            in_memory_db,
+            dal,
             "try_acquire_job_submission_lock",
-            MagicMock(return_value=(False, 180))  # (acquired=False, retry_after=180)
+            AsyncMock(return_value=(False, 180))  # (acquired=False, retry_after=180)
         )
 
         # Mock other dependencies to avoid side effects
@@ -174,19 +169,13 @@ class TestDataUploadEndpoint:
         monkeypatch.setattr("deployment.app.utils.validation.validate_stock_file", lambda x, y: (True, None))
         monkeypatch.setattr("deployment.app.utils.validation.validate_sales_file", lambda x, y: (True, None))
 
-        files = [
-            (
-                "stock_file",
-                ("stock.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            ),
-            (
-                "sales_files",
-                ("sales.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            ),
-        ]
+        files = {
+            "stock_file": ("stock.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            "sales_files": ("sales.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        }
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/data-upload",
             files=files,
             headers={"X-API-Key": TEST_X_API_KEY},
@@ -203,22 +192,23 @@ class TestDataUploadEndpoint:
         assert resp_data["error"]["details"]["original_detail"]["retry_after_seconds"] == 180
 
         # Verify lock acquisition was called with correct parameters
-        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
-        call_args = in_memory_db.try_acquire_job_submission_lock.call_args
+        dal.try_acquire_job_submission_lock.assert_called_once()
+        call_args = dal.try_acquire_job_submission_lock.call_args
         assert call_args[0][0] == JobType.DATA_UPLOAD.value  # job_type
         assert "stock_file" in call_args[0][1]  # parameters dict
         assert "sales_files" in call_args[0][1]
 
-    def test_create_data_upload_job_refractory_period_acquired(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_data_upload_job_refractory_period_acquired(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test data upload job succeeds when lock is acquired."""
         # Arrange
         # Mock the lock acquisition to return True (acquired)
         monkeypatch.setattr(
-            in_memory_db, 
+            dal, 
             "try_acquire_job_submission_lock", 
-            MagicMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
+            AsyncMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
         )
 
         # Mock other dependencies
@@ -233,19 +223,13 @@ class TestDataUploadEndpoint:
         mock_save_file = AsyncMock(return_value=Path("/fake/path"))
         monkeypatch.setattr("deployment.app.api.jobs._save_uploaded_file", mock_save_file)
 
-        files = [
-            (
-                "stock_file",
-                ("stock.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            ),
-            (
-                "sales_files",
-                ("sales.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            ),
-        ]
+        files = {
+            "stock_file": ("stock.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            "sales_files": ("sales.xlsx", BytesIO(b"data"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        }
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/data-upload",
             files=files,
             headers={"X-API-Key": TEST_X_API_KEY},
@@ -258,10 +242,11 @@ class TestDataUploadEndpoint:
         assert resp_data["status"] == JobStatus.PENDING.value
 
         # Verify lock acquisition was called
-        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
+        dal.try_acquire_job_submission_lock.assert_called_once()
 
-    def test_create_data_upload_job_invalid_date(
-        self, api_client, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_data_upload_job_invalid_date(
+        self, async_api_client, monkeypatch
     ):
         """Test data upload job creation fails with invalid date format and returns ErrorDetailResponse."""
         # Arrange
@@ -278,8 +263,8 @@ class TestDataUploadEndpoint:
             ),
         ]
 
-        # Act
-        response = api_client.post(
+        # Act - Use async_api_client for async endpoint
+        response = await async_api_client.post(
             "/api/v1/jobs/data-upload",
             files=files,
             headers={"X-API-Key": TEST_X_API_KEY},
@@ -293,8 +278,9 @@ class TestDataUploadEndpoint:
 class TestTrainingJobEndpoint:
     """Test suite for /api/v1/jobs/training endpoint."""
 
-    def test_create_training_job_success(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_training_job_success(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test successful creation of a training job."""
         # Arrange
@@ -311,14 +297,14 @@ class TestTrainingJobEndpoint:
             "train_ds_config": {"alpha": 0.1, "span": 1},
             "lags": 1
         }
-        config_id = in_memory_db.create_or_get_config(config_data, is_active=True)
+        config_id = await dal.create_or_get_config(config_data, is_active=True)
 
         # 2. Mock background task
         mock_add_task = MagicMock()
         monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/training",
             json={
                 "dataset_start_date": "2022-01-01",
@@ -334,15 +320,17 @@ class TestTrainingJobEndpoint:
         assert resp_data["status"] == JobStatus.PENDING.value
 
         # Verify job creation in DB
-        job_from_db = in_memory_db.get_job(job_id)
+        job_from_db = await dal.get_job(job_id)
         assert job_from_db is not None
-        job_from_db_params = json.loads(job_from_db["parameters"])
+        # Parameters field is already parsed as dict by get_job() defensive parsing
+        job_from_db_params = job_from_db["parameters"] if isinstance(job_from_db["parameters"], dict) else json.loads(job_from_db["parameters"])
         assert job_from_db_params["config_id"] == config_id
 
         mock_add_task.assert_called_once()
 
-    def test_create_training_job_db_error(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_training_job_db_error(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test training job creation fails with a database error and returns ErrorDetailResponse."""
         # Arrange
@@ -359,13 +347,13 @@ class TestTrainingJobEndpoint:
             "train_ds_config": {"alpha": 0.1, "span": 1},
             "lags": 1
         }
-        in_memory_db.create_or_get_config(config_data, is_active=True)
+        await dal.create_or_get_config(config_data, is_active=True)
 
         # Simulate a DatabaseError when create_job is called
-        monkeypatch.setattr(in_memory_db, "create_job", MagicMock(side_effect=DatabaseError("Simulated DB error")))
+        monkeypatch.setattr(dal, "create_job", MagicMock(side_effect=DatabaseError("Simulated DB error")))
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/training",
             json={"dataset_start_date": "2022-01-01", "dataset_end_date": "2022-12-31"},
             headers={"X-API-Key": TEST_X_API_KEY},
@@ -375,15 +363,16 @@ class TestTrainingJobEndpoint:
         assert response.status_code == 500
         assert_detail(response, expected_code="internal_server_error", expect_type=dict)
 
-    def test_create_training_job_no_active_config(
-        self, api_client, in_memory_db
+    @pytest.mark.asyncio
+    async def test_create_training_job_no_active_config(
+        self, async_api_client, dal
     ):
         """Test training job creation fails with 400 if no active config is found and returns ErrorDetailResponse."""
         # Arrange
-        # Ensure no active config exists in the database (in_memory_db is clean by default)
+        # Ensure no active config exists in the database (dal is clean by default)
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/training",
             json={"dataset_start_date": "2022-01-01", "dataset_end_date": "2022-12-31"},
             headers={"X-API-Key": TEST_X_API_KEY},
@@ -393,8 +382,9 @@ class TestTrainingJobEndpoint:
         assert response.status_code == 400
         assert_detail(response, expected_code="no_config_available", expect_type=dict)
 
-    def test_create_training_job_invalid_date_range(
-        self, api_client, in_memory_db
+    @pytest.mark.asyncio
+    async def test_create_training_job_invalid_date_range(
+        self, async_api_client, dal
     ):
         """Test training job creation fails with 422 if the date range is invalid.
         NOTE: ValueError из валидатора Pydantic приводит к 422 Unprocessable Entity, а не 400.
@@ -413,10 +403,10 @@ class TestTrainingJobEndpoint:
             "train_ds_config": {"alpha": 0.1, "span": 1},
             "lags": 1
         }
-        in_memory_db.create_or_get_config(config_data, is_active=True)
+        await dal.create_or_get_config(config_data, is_active=True)
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/training",
             json={
                 "dataset_start_date": "2023-02-01",
@@ -432,8 +422,9 @@ class TestTrainingJobEndpoint:
         assert "Start date must be before or equal to end date" in response.text
         assert "value_error" in response.text
 
-    def test_create_training_job_refractory_period_active(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_training_job_refractory_period_active(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test training job returns 429 when refractory period is active."""
         # Arrange
@@ -450,17 +441,17 @@ class TestTrainingJobEndpoint:
             "train_ds_config": {"alpha": 0.1, "span": 1},
             "lags": 1
         }
-        in_memory_db.create_or_get_config(config_data, is_active=True)
+        await dal.create_or_get_config(config_data, is_active=True)
 
         # Mock the lock acquisition to return False (not acquired)
         monkeypatch.setattr(
-            in_memory_db, 
+            dal, 
             "try_acquire_job_submission_lock", 
-            MagicMock(return_value=(False, 300))  # (acquired=False, retry_after=300)
+            AsyncMock(return_value=(False, 300))  # (acquired=False, retry_after=300)
         )
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/training",
             json={
                 "dataset_start_date": "2022-01-01",
@@ -480,15 +471,16 @@ class TestTrainingJobEndpoint:
         assert resp_data["error"]["details"]["original_detail"]["retry_after_seconds"] == 300
 
         # Verify lock acquisition was called with correct parameters
-        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
-        call_args = in_memory_db.try_acquire_job_submission_lock.call_args
+        dal.try_acquire_job_submission_lock.assert_called_once()
+        call_args = dal.try_acquire_job_submission_lock.call_args
         assert call_args[0][0] == JobType.TRAINING.value  # job_type
         assert "config_id" in call_args[0][1]  # parameters dict
         assert "dataset_start_date" in call_args[0][1]
         assert "dataset_end_date" in call_args[0][1]
 
-    def test_create_training_job_refractory_period_acquired(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_training_job_refractory_period_acquired(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test training job succeeds when lock is acquired."""
         # Arrange
@@ -505,13 +497,13 @@ class TestTrainingJobEndpoint:
             "train_ds_config": {"alpha": 0.1, "span": 1},
             "lags": 1
         }
-        config_id = in_memory_db.create_or_get_config(config_data, is_active=True)
+        config_id = await dal.create_or_get_config(config_data, is_active=True)
 
         # Mock the lock acquisition to return True (acquired)
         monkeypatch.setattr(
-            in_memory_db, 
+            dal, 
             "try_acquire_job_submission_lock", 
-            MagicMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
+            AsyncMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
         )
 
         # Mock background task
@@ -519,7 +511,7 @@ class TestTrainingJobEndpoint:
         monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/training",
             json={
                 "dataset_start_date": "2022-01-01",
@@ -535,13 +527,14 @@ class TestTrainingJobEndpoint:
         assert resp_data["status"] == JobStatus.PENDING.value
 
         # Verify job creation in DB
-        job_from_db = in_memory_db.get_job(job_id)
+        job_from_db = await dal.get_job(job_id)
         assert job_from_db is not None
-        job_from_db_params = json.loads(job_from_db["parameters"])
+        # Parameters field is already parsed as dict by get_job() defensive parsing
+        job_from_db_params = job_from_db["parameters"] if isinstance(job_from_db["parameters"], dict) else json.loads(job_from_db["parameters"])
         assert job_from_db_params["config_id"] == config_id
 
         # Verify lock acquisition was called
-        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
+        dal.try_acquire_job_submission_lock.assert_called_once()
         mock_add_task.assert_called_once()
 
 
@@ -552,7 +545,7 @@ class TestReportJobEndpoint:
         """Test successful creation of a prediction report job."""
         # Arrange
         mock_df = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
-        mock_generate_report = MagicMock(return_value=mock_df)
+        mock_generate_report = AsyncMock(return_value=mock_df)
         monkeypatch.setattr(
             "deployment.app.api.jobs.generate_report", mock_generate_report
         )
@@ -581,19 +574,33 @@ class TestReportJobEndpoint:
 
         mock_generate_report.assert_called_once()
 
-    def test_create_report_job_no_month_provided_success(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_report_job_no_month_provided_success(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test report job defaults to the latest month when none is provided."""
         # Arrange
         # Create a dummy prediction result in the database
-        job_id = in_memory_db.create_job(JobType.PREDICTION, status=JobStatus.COMPLETED)
+        job_id = await dal.create_job(job_type=JobType.PREDICTION.value, parameters={})
         model_id = "test-model-id"
-        in_memory_db.create_model_record(model_id, job_id, "/path/to/model", datetime.now())
-        in_memory_db.create_prediction_result(job_id=job_id, model_id=model_id, output_path="/fake/path/predictions.csv", summary_metrics={}, prediction_month=datetime(2023, 5, 1).date())
+        await dal.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/path/to/model",
+            created_at=datetime.now(),
+            is_active=False,
+        )
+        from datetime import date
+        await dal.create_prediction_result(
+            job_id=job_id,
+            prediction_month=date(2023, 5, 1),
+            model_id=model_id,
+            output_path="/fake/path/predictions.csv",
+            summary_metrics={},
+        )
 
         mock_df = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
-        mock_generate_report = MagicMock(return_value=mock_df)
+        mock_generate_report = AsyncMock(return_value=mock_df)
         monkeypatch.setattr(
             "deployment.app.api.jobs.generate_report", mock_generate_report
         )
@@ -601,7 +608,7 @@ class TestReportJobEndpoint:
         params = {"report_type": "prediction_report"}  # No prediction_month
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/reports", json=params, headers={"X-API-Key": TEST_X_API_KEY}
         )
 
@@ -611,17 +618,18 @@ class TestReportJobEndpoint:
         assert resp_data["prediction_month"] == "2023-05"
         mock_generate_report.assert_called_once()
         assert "dal" in mock_generate_report.call_args.kwargs
-        assert mock_generate_report.call_args.kwargs["dal"] == in_memory_db
+        assert mock_generate_report.call_args.kwargs["dal"] == dal
 
-    def test_create_report_job_no_predictions_found(self, api_client, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_create_report_job_no_predictions_found(self, async_api_client, dal):
         """Test report job returns 404 if no predictions exist for the latest month."""
         # Arrange
-        # Ensure no prediction results exist in the database (in_memory_db is clean by default)
+        # Ensure no prediction results exist in the database (dal is clean by default)
 
         params = {"report_type": "prediction_report"}
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/reports", json=params, headers={"X-API-Key": TEST_X_API_KEY}
         )
 
@@ -633,16 +641,17 @@ class TestReportJobEndpoint:
 class TestTuningJobEndpoint:
     """Test suite for /api/v1/jobs/tuning endpoint."""
 
-    def test_create_tuning_job_refractory_period_active(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_tuning_job_refractory_period_active(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test tuning job returns 429 when refractory period is active."""
         # Arrange
         # Mock the lock acquisition to return False (not acquired)
         monkeypatch.setattr(
-            in_memory_db,
+            dal,
             "try_acquire_job_submission_lock",
-            MagicMock(return_value=(False, 600))  # (acquired=False, retry_after=600)
+            AsyncMock(return_value=(False, 600))  # (acquired=False, retry_after=600)
         )
         
         # Mock get_effective_config to return a valid config
@@ -651,21 +660,21 @@ class TestTuningJobEndpoint:
             "config": {"test": "config"}
         }
         monkeypatch.setattr(
-            in_memory_db,
+            dal,
             "get_effective_config",
-            MagicMock(return_value=mock_config)
+            AsyncMock(return_value=mock_config)
         )
         
         # Mock adjust_dataset_boundaries to return a valid date
         from datetime import date
         monkeypatch.setattr(
-            in_memory_db,
+            dal,
             "adjust_dataset_boundaries",
-            MagicMock(return_value=date(2023, 1, 31))
+            AsyncMock(return_value=date(2023, 1, 31))
         )
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/tuning",
             json={
                 "mode": "lite",
@@ -686,24 +695,25 @@ class TestTuningJobEndpoint:
         assert resp_data["error"]["details"]["original_detail"]["retry_after_seconds"] == 600
 
         # Verify lock acquisition was called with correct parameters
-        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
-        call_args = in_memory_db.try_acquire_job_submission_lock.call_args
+        dal.try_acquire_job_submission_lock.assert_called_once()
+        call_args = dal.try_acquire_job_submission_lock.call_args
         assert call_args[0][0] == JobType.TUNING.value  # job_type
         assert "mode" in call_args[0][1]  # parameters dict
         assert call_args[0][1]["mode"] == "lite"
         assert "dataset_start_date" in call_args[0][1]
         assert "dataset_end_date" in call_args[0][1]
 
-    def test_create_tuning_job_refractory_period_acquired(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_tuning_job_refractory_period_acquired(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test tuning job succeeds when lock is acquired."""
         # Arrange
         # Mock the lock acquisition to return True (acquired)
         monkeypatch.setattr(
-            in_memory_db, 
+            dal, 
             "try_acquire_job_submission_lock", 
-            MagicMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
+            AsyncMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
         )
 
         # Mock get_effective_config to return a valid config
@@ -712,17 +722,17 @@ class TestTuningJobEndpoint:
             "config": {"test": "config"}
         }
         monkeypatch.setattr(
-            in_memory_db,
+            dal,
             "get_effective_config",
-            MagicMock(return_value=mock_config)
+            AsyncMock(return_value=mock_config)
         )
         
         # Mock adjust_dataset_boundaries to return a valid date
         from datetime import date
         monkeypatch.setattr(
-            in_memory_db,
+            dal,
             "adjust_dataset_boundaries",
-            MagicMock(return_value=date(2023, 1, 31))
+            AsyncMock(return_value=date(2023, 1, 31))
         )
 
         # Mock background task
@@ -730,7 +740,7 @@ class TestTuningJobEndpoint:
         monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/tuning",
             json={
                 "mode": "full",
@@ -747,25 +757,27 @@ class TestTuningJobEndpoint:
         assert resp_data["status"] == JobStatus.PENDING.value
 
         # Verify job creation in DB
-        job_from_db = in_memory_db.get_job(job_id)
+        job_from_db = await dal.get_job(job_id)
         assert job_from_db is not None
-        job_from_db_params = json.loads(job_from_db["parameters"])
+        # Parameters field is already parsed as dict by get_job() defensive parsing
+        job_from_db_params = job_from_db["parameters"] if isinstance(job_from_db["parameters"], dict) else json.loads(job_from_db["parameters"])
         assert job_from_db_params["mode"] == "full"
 
         # Verify lock acquisition was called
-        in_memory_db.try_acquire_job_submission_lock.assert_called_once()
+        dal.try_acquire_job_submission_lock.assert_called_once()
         mock_add_task.assert_called_once()
 
-    def test_create_tuning_job_different_parameters_different_locks(
-        self, api_client, in_memory_db, monkeypatch
+    @pytest.mark.asyncio
+    async def test_create_tuning_job_different_parameters_different_locks(
+        self, async_api_client, dal, monkeypatch
     ):
         """Test that different tuning parameters create different locks."""
         # Arrange
         # Mock the lock acquisition to return True for both calls (different parameters)
         monkeypatch.setattr(
-            in_memory_db, 
+            dal, 
             "try_acquire_job_submission_lock", 
-            MagicMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
+            AsyncMock(return_value=(True, 0))  # (acquired=True, retry_after=0)
         )
 
         # Mock get_effective_config to return a valid config
@@ -774,17 +786,17 @@ class TestTuningJobEndpoint:
             "config": {"test": "config"}
         }
         monkeypatch.setattr(
-            in_memory_db,
+            dal,
             "get_effective_config",
-            MagicMock(return_value=mock_config)
+            AsyncMock(return_value=mock_config)
         )
         
         # Mock adjust_dataset_boundaries to return a valid date
         from datetime import date
         monkeypatch.setattr(
-            in_memory_db,
+            dal,
             "adjust_dataset_boundaries",
-            MagicMock(return_value=date(2023, 1, 31))
+            AsyncMock(return_value=date(2023, 1, 31))
         )
 
         # Mock background task
@@ -792,7 +804,7 @@ class TestTuningJobEndpoint:
         monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
 
         # Act - First request with lite mode
-        response1 = api_client.post(
+        response1 = await async_api_client.post(
             "/api/v1/jobs/tuning",
             json={
                 "mode": "lite",
@@ -803,7 +815,7 @@ class TestTuningJobEndpoint:
         )
 
         # Act - Second request with full mode (different parameters)
-        response2 = api_client.post(
+        response2 = await async_api_client.post(
             "/api/v1/jobs/tuning",
             json={
                 "mode": "full",
@@ -818,10 +830,10 @@ class TestTuningJobEndpoint:
         assert response2.status_code == 200
 
         # Verify both calls were made (different parameter hashes)
-        assert in_memory_db.try_acquire_job_submission_lock.call_count == 2
+        assert dal.try_acquire_job_submission_lock.call_count == 2
         
         # Verify different parameters were passed
-        calls = in_memory_db.try_acquire_job_submission_lock.call_args_list
+        calls = dal.try_acquire_job_submission_lock.call_args_list
         assert calls[0][0][0] == JobType.TUNING.value  # job_type
         assert calls[1][0][0] == JobType.TUNING.value  # job_type
         
@@ -835,12 +847,13 @@ class TestTuningJobEndpoint:
 
 class TestJobStatusEndpoint:
     """Test suite for job status retrieval."""
-    def test_get_job_status_training_completed(
-        self, api_client, in_memory_db
+    @pytest.mark.asyncio
+    async def test_get_job_status_training_completed(
+        self, async_api_client, dal
     ):
         """Test getting status of a completed training job."""
         # Arrange
-        job_id = in_memory_db.create_job(JobType.TRAINING, status=JobStatus.COMPLETED)
+        job_id = await dal.create_job(job_type=JobType.TRAINING.value, parameters={})
         model_id = str(uuid.uuid4())
         config_data = {
             "nn_model_config": {
@@ -854,19 +867,27 @@ class TestJobStatusEndpoint:
             "train_ds_config": {"alpha": 0.1, "span": 1},
             "lags": 1
         }
-        config_id = in_memory_db.create_or_get_config(config_data)
+        config_id = await dal.create_or_get_config(config_data)
         # Create model record first to satisfy foreign key constraint
-        in_memory_db.create_model_record(model_id, job_id, "/path/to/model", datetime.now())
-        in_memory_db.create_training_result(
+        await dal.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/path/to/model",
+            created_at=datetime.now(),
+            is_active=False,
+        )
+        await dal.create_training_result(
             job_id=job_id,
             model_id=model_id,
             config_id=config_id,
             metrics={"accuracy": 0.95},
             duration=120
         )
+        # Update job status to completed
+        await dal.update_job_status(job_id, JobStatus.COMPLETED.value)
 
         # Act
-        response = api_client.get(
+        response = await async_api_client.get(
             f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY}
         )
 
@@ -880,13 +901,14 @@ class TestJobStatusEndpoint:
 
 
 
-    def test_get_job_status_pending(self, api_client, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_get_job_status_pending(self, async_api_client, dal):
         """Test getting status of a pending job."""
         # Arrange
-        job_id = in_memory_db.create_job(JobType.DATA_UPLOAD, status=JobStatus.PENDING)
+        job_id = await dal.create_job(job_type=JobType.DATA_UPLOAD.value, parameters={})
 
         # Act
-        response = api_client.get(
+        response = await async_api_client.get(
             f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY}
         )
 
@@ -897,38 +919,94 @@ class TestJobStatusEndpoint:
         assert data["status"] == JobStatus.PENDING.value
         assert data["result"] is None
 
-    def test_get_job_status_result_db_error(
-        self, api_client, in_memory_db, monkeypatch
+    async def test_get_job_status_result_db_error(
+        self, async_api_client, dal, monkeypatch
     ):
-        """Test job status handles database errors when fetching results and returns ErrorDetailResponse."""
+        """Test job status handles database errors when fetching results and returns ErrorDetailResponse.
+        
+        Note: If this test fails with InterfaceError or ConnectionDoesNotExistError,
+        it may indicate concurrent operations on the connection pool. Ensure:
+        1. All database operations are properly awaited
+        2. Connection pool is properly isolated between tests
+        3. Mock functions properly handle async operations
+        """
         # Arrange
-        job_id = in_memory_db.create_job(JobType.PREDICTION, status=JobStatus.COMPLETED)
+        job_id = await dal.create_job(job_type=JobType.PREDICTION.value, parameters={})
         # Create a prediction result first so the job has a result
         model_id = "test-model-id"
-        in_memory_db.create_model_record(model_id, job_id, "/path/to/model", datetime.now())
-        in_memory_db.create_prediction_result(job_id=job_id, model_id=model_id, output_path="/fake/path/predictions.csv", summary_metrics={}, prediction_month=datetime(2023, 1, 1).date())
+        await dal.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/path/to/model",
+            created_at=datetime.now(),
+            is_active=False,
+        )
+        from datetime import date
+        result_id = await dal.create_prediction_result(
+            job_id=job_id,
+            prediction_month=date(2023, 1, 1),
+            model_id=model_id,
+            output_path="/fake/path/predictions.csv",
+            summary_metrics={},
+        )
+        
+        # Update job with result_id and status = completed (required for get_prediction_result to be called)
+        await dal.execute_raw_query(
+            "UPDATE jobs SET result_id = $1, status = $2 WHERE job_id = $3",
+            params=(result_id, "completed", job_id),
+            fetchall=False
+        )
+        
+        # Verify the job status was updated
+        updated_job = await dal.get_job(job_id)
+        assert updated_job["status"] == "completed", f"Job status should be 'completed', got '{updated_job['status']}'"
+        assert updated_job["result_id"] == result_id, f"Job result_id should be '{result_id}', got '{updated_job.get('result_id')}'"
 
         # Now mock the get_prediction_result to raise an error
-        # Mock the base function in database.py
-        monkeypatch.setattr("deployment.app.db.database.get_prediction_result", MagicMock(side_effect=DatabaseError("Result error")))
+        # Mock the DAL method to raise an error (ensure AsyncMock for async methods)
+        # The mock needs to be applied to the DAL instance that will be used by the API
+        from unittest.mock import AsyncMock
+        
+        # Create a mock DAL that wraps the real DAL but overrides get_prediction_result
+        # Use the same pool from dal fixture
+        from deployment.app.db.data_access_layer import DataAccessLayer, UserContext, UserRoles
+        
+        # Create a new DAL instance using the same pool (same as API would get)
+        api_dal = DataAccessLayer(user_context=UserContext(roles=[UserRoles.USER]), pool=dal._pool)
+        
+        # Mock only get_prediction_result on this real DAL instance to raise DatabaseError
+        async def mock_get_prediction_result(*args, **kwargs):
+            raise DatabaseError("Result error")
+        api_dal.get_prediction_result = mock_get_prediction_result
+        
+        # Mock the dependency injection function (it's an async generator)
+        async def mock_get_dal_for_general_user(*args, **kwargs):
+            yield api_dal
+        
+        monkeypatch.setattr(
+            "deployment.app.dependencies.get_dal_for_general_user",
+            mock_get_dal_for_general_user
+        )
 
-        # Act
-        response = api_client.get(
+        # Act - Ensure proper async/await handling
+        response = await async_api_client.get(
             f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY}
         )
 
-        # Assert
-        assert response.status_code == 500
+        # Assert - DatabaseError should be caught and return 500
+        # The error occurs when calling get_prediction_result, which should be caught by the except DatabaseError block
+        assert response.status_code == 500, f"Expected 500, got {response.status_code}. Response: {response.json() if hasattr(response, 'json') else response.text}"
         assert_detail(response, expected_code="database_error", expect_type=dict)
 
-    def test_get_job_status_not_found(self, api_client, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_get_job_status_not_found(self, async_api_client, dal):
         """Test job status returns 404 for non-existent job and returns ErrorDetailResponse."""
         # Arrange
         job_id = "non-existent"
-        # in_memory_db is clean by default, so no job with this ID exists
+        # dal is clean by default, so no job with this ID exists
 
         # Act
-        response = api_client.get(
+        response = await async_api_client.get(
             f"/api/v1/jobs/{job_id}", headers={"X-API-Key": TEST_X_API_KEY}
         )
 
@@ -940,21 +1018,23 @@ class TestJobStatusEndpoint:
 class TestJobListingEndpoint:
     """Test suite for job listing functionality."""
 
-    def test_list_jobs_no_filters(self, api_client, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_list_jobs_no_filters(self, async_api_client, dal):
         """Test listing jobs without filters."""
         # Arrange
         # Create multiple jobs in the database
-        in_memory_db.create_job(
-            JobType.TRAINING,
-            status=JobStatus.COMPLETED,
+        job_id1 = await dal.create_job(
+            job_type=JobType.TRAINING.value,
+            parameters={},
         )
-        in_memory_db.create_job(
-            JobType.TUNING,
-            status=JobStatus.PENDING,
+        await dal.update_job_status(job_id1, JobStatus.COMPLETED.value)
+        await dal.create_job(
+            job_type=JobType.TUNING.value,
+            parameters={},
         )
 
         # Act
-        response = api_client.get("/api/v1/jobs", headers={"X-API-Key": TEST_X_API_KEY})
+        response = await async_api_client.get("/api/v1/jobs", headers={"X-API-Key": TEST_X_API_KEY})
 
         # Assert
         assert response.status_code == 200
@@ -966,22 +1046,24 @@ class TestJobListingEndpoint:
         assert JobType.TRAINING.value in job_types
         assert JobType.TUNING.value in job_types
 
-    def test_list_jobs_with_filters(self, api_client, in_memory_db):
+    @pytest.mark.asyncio
+    async def test_list_jobs_with_filters(self, async_api_client, dal):
         """Test listing jobs with filters applied."""
         # Arrange
         # Create jobs that match the filters
-        in_memory_db.create_job(
-            JobType.TRAINING,
-            status=JobStatus.COMPLETED,
+        job_id1 = await dal.create_job(
+            job_type=JobType.TRAINING.value,
+            parameters={},
         )
+        await dal.update_job_status(job_id1, JobStatus.COMPLETED.value)
         # Create a job that does not match the filters
-        in_memory_db.create_job(
-            JobType.PREDICTION,
-            status=JobStatus.PENDING,
+        await dal.create_job(
+            job_type=JobType.PREDICTION.value,
+            parameters={},
         )
 
         # Act
-        response = api_client.get(
+        response = await async_api_client.get(
             "/api/v1/jobs?job_type=training&status=completed&limit=10",
             headers={"X-API-Key": TEST_X_API_KEY},
         )
@@ -992,13 +1074,14 @@ class TestJobListingEndpoint:
         assert len(data["jobs"]) == 1
         assert data["jobs"][0]["job_type"] == JobType.TRAINING.value
 
-    def test_list_jobs_db_error(self, api_client, in_memory_db, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_list_jobs_db_error(self, async_api_client, dal, monkeypatch):
         """Test job listing handles database errors."""
         # Arrange
-        monkeypatch.setattr(in_memory_db, "list_jobs", MagicMock(side_effect=DatabaseError("Simulated DB error")))
+        monkeypatch.setattr(dal, "list_jobs", AsyncMock(side_effect=DatabaseError("Simulated DB error")))
 
         # Act
-        response = api_client.get("/api/v1/jobs", headers={"X-API-Key": TEST_X_API_KEY})
+        response = await async_api_client.get("/api/v1/jobs", headers={"X-API-Key": TEST_X_API_KEY})
 
         # Assert
         assert response.status_code == 500
@@ -1012,7 +1095,8 @@ class TestAuthenticationScenarios:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_create_data_upload_job_success_with_unified_auth(self, api_client, in_memory_db, monkeypatch, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_create_data_upload_job_success_with_unified_auth(self, async_api_client, dal, monkeypatch, auth_header_name, auth_token):
         """Test successful creation of a data upload job with either X-API-Key or Bearer token."""
         # Arrange
         mock_add_task = MagicMock()
@@ -1029,19 +1113,13 @@ class TestAuthenticationScenarios:
         stock_content = b"stock data"
         sales_content1 = b"sales data 1"
 
-        files = [
-            (
-                "stock_file",
-                ("stock.xlsx", BytesIO(stock_content), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            ),
-            (
-                "sales_files",
-                ("sales1.xlsx", BytesIO(sales_content1), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            ),
-        ]
+        files = {
+            "stock_file": ("stock.xlsx", BytesIO(stock_content), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            "sales_files": ("sales.xlsx", BytesIO(sales_content1), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        }
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/data-upload",
             files=files,
             headers={auth_header_name: auth_token},
@@ -1054,7 +1132,7 @@ class TestAuthenticationScenarios:
         assert resp_data["status"] == JobStatus.PENDING.value
 
         # Verify the job was actually created in the database
-        job_from_db = in_memory_db.get_job(job_id)
+        job_from_db = await dal.get_job(job_id)
         assert job_from_db is not None
         assert job_from_db["job_id"] == job_id
 
@@ -1110,7 +1188,8 @@ class TestAuthenticationScenarios:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_create_training_job_success_with_unified_auth(self, api_client, in_memory_db, monkeypatch, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_create_training_job_success_with_unified_auth(self, async_api_client, dal, monkeypatch, auth_header_name, auth_token):
         """Test successful creation of a training job with either X-API-Key or Bearer token."""
         # Arrange
         # Create an active config in the database
@@ -1126,14 +1205,14 @@ class TestAuthenticationScenarios:
             "train_ds_config": {"alpha": 0.1, "span": 1},
             "lags": 1
         }
-        config_id = in_memory_db.create_or_get_config(config_data, is_active=True)
+        config_id = await dal.create_or_get_config(config_data, is_active=True)
 
         # Mock background task
         mock_add_task = MagicMock()
         monkeypatch.setattr("deployment.app.api.jobs.BackgroundTasks.add_task", mock_add_task)
 
         # Act
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/training",
             json={
                 "dataset_start_date": "2022-01-01",
@@ -1149,9 +1228,10 @@ class TestAuthenticationScenarios:
         assert resp_data["status"] == JobStatus.PENDING.value
 
         # Verify job creation in DB
-        job_from_db = in_memory_db.get_job(job_id)
+        job_from_db = await dal.get_job(job_id)
         assert job_from_db is not None
-        job_from_db_params = json.loads(job_from_db["parameters"])
+        # Parameters field is already parsed as dict by get_job() defensive parsing
+        job_from_db_params = job_from_db["parameters"] if isinstance(job_from_db["parameters"], dict) else json.loads(job_from_db["parameters"])
         assert job_from_db_params["config_id"] == config_id
 
         mock_add_task.assert_called_once()
@@ -1160,17 +1240,30 @@ class TestAuthenticationScenarios:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_create_report_job_success_with_unified_auth(self, api_client, in_memory_db, monkeypatch, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_create_report_job_success_with_unified_auth(self, async_api_client, dal, monkeypatch, auth_header_name, auth_token):
         """Test successful creation of a prediction report job with either X-API-Key or Bearer token."""
         # Arrange
         # Create a dummy prediction result in the database
-        job_id = in_memory_db.create_job(JobType.PREDICTION, status=JobStatus.COMPLETED)
+        job_id = await dal.create_job(job_type=JobType.PREDICTION.value, parameters={})
         model_id = "test-model-id"
-        in_memory_db.create_model_record(model_id, job_id, "/path/to/model", datetime.now())
-        in_memory_db.create_prediction_result(job_id=job_id, model_id=model_id, output_path="/fake/path/predictions.csv", summary_metrics={}, prediction_month=datetime(2023, 1, 1).date())
+        await dal.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/path/to/model",
+            created_at=datetime.now(),
+            is_active=False,
+        )
+        await dal.create_prediction_result(
+            job_id=job_id,
+            prediction_month=date(2023, 1, 1),
+            model_id=model_id,
+            output_path="/fake/path/predictions.csv",
+            summary_metrics={},
+        )
 
         mock_df = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
-        mock_generate_report = MagicMock(return_value=mock_df)
+        mock_generate_report = AsyncMock(return_value=mock_df)
         monkeypatch.setattr(
             "deployment.app.api.jobs.generate_report", mock_generate_report
         )
@@ -1181,7 +1274,7 @@ class TestAuthenticationScenarios:
             "filters": {"artist": "test_artist"},
         }
 
-        response = api_client.post(
+        response = await async_api_client.post(
             "/api/v1/jobs/reports", json=params, headers={auth_header_name: auth_token}
         )
 
@@ -1201,13 +1294,45 @@ class TestAuthenticationScenarios:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_get_job_status_training_completed_with_unified_auth(self, api_client, in_memory_db, auth_header_name, auth_token):
+    async def test_get_job_status_training_completed_with_unified_auth(self, async_api_client, dal, auth_header_name, auth_token):
         """Test getting status of a completed training job with either X-API-Key or Bearer token."""
         # Arrange
-        job_id = in_memory_db.create_job(JobType.TRAINING, status=JobStatus.COMPLETED)
+        job_id = await dal.create_job(job_type=JobType.TRAINING.value, parameters={})
+        
+        # Create training result and update job status to completed
+        model_id = str(uuid.uuid4())
+        config_data = {
+            "nn_model_config": {
+                "num_encoder_layers": 1, "num_decoder_layers": 1, "decoder_output_dim": 1,
+                "temporal_width_past": 1, "temporal_width_future": 1, "temporal_hidden_size_past": 1,
+                "temporal_hidden_size_future": 1, "temporal_decoder_hidden": 1, "batch_size": 1,
+                "dropout": 0.1, "use_reversible_instance_norm": False, "use_layer_norm": False
+            },
+            "optimizer_config": {"lr": 0.01, "weight_decay": 0.01},
+            "lr_shed_config": {"T_0": 1, "T_mult": 1},
+            "train_ds_config": {"alpha": 0.1, "span": 1},
+            "lags": 1
+        }
+        config_id = await dal.create_or_get_config(config_data, is_active=False)
+        # Create model record first to satisfy foreign key constraint
+        await dal.create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/path/to/model",
+            created_at=datetime.now(),
+            is_active=False,
+        )
+        result_id = await dal.create_training_result(
+            job_id=job_id,
+            model_id=model_id,
+            config_id=config_id,
+            metrics={"accuracy": 0.95},
+            duration=100,
+        )
+        await dal.update_job_status(job_id, JobStatus.COMPLETED.value)
 
         # Act
-        response = api_client.get(f"/api/v1/jobs/{job_id}", headers={auth_header_name: auth_token})
+        response = await async_api_client.get(f"/api/v1/jobs/{job_id}", headers={auth_header_name: auth_token})
 
         # Assert
         assert response.status_code == 200
@@ -1219,20 +1344,21 @@ class TestAuthenticationScenarios:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_list_jobs_no_filters_with_unified_auth(self, api_client, in_memory_db, auth_header_name, auth_token):
+    async def test_list_jobs_no_filters_with_unified_auth(self, async_api_client, dal, auth_header_name, auth_token):
         """Test listing jobs without filters with either X-API-Key or Bearer token."""
         # Arrange
         # Create multiple jobs in the database
-        in_memory_db.create_job(
-            JobType.TRAINING,
-            status=JobStatus.COMPLETED,
+        job_id1 = await dal.create_job(
+            job_type=JobType.TRAINING.value,
+            parameters={},
         )
-        in_memory_db.create_job(
-            JobType.TUNING,
-            status=JobStatus.PENDING,
+        await dal.update_job_status(job_id1, JobStatus.COMPLETED.value)
+        await dal.create_job(
+            job_type=JobType.TUNING.value,
+            parameters={},
         )
 
-        response = api_client.get("/api/v1/jobs", headers={auth_header_name: auth_token})
+        response = await async_api_client.get("/api/v1/jobs", headers={auth_header_name: auth_token})
 
         assert response.status_code == 200
         data = response.json()
@@ -1247,12 +1373,13 @@ class TestAuthenticationScenarios:
         ("X-API-Key", TEST_X_API_KEY),
         ("Authorization", f"Bearer {TEST_BEARER_TOKEN}"),
     ])
-    def test_invalid_job_id_format_with_unified_auth(self, api_client, in_memory_db, auth_header_name, auth_token):
+    @pytest.mark.asyncio
+    async def test_invalid_job_id_format_with_unified_auth(self, async_api_client, dal, auth_header_name, auth_token):
         """Test endpoints handle invalid job ID formats gracefully with either X-API-Key or Bearer token."""
         # Arrange
-        # in_memory_db is clean by default, so no job with this ID exists
+        # dal is clean by default, so no job with this ID exists
 
-        response = api_client.get(
+        response = await async_api_client.get(
             "/api/v1/jobs/invalid-id-format", headers={auth_header_name: auth_token}
         )
 

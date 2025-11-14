@@ -14,7 +14,8 @@ from deployment.app.api.results import router as results_router
 from deployment.app.config import get_settings
 
 settings = get_settings()
-from deployment.app.db.schema import init_db
+from deployment.app.db.connection import close_db_pool, get_db_pool, init_db_pool
+from deployment.app.db.schema_postgresql import init_postgres_schema
 from deployment.app.logger_config import configure_logging
 from deployment.app.services.auth import get_docs_user
 from deployment.app.utils.error_handling import configure_error_handlers
@@ -27,13 +28,32 @@ logger = logging.getLogger(__name__)  # Use __name__ for module-specific logger
 # Lifespan context manager for application startup and shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize database
-    db_initialized_successfully = init_db(db_path=settings.database_path)
-    if not db_initialized_successfully:
-        logger.error("Database initialization failed during startup. Check logs.")
+    # Initialize PostgreSQL connection pool
+    try:
+        pool = await init_db_pool()
+        logger.info("Database pool initialized successfully")
+        
+        # Initialize database schema
+        schema_initialized = await init_postgres_schema(pool)
+        if not schema_initialized:
+            logger.error("Database schema initialization failed during startup. Check logs.")
+            # Depending on policy, might raise an exception here to stop startup
+            raise RuntimeError("Database schema initialization failed")
+        logger.info("Database schema initialized successfully")
+        
+    except Exception as e:
+        logger.error(f"Database initialization failed during startup: {e}", exc_info=True)
         # Depending on policy, might raise an exception here to stop startup
+        raise
 
     yield
+
+    # Close database pool on shutdown
+    try:
+        await close_db_pool()
+        logger.info("Database pool closed successfully")
+    except Exception as e:
+        logger.error(f"Error closing database pool during shutdown: {e}", exc_info=True)
 
 # Create FastAPI application with lifespan
 app = FastAPI(

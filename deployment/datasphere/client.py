@@ -72,9 +72,7 @@ class DataSphereClient:
         self,
         project_id: str,
         folder_id: str,
-        oauth_token: str = None,
-        yc_profile: str = None,
-        auth_method: str = "auto",
+        oauth_token: str | None = None,
     ):
         """
         Initializes the DataSphere client.
@@ -95,34 +93,15 @@ class DataSphereClient:
         self.project_id = project_id
         self.folder_id = folder_id
 
-        client_oauth_token = None
-        client_yc_profile = None
-
-        if auth_method == "yc_profile" or (auth_method == "auto" and yc_profile):
-            logger.info(f"Using YC CLI profile authentication: {yc_profile}")
-            client_yc_profile = yc_profile
-            client_oauth_token = None
-        elif auth_method == "oauth_token" or (auth_method == "auto" and oauth_token and not yc_profile):
-            logger.info("Using OAuth token authentication")
-            client_oauth_token = oauth_token
-            client_yc_profile = None
-        else:
-            logger.info("Using auto-detection authentication (delegating to DataSphere SDK)")
-            client_oauth_token = oauth_token
-            client_yc_profile = yc_profile
+        # Simplified: only OAuth token path is supported (via YC_OAUTH_TOKEN)
+        client_oauth_token = oauth_token
 
         try:
             self._client = DatasphereClient(
                 oauth_token=client_oauth_token,
-                yc_profile=client_yc_profile
+                yc_profile=None,
             )
-
-            if client_yc_profile and not client_oauth_token:
-                logger.info(f"DataSphere client initialized with YC profile: {client_yc_profile}")
-            elif client_oauth_token and not client_yc_profile:
-                logger.info("DataSphere client initialized with OAuth token")
-            else:
-                logger.info("DataSphere client initialized with auto-detection")
+            logger.info("DataSphere client initialized with OAuth token (profile disabled)")
 
         except Exception as e:
             logger.exception(f"Failed to initialize DataSphere client: {e}")

@@ -35,7 +35,7 @@ async def trigger_cleanup_job(
     such as removing old predictions, historical data, and models, based on the
     configured retention policies. Requires admin authentication.
     """
-    background_tasks.add_task(run_cleanup_job, dal)
+    background_tasks.add_task(run_cleanup_job, dal)  # Note: run_cleanup_job is now async
     return {"message": "Data retention cleanup job started"}
 
 
@@ -53,7 +53,7 @@ async def clean_predictions(
     If no period is specified, it uses the default from settings.
     Requires admin authentication.
     """
-    count = cleanup_old_predictions(days_to_keep, dal=dal)
+    count = await cleanup_old_predictions(days_to_keep, dal=dal)
     return {"status": "ok", "records_removed": count, "days_kept": days_to_keep}
 
 
@@ -69,7 +69,7 @@ async def clean_historical_data(
     Deletes historical sales, stock, and price data older than the specified periods.
     Uses settings if periods are not provided. Requires admin authentication.
     """
-    result = cleanup_old_historical_data(sales_days_to_keep, stock_days_to_keep, dal=dal)
+    result = await cleanup_old_historical_data(sales_days_to_keep, stock_days_to_keep, dal=dal)
     return {
         "status": "ok",
         "records_removed": {
@@ -98,7 +98,7 @@ async def clean_models(
     keeping a certain number of models per parameter set and removing models that have
     been inactive for a specified period. Requires admin authentication.
     """
-    removed_models = cleanup_old_models(models_to_keep, inactive_days_to_keep, dal=dal)
+    removed_models = await cleanup_old_models(models_to_keep, inactive_days_to_keep, dal=dal)
     return {
         "status": "ok",
         "models_removed": removed_models,

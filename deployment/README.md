@@ -81,4 +81,4 @@ deployment/
 
 ## Data Storage
 
-The application creates a local data storage directory (default: `~/.plastinka_sales_predictor/`) to store the SQLite database, trained models, logs, and other artifacts.
+The application uses PostgreSQL database for data storage. Trained models, logs, and other artifacts are stored in a local data storage directory (default: `~/.plastinka_sales_predictor/`).

@@ -5,7 +5,7 @@ from warnings import warn
 import pandas as pd
 
 from deployment.app.db import feature_storage
-from deployment.app.db.schema import MULTIINDEX_NAMES
+from deployment.app.db.schema_postgresql import MULTIINDEX_NAMES
 from plastinka_sales_predictor.data_preparation import (
     GlobalLogMinMaxScaler,
     MultiColumnLabelBinarizer,

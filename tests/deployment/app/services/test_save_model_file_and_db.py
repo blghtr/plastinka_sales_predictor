@@ -9,7 +9,7 @@ This test module validates the enhanced save_model_file_and_db function that:
 Testing Strategy:
 - Uses function-scoped pyfakefs for file system operations ONLY
 - Uses real filesystem paths with temporary directories for DataSphere compatibility
-- Uses in-memory SQLite for database testing
+- Uses PostgreSQL DAL for database testing (via dal fixture)
 - Tests both success paths and error conditions
 - Verifies file operations and database state
 - AVOIDS DataSphere module imports by testing core logic separately
@@ -18,15 +18,14 @@ Testing Strategy:
 
 import os
 import shutil
-import sqlite3
 import uuid
 from datetime import datetime
 from unittest.mock import MagicMock
 
+import asyncpg
 import pytest
 
 from deployment.app.config import get_settings
-from deployment.app.db.schema import init_db
 from deployment.app.models.api_models import TrainingConfig
 
 # TESTING APPROACH: Instead of importing from datasphere_service (which triggers DataSphere SDK imports),
@@ -162,17 +161,9 @@ def sample_training_config():
     )
 
 
-@pytest.fixture
-def test_db():
-    """Creates an in-memory SQLite database for testing."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-
-    # Initialize database schema
-    init_db(connection=conn)
-
-    yield conn
-    conn.close()
+# SQLite fixture removed as part of PostgreSQL migration.
+# Use PostgreSQL fixtures from tests/deployment/app/db/conftest.py instead:
+# - dal: Async DataAccessLayer instance with PostgreSQL pool
 
 
 @pytest.mark.usefixtures("fs")
@@ -181,7 +172,7 @@ class TestSaveModelFileAndDb:
 
     @pytest.mark.asyncio
     async def test_save_model_file_and_db_success(
-        self, fs, test_db, temp_workspace, sample_training_config
+        self, fs, temp_workspace, sample_training_config
     ):
         """Test successful model file copying and database record creation."""
         save_model_file_and_db = create_test_save_model_file_and_db()
@@ -211,7 +202,7 @@ class TestSaveModelFileAndDb:
 
     @pytest.mark.asyncio
     async def test_save_model_file_and_db_source_not_found(
-        self, fs, test_db, temp_workspace, sample_training_config
+        self, fs, temp_workspace, sample_training_config
     ):
         save_model_file_and_db = create_test_save_model_file_and_db()
         job_id = "test-job-123"
@@ -230,7 +221,7 @@ class TestSaveModelFileAndDb:
 
     @pytest.mark.asyncio
     async def test_save_model_file_and_db_copy_failure(
-        self, fs, test_db, temp_workspace, sample_training_config, monkeypatch
+        self, fs, temp_workspace, sample_training_config, monkeypatch
     ):
         save_model_file_and_db = create_test_save_model_file_and_db()
         job_id = "test-job-123"
@@ -253,7 +244,7 @@ class TestSaveModelFileAndDb:
 
     @pytest.mark.asyncio
     async def test_save_model_file_and_db_copy_verification_failure(
-        self, fs, test_db, temp_workspace, sample_training_config, monkeypatch
+        self, fs, temp_workspace, sample_training_config, monkeypatch
     ):
         save_model_file_and_db = create_test_save_model_file_and_db()
         job_id = "test-job-123"
@@ -278,7 +269,7 @@ class TestSaveModelFileAndDb:
 
     @pytest.mark.asyncio
     async def test_save_model_file_and_db_database_error(
-        self, fs, test_db, temp_workspace, sample_training_config
+        self, fs, temp_workspace, sample_training_config
     ):
         save_model_file_and_db = create_test_save_model_file_and_db()
         job_id = "test-job-123"
@@ -288,7 +279,7 @@ class TestSaveModelFileAndDb:
         mock_settings = MagicMock()
         mock_settings.models_dir = temp_workspace["models_dir"]
         def mock_create_model_record(**kwargs):
-            raise sqlite3.OperationalError("Database error")
+            raise asyncpg.PostgresError("Database error")
         with pytest.raises(RuntimeError, match="Failed to save model file and create DB record"):
             await save_model_file_and_db(
                 job_id=job_id,
@@ -301,7 +292,7 @@ class TestSaveModelFileAndDb:
 
     @pytest.mark.asyncio
     async def test_save_model_file_and_db_metadata_preservation(
-        self, fs, test_db, temp_workspace, sample_training_config
+        self, fs, temp_workspace, sample_training_config
     ):
         save_model_file_and_db = create_test_save_model_file_and_db()
         job_id = "test-job-789"
@@ -329,7 +320,7 @@ class TestSaveModelFileAndDb:
 
     @pytest.mark.asyncio
     async def test_save_model_file_and_db_no_metrics(
-        self, fs, test_db, temp_workspace, sample_training_config
+        self, fs, temp_workspace, sample_training_config
     ):
         save_model_file_and_db = create_test_save_model_file_and_db()
         job_id = "test-job-456"
@@ -357,7 +348,7 @@ class TestSaveModelFileAndDb:
 
     @pytest.mark.asyncio
     async def test_save_model_file_and_db_unique_model_ids(
-        self, fs, test_db, temp_workspace, sample_training_config
+        self, fs, temp_workspace, sample_training_config
     ):
         save_model_file_and_db = create_test_save_model_file_and_db()
         job_id = "test-job-multi"

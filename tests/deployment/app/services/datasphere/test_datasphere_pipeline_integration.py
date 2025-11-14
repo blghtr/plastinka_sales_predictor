@@ -128,8 +128,9 @@ async def test_end_to_end_datasphere_pipeline(mocked_db, mock_datasphere_env, mo
 
         return mock_result_id
 
-    # Патчим get_job для возврата наших моков
-    monkeypatch.setattr("deployment.app.db.database.get_job", MagicMock(return_value=mock_job))
+    # Mock DAL async methods (must be AsyncMock since they're async)
+    mocked_db["dal"].get_job = AsyncMock(return_value=mock_job)
+    mocked_db["dal"].update_job_status = AsyncMock()
 
     # Mock get_datasets to avoid actual data loading
     monkeypatch.setattr("deployment.app.services.datasphere_service.get_datasets", MagicMock())
@@ -156,7 +157,7 @@ async def test_end_to_end_datasphere_pipeline(mocked_db, mock_datasphere_env, mo
 
 
 @pytest.mark.asyncio
-async def test_datasphere_job_polling_status_tracking(mock_datasphere_env, monkeypatch):
+async def test_datasphere_job_polling_status_tracking(mocked_db, mock_datasphere_env, monkeypatch):
     # Mock get_datasets to avoid calling the real function
     def mock_get_datasets(*args, **kwargs):
         return None, None
@@ -207,16 +208,15 @@ async def test_datasphere_job_polling_status_tracking(mock_datasphere_env, monke
     # Настраиваем mock для быстрого завершения
     mock_datasphere_env["api_client"].get_job_status = MagicMock(return_value="COMPLETED")
 
-    # Создаём job
-    job_id = mock_datasphere_env["mocked_dal"].create_job(
+    # Создаём job (must await async method)
+    job_id = await mock_datasphere_env["mocked_dal"].create_job(
         job_type="prediction",
-        parameters='{"prediction_month": "2023-10-01"}',
-        status="running"
+        parameters={"prediction_month": "2023-10-01"}
     )
 
     # Create a model record in the mocked database to satisfy foreign key constraints for prediction_results
     model_id = f"model_{job_id}"
-    mock_datasphere_env["mocked_dal"].create_model_record(
+    await mock_datasphere_env["mocked_dal"].create_model_record(
         model_id=model_id,
         job_id=job_id,
         model_path="/fake/path/model.onnx",
@@ -237,26 +237,19 @@ async def test_datasphere_job_polling_status_tracking(mock_datasphere_env, monke
     training_config = create_sample_training_config()
     config_id = "test-config-id"
 
-    # Insert config record
-    cursor = mock_datasphere_env["mocked_db_conn"].cursor()
-    cursor.execute(
-        "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        (config_id, json.dumps(training_config), datetime.now().isoformat()),
-    )
-    mock_datasphere_env["mocked_db_conn"].commit()
+    # Mock create_or_get_config to return config_id (must be AsyncMock since it's async)
+    mocked_db["dal"].create_or_get_config = AsyncMock(return_value=config_id)
 
     # Generate a mock result_id for _process_job_results
     mock_result_id = str(uuid.uuid4())
 
-    # Create job status history entries
+    # Create job status history entries using real DAL
     for status in ["PENDING", "PROVISIONING", "RUNNING", "COMPLETED"]:
-        # Create status history records directly in the database
-        cursor = mock_datasphere_env["mocked_db_conn"].cursor()
-        cursor.execute(
-            "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (job_id, status, 0, f"Job status changed to {status}", datetime.now().isoformat())
+        await mock_datasphere_env["mocked_dal"].execute_raw_query(
+            "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES ($1, $2, $3, $4, $5)",
+            params=(job_id, status, 0, f"Job status changed to {status}", datetime.now()),
+            fetchall=False
         )
-        mock_datasphere_env["mocked_db_conn"].commit()
 
     # Mock _process_job_results to avoid database errors
     async def mock_process_job_results(*args, **kwargs):
@@ -298,15 +291,20 @@ async def test_datasphere_job_polling_status_tracking(mock_datasphere_env, monke
 
         return mock_result_id
 
-    # Патчим get_job для возврата наших моков
-    monkeypatch.setattr("deployment.app.db.database.get_job", MagicMock(return_value=mock_job))
+    # Mock DAL async methods (must be AsyncMock since they're async)
+    mocked_db["dal"].get_job = AsyncMock(return_value=mock_job)
+    mocked_db["dal"].update_job_status = AsyncMock()
     monkeypatch.setattr(
         "deployment.app.services.datasphere_service.process_job_results_unified",
         MagicMock(side_effect=mock_process_job_results),
     )
 
+    # Mock DAL async methods (must be AsyncMock since they're async)
+    mocked_db["dal"].get_job = AsyncMock(return_value=mock_job)
+    mocked_db["dal"].update_job_status = AsyncMock()
+    
     # Запускаем job с требуемыми аргументами
-    await run_job(job_id, training_config, config_id, dal=mock_datasphere_env["mocked_dal"])
+    await run_job(job_id, training_config, config_id, dal=mocked_db["dal"])
 
     # Проверяем что функция get_job_status была вызвана хотя бы один раз
     assert mock_datasphere_env["api_client"].get_job_status.call_count >= 1
@@ -314,10 +312,12 @@ async def test_datasphere_job_polling_status_tracking(mock_datasphere_env, monke
     # Проверяем финальный статус job
     assert mock_job["status"] == JobStatus.COMPLETED.value
 
-    # Проверяем историю статусов
-    cursor = mock_datasphere_env["mocked_db_conn"].cursor()
-    cursor.execute("SELECT * FROM job_status_history WHERE job_id = ?", (job_id,))
-    status_history = cursor.fetchall()
+    # Проверяем историю статусов using DAL (use real DAL, not mocked)
+    status_history = await mock_datasphere_env["mocked_dal"].execute_raw_query(
+        "SELECT * FROM job_status_history WHERE job_id = $1",
+        params=(job_id,),
+        fetchall=True
+    )
     assert len(status_history) > 2
 
 
@@ -351,7 +351,11 @@ async def test_datasphere_pipeline_error_handling(mocked_db, mock_datasphere_env
     training_config = create_sample_training_config()
     config_id = "test-config-id"
 
-    monkeypatch.setattr("deployment.app.db.database.get_job", MagicMock(return_value=mock_job))
+    # Mock DAL async methods (must be AsyncMock since they're async)
+    mocked_db["dal"].get_job = AsyncMock(return_value=mock_job)
+    mocked_db["dal"].update_job_status = AsyncMock()
+    mocked_db["dal"].create_or_get_config = AsyncMock(return_value=config_id)
+    
     # Запускаем job и обрабатываем ожидаемую ошибку
     try:
         await run_job(job_id, training_config, config_id, dal=mocked_db["dal"])
@@ -363,7 +367,7 @@ async def test_datasphere_pipeline_error_handling(mocked_db, mock_datasphere_env
 
 
 @pytest.mark.asyncio
-async def test_datasphere_pipeline_db_format_validation(mock_datasphere_env, monkeypatch):
+async def test_datasphere_pipeline_db_format_validation(mocked_db, mock_datasphere_env, monkeypatch):
     # Mock get_datasets to avoid calling the real function
     def mock_get_datasets(*args, **kwargs):
         return None, None
@@ -391,16 +395,15 @@ async def test_datasphere_pipeline_db_format_validation(mock_datasphere_env, mon
     - Присутствуют все 5 квантилей
     - Данные имеют правильные типы и значения
     """
-    # Создаём job
-    job_id = mock_datasphere_env["mocked_dal"].create_job(
+    # Создаём job (must await async method)
+    job_id = await mock_datasphere_env["mocked_dal"].create_job(
         job_type="prediction",
-        parameters='{"prediction_month": "2023-10-01"}',
-        status="running"
+        parameters={"prediction_month": "2023-10-01"}
     )
 
     # Create a model for the job to satisfy foreign key constraints
     model_id = f"model_{job_id}"
-    mock_datasphere_env["mocked_dal"].create_model_record(
+    await mock_datasphere_env["mocked_dal"].create_model_record(
         model_id=model_id,
         job_id=job_id,
         model_path="/fake/path/model.onnx",
@@ -421,13 +424,8 @@ async def test_datasphere_pipeline_db_format_validation(mock_datasphere_env, mon
     training_config = create_sample_training_config()
     config_id = "test-config-id"
 
-    # Insert config record
-    cursor = mock_datasphere_env["mocked_db_conn"].cursor()
-    cursor.execute(
-        "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        (config_id, json.dumps(training_config), datetime.now().isoformat()),
-    )
-    mock_datasphere_env["mocked_db_conn"].commit()
+    # Mock create_or_get_config to return config_id (must be AsyncMock since it's async)
+    mocked_db["dal"].create_or_get_config = AsyncMock(return_value=config_id)
 
     # Generate a mock result_id for _process_job_results
     mock_result_id = str(uuid.uuid4())
@@ -470,8 +468,9 @@ async def test_datasphere_pipeline_db_format_validation(mock_datasphere_env, mon
 
         return mock_result_id
 
-    # Патчим get_job для возврата наших моков
-    monkeypatch.setattr("deployment.app.db.database.get_job", MagicMock(return_value=mock_job))
+    # Mock DAL async methods (must be AsyncMock since they're async)
+    mocked_db["dal"].get_job = AsyncMock(return_value=mock_job)
+    mocked_db["dal"].update_job_status = AsyncMock()
     monkeypatch.setattr(
         "deployment.app.services.datasphere_service.process_job_results_unified",
         MagicMock(side_effect=mock_process_job_results),
@@ -492,7 +491,7 @@ async def test_datasphere_pipeline_db_format_validation(mock_datasphere_env, mon
 
 
 @pytest.mark.asyncio
-async def test_datasphere_pipeline_missing_metrics(mock_datasphere_env, caplog, monkeypatch):
+async def test_datasphere_pipeline_missing_metrics(mocked_db, mock_datasphere_env, caplog, monkeypatch):
     # Mock get_datasets to avoid calling the real function
     def mock_get_datasets(*args, **kwargs):
         return None, None
@@ -523,14 +522,13 @@ async def test_datasphere_pipeline_missing_metrics(mock_datasphere_env, caplog, 
     config_id = "test-config-id-missing-metrics" # Уникальный config_id
     job_id = "test-job-missing-metrics-" + str(uuid.uuid4()) # Уникальный job_id для этого теста
 
-    # Create job using the real DAL
-    job_id = mock_datasphere_env["mocked_dal"].create_job(
+    # Create job using the real DAL (must await async method)
+    job_id = await mock_datasphere_env["mocked_dal"].create_job(
         job_type="prediction",
-        parameters='{"prediction_month": "2023-10-01"}',
-        status="running"
+        parameters={"prediction_month": "2023-10-01"}
     )
     model_id = f"model_{job_id}"
-    mock_datasphere_env["mocked_dal"].create_model_record(
+    await mock_datasphere_env["mocked_dal"].create_model_record(
         model_id=model_id,
         job_id=job_id,
         model_path="/fake/path/model.onnx",
@@ -538,12 +536,8 @@ async def test_datasphere_pipeline_missing_metrics(mock_datasphere_env, caplog, 
         is_active=True
     )
 
-    cursor = mock_datasphere_env["mocked_db_conn"].cursor()
-    cursor.execute(
-        "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        (config_id, json.dumps(training_config), datetime.now().isoformat()),
-    )
-    mock_datasphere_env["mocked_db_conn"].commit()
+    # Mock create_or_get_config to return config_id (must be AsyncMock since it's async)
+    mocked_db["dal"].create_or_get_config = AsyncMock(return_value=config_id)
 
     original_download_results = mock_datasphere_env["api_client"].download_job_results
     def download_without_metrics(ds_job_id, results_dir, **kwargs):
@@ -562,9 +556,11 @@ async def test_datasphere_pipeline_missing_metrics(mock_datasphere_env, caplog, 
         "progress": 100,
         "error_message": None,
     }
-    monkeypatch.setattr("deployment.app.db.database.get_job", MagicMock(return_value=mock_job))
+    # Mock DAL async methods (must be AsyncMock since they're async)
+    mocked_db["dal"].get_job = AsyncMock(return_value=mock_job)
+    mocked_db["dal"].update_job_status = AsyncMock()
 
-    await run_job(job_id, training_config, config_id, dal=mock_datasphere_env["mocked_dal"])
+    await run_job(job_id, training_config, config_id, dal=mocked_db["dal"])
 
     log_lines = caplog.text.splitlines()
     found = any(
@@ -618,8 +614,8 @@ async def test_datasphere_pipeline_error_logging_monitoring(
 
     monkeypatch.setattr(mock_datasphere["client"], "download_job_results", download_with_warning)
 
-    # Патчим get_job для возврата наших моков
-    monkeypatch.setattr("deployment.app.db.database.get_job", MagicMock(return_value=mock_job))
+    # Mock DAL get_job method (must be AsyncMock since it's async)
+    mocked_db["dal"].get_job = AsyncMock(return_value=mock_job)
     # Запускаем job
     await run_job(job_id, training_config, config_id, dal=mocked_db["dal"])
 
@@ -632,7 +628,7 @@ async def test_datasphere_pipeline_error_logging_monitoring(
 
 
 @pytest.mark.asyncio
-async def test_datasphere_pipeline_rollback_cleanup(mock_datasphere_env, caplog, monkeypatch):
+async def test_datasphere_pipeline_rollback_cleanup(mocked_db, mock_datasphere_env, caplog, monkeypatch):
     # Mock get_datasets to avoid calling the real function
     def mock_get_datasets(*args, **kwargs):
         return None, None
@@ -667,29 +663,23 @@ async def test_datasphere_pipeline_rollback_cleanup(mock_datasphere_env, caplog,
     training_config = create_sample_training_config()
     config_id = "test-config-id"
 
-    # Insert config record
-    cursor = mock_datasphere_env["mocked_db_conn"].cursor()
-    cursor.execute(
-        "INSERT OR IGNORE INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        (config_id, json.dumps(training_config), datetime.now().isoformat()),
-    )
-    mock_datasphere_env["mocked_db_conn"].commit()
+    # Mock create_or_get_config to return config_id (must be AsyncMock since it's async)
+    mocked_db["dal"].create_or_get_config = AsyncMock(return_value=config_id)
 
     # Настраиваем мок для успешного прохождения основного пайплайна
     mock_datasphere_env["api_client"].submit_job.return_value = "ds_job_test_cleanup"
     mock_datasphere_env["api_client"].get_job_status.return_value = "SUCCESS"
 
-    # Создаем job
+    # Создаем job (must await async method)
     job_id = "test-job-cleanup-1"
-    job_id = mock_datasphere_env["mocked_dal"].create_job(
+    job_id = await mock_datasphere_env["mocked_dal"].create_job(
         job_type="prediction",
-        parameters='{"prediction_month": "2023-10-01"}',
-        status="running"
+        parameters={"prediction_month": "2023-10-01"}
     )
 
     # Create a model for the job to satisfy foreign key constraints
     model_id = f"model_{job_id}"
-    mock_datasphere_env["mocked_dal"].create_model_record(
+    await mock_datasphere_env["mocked_dal"].create_model_record(
         model_id=model_id,
         job_id=job_id,
         model_path="/fake/path/model.onnx",
@@ -710,21 +700,23 @@ async def test_datasphere_pipeline_rollback_cleanup(mock_datasphere_env, caplog,
     async def mock_process_job_results(*args, **kwargs):
         raise Exception("Simulated processing error for testing cleanup")
 
-    # Определяем моки и запускаем тест
-    with (
-        patch("deployment.app.db.database.get_job", return_value=mock_job),
-        patch(
-            "deployment.app.services.datasphere_service.process_job_results_unified",
-            side_effect=mock_process_job_results,
-        ),
-    ):
-        # Запускаем job с требуемыми аргументами и ожидаем, что он закончится с ошибкой
-        try:
-            await run_job(job_id, training_config, config_id, dal=mock_datasphere_env["mocked_dal"])
-            raise AssertionError("Expected an exception but none was raised")
-        except Exception as e:
-            # Проверяем, что это ошибка процессинга
-            assert "Simulated processing error" in str(e)
+    # Mock DAL async methods (must be AsyncMock since they're async)
+    mocked_db["dal"].get_job = AsyncMock(return_value=mock_job)
+    mocked_db["dal"].update_job_status = AsyncMock()
+    
+    # Mock process_job_results_unified
+    monkeypatch.setattr(
+        "deployment.app.services.datasphere_service.process_job_results_unified",
+        MagicMock(side_effect=mock_process_job_results),
+    )
+    
+    # Запускаем job с требуемыми аргументами и ожидаем, что он закончится с ошибкой
+    try:
+        await run_job(job_id, training_config, config_id, dal=mocked_db["dal"])
+        raise AssertionError("Expected an exception but none was raised")
+    except Exception as e:
+        # Проверяем, что это ошибка процессинга
+        assert "Simulated processing error" in str(e)
 
         # Verify cleanup attempt logs, if any are expected (e.g., from _cleanup_directories)
         assert any(

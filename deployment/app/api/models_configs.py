@@ -57,7 +57,7 @@ async def get_active_config_endpoint(
     This configuration is used by default for new training jobs.
     Returns a 404 error if no configuration is currently active.
     """
-    active_config = dal.get_active_config()
+    active_config = await dal.get_active_config()
     if not active_config:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
             message="No active config found",
@@ -78,7 +78,7 @@ async def activate_config(
     Marks a chosen parameter set as the active one for future training jobs.
     This deactivates any previously active configuration.
     """
-    if dal.set_config_active(config_id):
+    if await dal.set_config_active(config_id):
         return {"success": True, "message": f"Config {config_id} set as active"}
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
         message=f"Config {config_id} not found",
@@ -112,7 +112,7 @@ async def get_best_config(
         metric_name = settings.default_metric
         higher_is_better = settings.default_metric_higher_is_better
 
-    best_config = dal.get_best_config_by_metric(metric_name, higher_is_better)
+    best_config = await dal.get_best_config_by_metric(metric_name, higher_is_better)
     if not best_config:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
             message=f"No configs found with metric '{metric_name}'",
@@ -138,7 +138,7 @@ async def get_configs_endpoint(
     """
     Retrieves a paginated list of all saved hyperparameter configurations.
     """
-    configs_list = dal.get_configs(limit=limit)
+    configs_list = await dal.get_configs(limit=limit)
     if not configs_list:
         return []
 
@@ -164,7 +164,7 @@ async def delete_configs(
             status_code=status.HTTP_400_BAD_REQUEST,
         ).model_dump())
 
-    result = dal.delete_configs_by_ids(request.ids)
+    result = await dal.delete_configs_by_ids(request.ids)
     return DeleteResponse(
         successful=result.get("deleted_count", 0),
         failed=result.get("skipped_count", 0),
@@ -183,7 +183,7 @@ async def get_active_model_endpoint(
     This model is used for generating predictions.
     Returns a 404 error if no model is active.
     """
-    active_model = dal.get_active_model()
+    active_model = await dal.get_active_model()
     if not active_model:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
             message="No active model found",
@@ -203,7 +203,7 @@ async def activate_model(
     Marks a chosen model as the active one for generating predictions.
     This deactivates any previously active model.
     """
-    if dal.set_model_active(model_id, deactivate_others=True):
+    if await dal.set_model_active(model_id, deactivate_others=True):
         return {"success": True, "message": f"Model {model_id} set as active"}
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
         message=f"Model {model_id} not found",
@@ -236,7 +236,7 @@ async def get_best_model(
         metric_name = settings.default_metric
         higher_is_better = settings.default_metric_higher_is_better
 
-    best_model = dal.get_best_model_by_metric(metric_name, higher_is_better)
+    best_model = await dal.get_best_model_by_metric(metric_name, higher_is_better)
     if not best_model:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ErrorDetailResponse(
             message=f"No models found with metric '{metric_name}'",
@@ -256,7 +256,7 @@ async def get_recent_models_endpoint(
     dal: DataAccessLayer = Depends(get_dal_for_general_user),
 ):
     """Retrieves a list of the most recent models, ordered by their creation date."""
-    models = dal.get_recent_models(limit)
+    models = await dal.get_recent_models(limit)
     if not models:
         return []
 
@@ -282,7 +282,7 @@ async def get_recent_models_endpoint(
         )
 
     # Try to mark the active model
-    active_model = dal.get_active_model()
+    active_model = await dal.get_active_model()
     if active_model:
         for model in result:
             if model.model_id == active_model["model_id"]:
@@ -307,7 +307,7 @@ async def get_all_models_endpoint(
     """
     Retrieves a paginated list of all saved models in the system.
     """
-    models_list = dal.get_all_models(limit=limit)
+    models_list = await dal.get_all_models(limit=limit)
     if not models_list:
         return []
 
@@ -331,7 +331,7 @@ async def delete_models(
             status_code=status.HTTP_400_BAD_REQUEST,
         ).model_dump())
 
-    result = dal.delete_models_by_ids(request.ids)
+    result = await dal.delete_models_by_ids(request.ids)
     return DeleteResponse(
         successful=result.get("deleted_count", 0),
         failed=len(result.get("failed_deletions", [])),
@@ -354,7 +354,7 @@ async def upload_config(
     Optionally, it can be set as the active configuration upon creation.
     """
     try:
-        config_id = dal.create_or_get_config(
+        config_id = await dal.create_or_get_config(
             request.json_payload, is_active=request.is_active, source="manual_upload"
         )
 
@@ -400,7 +400,7 @@ async def upload_model(
         if job_id is None:
             # Создаем job типа manual_upload, статус completed, id сгенерируется
             try:
-                new_job_id = dal.create_job(
+                new_job_id = await dal.create_job(
                     job_type="manual_upload",
                     parameters={"uploaded_model_filename": model_file.filename},
                     status="completed",
@@ -422,7 +422,7 @@ async def upload_model(
             # Проверяем существование job_id
             job = None
             try:
-                job = dal.get_job(job_id)
+                job = await dal.get_job(job_id)
             except Exception as e:
                 logger.warning(f"Error checking job existence for job_id={{job_id}}: {e}")
                 job = None
@@ -447,9 +447,17 @@ async def upload_model(
             f.write(content)
         # --- Парсим metadata ---
         meta_dict = metadata.model_dump() if metadata else None # Use model_dump() to convert Pydantic model to dict
-        created_at_val = created_at or datetime.now().isoformat()
+        # Parse created_at: if string provided, parse it; otherwise use datetime.now()
+        if created_at:
+            try:
+                created_at_val = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                # Fallback to now if parsing fails
+                created_at_val = datetime.now()
+        else:
+            created_at_val = datetime.now()
         try:
-            dal.create_model_record(
+            await dal.create_model_record(
                 model_id=model_id,
                 model_path=save_path,
                 job_id=used_job_id,
@@ -461,7 +469,7 @@ async def upload_model(
             # Auto-activate best model if enabled in settings (unless user explicitly set this one as active)
             if not is_active:
                 try:
-                    activated = dal.auto_activate_best_model_if_enabled()
+                    activated = await dal.auto_activate_best_model_if_enabled()
                     if activated:
                         logger.info(f"Auto-activated best model after manual model upload: {model_id}")
                 except Exception as e:

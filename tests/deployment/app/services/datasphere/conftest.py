@@ -13,6 +13,10 @@ import pandas as pd
 import pytest
 
 from deployment.app.db.data_access_layer import DataAccessLayer
+
+# PostgreSQL fixtures (dal, postgres_pool, test_db_schema) are available
+# from tests/deployment/app/db/conftest.py via pytest's conftest discovery
+# They will be automatically available to all tests in this directory
 from deployment.app.models.api_models import (
     LRSchedulerConfig,
     ModelConfig,
@@ -259,7 +263,7 @@ def mock_datasphere(monkeypatch):
 # ==============================================
 
 
-def verify_predictions_saved(dal, result, expected_data):
+async def verify_predictions_saved(dal, result, expected_data):
     """
     Проверяет, что предсказания корректно сохранены в базе данных.
 
@@ -275,27 +279,27 @@ def verify_predictions_saved(dal, result, expected_data):
     assert result["predictions_count"] == len(expected_data["barcode"])
 
     # Проверяем таблицу prediction_results
-    prediction_result = dal.execute_raw_query(
-        "SELECT * FROM prediction_results WHERE result_id = ?",
+    prediction_result = await dal.execute_raw_query(
+        "SELECT * FROM prediction_results WHERE result_id = $1",
         (result["result_id"],)
     )
     assert prediction_result is not None
 
     # Проверяем, что в fact_predictions сохранены все предсказания
-    count_result = dal.execute_raw_query(
-        "SELECT COUNT(*) as count FROM fact_predictions WHERE result_id = ?",
+    count_result = await dal.execute_raw_query(
+        "SELECT COUNT(*) as count FROM fact_predictions WHERE result_id = $1",
         (result["result_id"],),
     )
     count = count_result["count"]
     assert count == len(expected_data["barcode"])
 
     # Проверяем значения квантилей для первой записи
-    record = dal.execute_raw_query(
+    record = await dal.execute_raw_query(
         """
         SELECT p.*, m.barcode, m.artist, m.album FROM fact_predictions p
         JOIN dim_multiindex_mapping m ON p.multiindex_id = m.multiindex_id
-        WHERE m.barcode = ? AND m.artist = ? AND m.album = ?
-        AND p.result_id = ?
+        WHERE m.barcode = $1 AND m.artist = $2 AND m.album = $3
+        AND p.result_id = $4
     """,
         (
             expected_data["barcode"][0],
@@ -327,17 +331,16 @@ def sample_predictions_data():
     return SAMPLE_PREDICTIONS.copy()
 
 
-# Добавляем dict_factory для row_factory
+# SQLite fixtures removed as part of PostgreSQL migration.
+# Use PostgreSQL fixtures from tests/deployment/app/db/conftest.py instead:
+# - postgres_pool: PostgreSQL connection pool
+# - test_db_schema: Applies PostgreSQL schema before each test
+# - dal: Async DataAccessLayer instance with PostgreSQL pool
 
-def dict_factory(cursor, row):
-    d = {}
-    for idx, col in enumerate(cursor.description):
-        d[col[0]] = row[idx]
-    return d
-
+# dict_factory removed - not needed for PostgreSQL (asyncpg returns dict-like Record objects)
 
 @pytest.fixture
-def temp_db(sample_predictions_data, in_memory_db):
+async def temp_db(sample_predictions_data, dal):
     """
     Creates a temporary database and a predictions CSV file for testing.
     This fixture provides a more specific setup for tests that need to
@@ -357,22 +360,18 @@ def temp_db(sample_predictions_data, in_memory_db):
     # Create and save the predictions CSV
     pd.DataFrame(sample_predictions_data).to_csv(predictions_path, index=False)
 
-    # Use the existing in_memory_db fixture for database operations
-    dal = in_memory_db
-
     # Create a job and model record for the predictions
     try:
             model_id = "model-" + str(uuid.uuid4())
 
             # Pre-populate jobs and models tables since they are foreign keys
             # Добавляю параметры с prediction_month
-            job_parameters = json.dumps({"prediction_month": "2023-10-01"})
-            job_id = dal.create_job(
+            job_parameters = {"prediction_month": "2023-10-01"}
+            job_id = await dal.create_job(
                 job_type="prediction",
                 parameters=job_parameters,
-                status="running",
             )
-            dal.create_model_record(
+            await dal.create_model_record(
                 model_id=model_id,
                 job_id=job_id,
                 model_path="/fake/path/model.onnx",
@@ -409,10 +408,10 @@ def cleanup_with_retry(path, max_retries=3):
 
 
 @pytest.fixture(autouse=True, scope='function')
-def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
+async def insert_minimal_fact_data(dal: DataAccessLayer):
     """
     Заполняет fact_sales, fact_stock, fact_stock_movement минимум 13 уникальными датами для lags=12.
-    Использует dal из in_memory_db.
+    Использует dal из PostgreSQL fixtures.
     """
     today = datetime.today().date()
     base_barcode = "1234567890"
@@ -426,7 +425,7 @@ def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
     base_style = "Rock"
     base_year = 2015
     # Получить или создать multiindex_id
-    multiindex_id = in_memory_db.get_or_create_multiindex_ids_batch(
+    multiindex_ids = await dal.get_or_create_multiindex_ids_batch(
         [
             (
                 base_barcode, base_artist, base_album, base_cover, base_price,
@@ -434,6 +433,7 @@ def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
             ),
         ]
     )
+    multiindex_id = multiindex_ids[0]
     from dateutil.relativedelta import relativedelta
     # Генерируем 13 месяцев назад от текущего месяца
     base_date = today.replace(day=1) - relativedelta(months=13)
@@ -443,21 +443,21 @@ def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
     changes_rows = []
     for i in range(1, 16):
         d = base_date + relativedelta(months=i)
-        date_str = d.strftime("%Y-%m-01")
-        sales_rows.append((multiindex_id, date_str, 10 + i))
-        changes_rows.append((multiindex_id, date_str, 1))
+        # Use date object instead of string for PostgreSQL
+        sales_rows.append((multiindex_id, d, 10 + i))
+        changes_rows.append((multiindex_id, d, 1))
 
     import pandas as pd
 
     from deployment.app.db.feature_storage import SQLFeatureStore
 
-    feature_store = SQLFeatureStore(dal=in_memory_db)
+    feature_store = SQLFeatureStore(dal=dal)
 
     def create_df(data):
         df = pd.DataFrame(data, columns=["multiindex_id", "data_date", "value"])
         df["data_date"] = pd.to_datetime(df["data_date"])
         
-        from deployment.app.db.schema import MULTIINDEX_NAMES
+        from deployment.app.db.schema_postgresql import MULTIINDEX_NAMES
         # Create a mapping from multiindex_id to the full multiindex tuple
         multiindex_id_to_tuple = {}
         for multiindex_id_val in df["multiindex_id"].unique():
@@ -487,8 +487,8 @@ def insert_minimal_fact_data(in_memory_db: DataAccessLayer):
         )
         return pivot_df
 
-    feature_store.save_features({"sales": create_df(sales_rows)})
-    feature_store.save_features({"movement": create_df(changes_rows)})
+    await feature_store.save_features({"sales": create_df(sales_rows)})
+    await feature_store.save_features({"movement": create_df(changes_rows)})
 
 @pytest.fixture
 def mock_init_db():
@@ -497,15 +497,16 @@ def mock_init_db():
 
 
 @pytest.fixture
-def mocked_db(in_memory_db):
+async def mocked_db(dal):
     """
     Creates a mocked database fixture that provides all the necessary methods
     and objects for datasphere pipeline integration tests.
+    Updated for PostgreSQL/async DAL.
 
     Returns a dictionary-like object with:
     - create_job: method to create jobs
     - create_model: method to create models
-    - conn: database connection
+    - conn: database connection (from pool)
     - dal: DataAccessLayer instance
     - execute_query: method to execute queries
     - create_job_status_history: method to create job status history
@@ -513,24 +514,20 @@ def mocked_db(in_memory_db):
     # Create a mock object that behaves like a dictionary
     mock_db = MagicMock()
 
-    # Set up the database connection
-    mock_db["conn"] = in_memory_db._connection
-
     # Set up the DAL
-    mock_db["dal"] = in_memory_db
+    mock_db["dal"] = dal
 
-    # Create job method
-    def create_job(job_id):
-        return in_memory_db.create_job(
+    # Create job method (async)
+    async def create_job(job_id):
+        return await dal.create_job(
             job_type="prediction",
-            parameters='{"prediction_month": "2023-10-01"}',
-            status="running"
+            parameters={"prediction_month": "2023-10-01"}
         )
     mock_db["create_job"] = create_job
 
-    # Create model method
-    def create_model(model_id, job_id):
-        return in_memory_db.create_model_record(
+    # Create model method (async)
+    async def create_model(model_id, job_id):
+        return await dal.create_model_record(
             model_id=model_id,
             job_id=job_id,
             model_path="/fake/path/model.onnx",
@@ -539,25 +536,18 @@ def mocked_db(in_memory_db):
         )
     mock_db["create_model"] = create_model
 
-    # Execute query method
-    def execute_query(query, params=None):
-        cursor = in_memory_db.get_connection().cursor()
-        if params:
-            cursor.execute(query, params)
-        else:
-            cursor.execute(query)
-        return cursor.fetchall()
+    # Execute query method (async)
+    async def execute_query(query, params=None):
+        return await dal.execute_raw_query(query, params=params, fetchall=True)
     mock_db["execute_query"] = execute_query
 
-    # Create job status history method
-    def create_job_status_history(job_id, status, progress=0, error_message=None):
+    # Create job status history method (async)
+    async def create_job_status_history(job_id, status, progress=0, error_message=None):
         # Actually create job status history records in the database
-        cursor = in_memory_db._connection.cursor()
-        cursor.execute(
-            "INSERT INTO job_status_history (job_id, status, progress, error_message, created_at) VALUES (?, ?, ?, ?, ?)",
-            (job_id, status, progress, error_message, datetime.now().isoformat())
+        await dal.execute_raw_query(
+            "INSERT INTO job_status_history (job_id, status, progress, error_message, created_at) VALUES ($1, $2, $3, $4, $5)",
+            params=(job_id, status, progress, error_message, datetime.now().isoformat())
         )
-        in_memory_db._connection.commit()
         return True
     mock_db["create_job_status_history"] = create_job_status_history
 

@@ -255,20 +255,50 @@ class APISettings(BaseSettings):
 
 
 class DatabaseSettings(BaseSettings):
-    """Database specific settings."""
+    """PostgreSQL database settings."""
 
-    # These paths will be computed automatically from data_root_dir in AppSettings
-    # Removing static defaults that reference deployment/data
-    filename: str = Field(
-        default="plastinka.db",
-        description="SQLite database filename (path will be computed from data_root_dir)",
+    # PostgreSQL connection settings
+    postgres_host: str = Field(
+        default="localhost",
+        description="PostgreSQL host address"
     )
 
-    database_busy_timeout: int = Field(
-        default=5000, description="SQLite busy timeout in milliseconds"
+    postgres_port: int = Field(
+        default=5432,
+        description="PostgreSQL port"
     )
 
-    # Database directory creation is handled in AppSettings computed properties
+    postgres_database: str = Field(
+        default="plastinka_ml",
+        description="PostgreSQL database name"
+    )
+
+    postgres_user: str = Field(
+        default="postgres",
+        description="PostgreSQL user name"
+    )
+
+    postgres_password: str = Field(
+        default="",
+        description="PostgreSQL user password"
+    )
+
+    # Connection pool settings
+    postgres_pool_min_size: int = Field(
+        default=5,
+        description="Minimum number of connections in the pool"
+    )
+
+    postgres_pool_max_size: int = Field(
+        default=20,
+        description="Maximum number of connections in the pool"
+    )
+
+    # SSL settings
+    postgres_ssl_mode: str = Field(
+        default="prefer",
+        description="PostgreSQL SSL mode (disable, allow, prefer, require, verify-ca, verify-full)"
+    )
 
     _config_loader_func: Callable[[], dict[str, Any]] | None = get_db_config
 
@@ -312,8 +342,6 @@ class DatabaseSettings(BaseSettings):
         customize_sources=settings_customise_sources,
     )
 
-    # Removed reload method - paths are now computed automatically in AppSettings
-
 
 class DataSphereSettings(BaseSettings):
     """DataSphere specific settings."""
@@ -327,15 +355,7 @@ class DataSphereSettings(BaseSettings):
         description="Yandex Cloud OAuth token for user authentication.",
     )
 
-    yc_profile: str = Field(
-        default="datasphere-prod",
-        description="Yandex Cloud CLI profile name for service account authentication.",
-    )
-
-    auth_method: str = Field(
-        default="auto",
-        description="Authentication method: 'auto', 'yc_profile', or 'oauth_token'.",
-    )
+    # Deprecated: profile-based auth removed. Use YC_OAUTH_TOKEN only.
 
     # Polling configuration
     max_polls: int = Field(
@@ -373,13 +393,7 @@ class DataSphereSettings(BaseSettings):
         description="Timeout for DataSphere client job cancellation in seconds",
     )
 
-    @field_validator("auth_method", mode="before")
-    @classmethod
-    def validate_auth_method(cls, v: str):
-        allowed = {"auto", "yc_profile", "oauth_token"}
-        if v not in allowed:
-            raise ValueError(f"Invalid auth_method '{v}'. Allowed values: {allowed}")
-        return v
+    # auth_method removed – always use oauth_token (YC_OAUTH_TOKEN)
 
     @field_validator("oauth_token", mode="before")
     @classmethod
@@ -398,8 +412,6 @@ class DataSphereSettings(BaseSettings):
             "project_id": self.project_id,
             "folder_id": self.folder_id,
             "oauth_token": self.oauth_token,
-            "yc_profile": self.yc_profile,
-            "auth_method": self.auth_method,
         }
 
     @property
@@ -597,12 +609,6 @@ class AppSettings(BaseSettings):
         description="If true, patch trailing missing days at end of month during data processing",
     )
 
-    # SQLite configuration
-    sqlite_max_variables: int = Field(
-        default=900,
-        description="Maximum number of variables in SQLite queries (safe limit below 999)",
-    )
-
     # Refractory period configuration
     job_refractory_seconds_default: int = Field(
         default=300,
@@ -681,18 +687,6 @@ class AppSettings(BaseSettings):
     )
 
     # Smart computed properties for all data paths
-    @property
-    def database_path(self) -> str:
-        """Compute database file path from data_root_dir."""
-        path = os.path.join(self.data_root_dir, "database", self.db.filename)
-        ensure_directory_exists(path)  # Create parent directory
-        return path
-
-    @property
-    def database_url(self) -> str:
-        """Compute database URL from database_path."""
-        return f"sqlite:///{self.database_path}"
-
     @property
     def models_dir(self) -> str:
         """Directory for storing model files."""

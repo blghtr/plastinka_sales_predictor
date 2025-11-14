@@ -93,7 +93,7 @@ _tunable_params = {
 
 _fixed_params = {
     "model_config": {
-        "n_epochs": 100  # hardcoded for now
+        "n_epochs": 5  # hardcoded for now
     },
     "quantiles": QUANTILES,
 }

@@ -1,196 +1,164 @@
-import sqlite3
-
 import pytest
+from datetime import datetime
 
-from deployment.app.db.database import (  # Added DatabaseError import
-    DatabaseError,
-    dict_factory,
-    execute_query,
-)
-from deployment.app.db.schema import init_db  # Import init_db
+import asyncpg
 
-# Use a dedicated in-memory database for these tests to avoid interference
-TEST_DB_PATH = ":memory:"
-
-
-@pytest.fixture(scope="function")
-def db_conn():
-    """Fixture to set up and tear down the in-memory database for each test."""
-    # Directly connect to the in-memory database for the test
-    conn = sqlite3.connect(TEST_DB_PATH)
-
-    # Enable Foreign Key support
-    conn.execute("PRAGMA foreign_keys = ON;")
-
-    # Set dict_factory for this connection
-    conn.row_factory = dict_factory  # Use dict_factory
-
-    # Initialize schema using init_db
-    init_db(connection=conn)
-
-    # Removed: cursor = conn.cursor() # No longer needed here as init_db handles it
-    # Removed: cursor.executescript(SCHEMA_SQL) # Redundant call as init_db already does this
-    conn.commit()  # Commit changes made by init_db for this connection
-
-    # Verify PRAGMA is ON
-    cursor = conn.cursor()  # Re-initialize cursor for the assertion below
-    cursor.execute("PRAGMA foreign_keys;")
-    fk_status = cursor.fetchone()
-    assert fk_status["foreign_keys"] == 1, (
-        "Foreign keys should be ON for the test connection"
-    )
-
-    yield conn
-
-    conn.close()
+from deployment.app.db.exceptions import DatabaseError
+from deployment.app.db.queries.core import execute_query
+from deployment.app.db.queries.jobs import create_job
+from deployment.app.db.queries.models import create_model_record
+from deployment.app.db.queries.configs import create_or_get_config
+from deployment.app.db.queries.results import create_training_result
+from deployment.app.db.utils import generate_id
 
 
-def test_foreign_key_enforcement_on_insert_jobs_history(db_conn):
+@pytest.mark.asyncio
+async def test_foreign_key_enforcement_on_insert_jobs_history(dal):
     """
     Test that inserting into job_status_history fails if the job_id does not exist in jobs.
     """
-    with pytest.raises(DatabaseError) as excinfo:
-        execute_query(
-            "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES (?, ?, ?, ?, ?)",
-            db_conn,
-            (
-                "non_existent_job_id",
-                "running",
-                50.0,
-                "Processing...",
-                "2023-01-01T12:00:00",
-            ),
+    async with dal._pool.acquire() as conn:
+        with pytest.raises(DatabaseError) as excinfo:
+            await execute_query(
+                "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES ($1, $2, $3, $4, $5)",
+                conn,
+                (
+                    "non_existent_job_id",
+                    "running",
+                    50.0,
+                    "Processing...",
+                    datetime.fromisoformat("2023-01-01T12:00:00"),
+                ),
+            )
+        error_msg = str(excinfo.value.original_error).lower()
+        assert (
+            "foreign key" in error_msg 
+            or "violates foreign key" in error_msg
+            or "нарушает ограничение внешнего ключа" in error_msg
+            or "нарушает ограничение" in error_msg
         )
-    assert "foreign key constraint failed" in str(excinfo.value.original_error).lower()
 
 
-def test_foreign_key_enforcement_on_insert_training_results_model(db_conn):
+@pytest.mark.asyncio
+async def test_foreign_key_enforcement_on_insert_training_results_model(dal, sample_config):
     """
     Test that inserting into training_results fails if the model_id does not exist in models.
     """
-    # First, create a job and a parameter set, as training_results depends on them too
-    job_id = "test_job_fk_model"
-    execute_query(
-        "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        db_conn,
-        (job_id, "training", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
-    )
+    async with dal._pool.acquire() as conn:
+        # First, create a job and a config, as training_results depends on them too
+        job_id = await create_job("training", {}, connection=conn)
+        config_id = await create_or_get_config(sample_config, connection=conn)
 
-    config_id = "test_config_fk_model"
-    execute_query(
-        "INSERT INTO configs (config_id, config, created_at) VALUES (?, ?, ?)",
-        db_conn,
-        (config_id, "{}", "2023-01-01T00:00:00"),
-    )
-
-    with pytest.raises(DatabaseError) as excinfo:
-        execute_query(
-            "INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics, duration) VALUES (?, ?, ?, ?, ?, ?)",
-            db_conn,
-            ("tr_res_1", job_id, "non_existent_model_id", config_id, "{}", 100),
+        with pytest.raises(DatabaseError) as excinfo:
+            await execute_query(
+                "INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics, duration) VALUES ($1, $2, $3, $4, $5, $6)",
+                conn,
+                (generate_id(), job_id, "non_existent_model_id", config_id, "{}", 100),
+            )
+        error_msg = str(excinfo.value.original_error).lower()
+        assert (
+            "foreign key" in error_msg
+            or "violates foreign key" in error_msg
+            or "нарушает ограничение внешнего ключа" in error_msg
+            or "нарушает ограничение" in error_msg
         )
-    assert (
-        "foreign key constraint failed" in str(excinfo.value.original_error).lower()
-        or "no such table: models" in str(excinfo.value.original_error).lower()
-    )
 
 
-def test_foreign_key_enforcement_on_insert_training_results_config(db_conn):
+@pytest.mark.asyncio
+async def test_foreign_key_enforcement_on_insert_training_results_config(dal, sample_config):
     """
     Test that inserting into training_results fails if the config_id does not exist in configs.
     """
-    job_id = "test_job_fk_config"
-    execute_query(
-        "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        db_conn,
-        (job_id, "training", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
-    )
-
-    model_id = "test_model_fk_config"
-    execute_query(
-        "INSERT INTO models (model_id, job_id, model_path, created_at) VALUES (?, ?, ?, ?)",
-        db_conn,
-        (model_id, job_id, "/path/to/model", "2023-01-01T00:00:00"),
-    )
-
-    with pytest.raises(DatabaseError) as excinfo:
-        execute_query(
-            "INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics, duration) VALUES (?, ?, ?, ?, ?, ?)",
-            db_conn,
-            ("tr_res_2", job_id, model_id, "non_existent_config_id", "{}", 100),
+    async with dal._pool.acquire() as conn:
+        job_id = await create_job("training", {}, connection=conn)
+        model_id = str(generate_id())
+        await create_model_record(
+            model_id=model_id,
+            job_id=job_id,
+            model_path="/path/to/model",
+            created_at=datetime.fromisoformat("2023-01-01T00:00:00"),
+            connection=conn,
         )
-    assert "foreign key constraint failed" in str(excinfo.value.original_error).lower()
+
+        with pytest.raises(DatabaseError) as excinfo:
+            await execute_query(
+                "INSERT INTO training_results (result_id, job_id, model_id, config_id, metrics, duration) VALUES ($1, $2, $3, $4, $5, $6)",
+                conn,
+                (generate_id(), job_id, model_id, "non_existent_config_id", "{}", 100),
+            )
+        error_msg = str(excinfo.value.original_error).lower()
+        assert (
+            "foreign key" in error_msg 
+            or "violates foreign key" in error_msg
+            or "нарушает ограничение внешнего ключа" in error_msg
+            or "нарушает ограничение" in error_msg
+        )
 
 
-def test_foreign_key_cascade_delete_jobs(db_conn):
+@pytest.mark.asyncio
+async def test_foreign_key_cascade_delete_jobs(dal):
     """
-    Test that deleting a job cascades to delete related job_status_history entries.
-    (Assuming ON DELETE CASCADE is set on the foreign key in schema - if not, this test would fail
-     or need to be adapted to test restricted delete if that's the behavior).
+    Test that deleting a job with history entries is RESTRICTED (not cascaded).
     The current schema for job_status_history.job_id does NOT specify ON DELETE CASCADE.
-    So, this test should verify that deleting a job with history entries is RESTRICTED.
     """
-    job_id = "job_to_delete"
+    async with dal._pool.acquire() as conn:
+        job_id = await create_job("test_type", {}, connection=conn)
 
-    # Create a job
-    execute_query(
-        "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        db_conn,
-        (job_id, "test_type", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
-    )
-
-    # Create a history entry for this job
-    execute_query(
-        "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES (?, ?, ?, ?, ?)",
-        db_conn,
-        (job_id, "running", 50.0, "Processing...", "2023-01-01T12:00:00"),
-    )
-
-    # Attempt to delete the job
-    with pytest.raises(DatabaseError) as excinfo:
-        execute_query(
-            "DELETE FROM jobs WHERE job_id = ?", db_conn, (job_id,)
+        # Create a history entry for this job
+        await execute_query(
+            "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES ($1, $2, $3, $4, $5)",
+            conn,
+            (job_id, "running", 50.0, "Processing...", datetime.fromisoformat("2023-01-01T12:00:00")),
         )
-    assert "foreign key constraint failed" in str(excinfo.value.original_error).lower()
 
-    # Verify job and history entry still exist
-    job_entry = execute_query(
-        "SELECT * FROM jobs WHERE job_id = ?", db_conn, (job_id,)
-    )
-    history_entry = execute_query(
-        "SELECT * FROM job_status_history WHERE job_id = ?",
-        db_conn,
-        (job_id,),
-        fetchall=True,
-    )
+        # Attempt to delete the job
+        with pytest.raises(DatabaseError) as excinfo:
+            await execute_query(
+                "DELETE FROM jobs WHERE job_id = $1", conn, (job_id,)
+            )
+        error_msg = str(excinfo.value.original_error).lower()
+        assert (
+            "foreign key" in error_msg 
+            or "violates foreign key" in error_msg
+            or "нарушает ограничение внешнего ключа" in error_msg
+            or "нарушает ограничение" in error_msg
+        )
 
-    assert job_entry is not None
-    assert len(history_entry) == 1
+        # Verify job and history entry still exist
+        job_entry = await execute_query(
+            "SELECT * FROM jobs WHERE job_id = $1", conn, (job_id,)
+        )
+        history_entry = await execute_query(
+            "SELECT * FROM job_status_history WHERE job_id = $1",
+            conn,
+            (job_id,),
+            fetchall=True,
+        )
+
+        assert job_entry is not None
+        assert len(history_entry) == 1
 
 
-def test_successful_insert_with_valid_foreign_keys(db_conn):
+@pytest.mark.asyncio
+async def test_successful_insert_with_valid_foreign_keys(dal):
     """
     Test that inserts are successful when foreign keys are valid.
     """
-    job_id = "valid_job_id"
-    execute_query(
-        "INSERT INTO jobs (job_id, job_type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        db_conn,
-        (job_id, "test_type", "pending", "2023-01-01T00:00:00", "2023-01-01T00:00:00"),
-    )
+    async with dal._pool.acquire() as conn:
+        job_id = await create_job("test_type", {}, connection=conn)
 
-    # This should succeed
-    execute_query(
-        "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES (?, ?, ?, ?, ?)",
-        db_conn,
-        (job_id, "completed", 100.0, "Done", "2023-01-01T13:00:00"),
-    )
+        # This should succeed
+        await execute_query(
+            "INSERT INTO job_status_history (job_id, status, progress, status_message, updated_at) VALUES ($1, $2, $3, $4, $5)",
+            conn,
+            (job_id, "completed", 100.0, "Done", datetime.fromisoformat("2023-01-01T13:00:00")),
+        )
 
-    history_entry = execute_query(
-        "SELECT * FROM job_status_history WHERE job_id = ?",
-        db_conn,
-        (job_id,),
-        fetchall=True,
-    )
-    assert len(history_entry) == 1
-    assert history_entry[0]["status"] == "completed"
+        history_entry = await execute_query(
+            "SELECT * FROM job_status_history WHERE job_id = $1",
+            conn,
+            (job_id,),
+            fetchall=True,
+        )
+        assert len(history_entry) == 1
+        assert history_entry[0]["status"] == "completed"
