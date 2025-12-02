@@ -40,11 +40,11 @@ Plastinka Sales Predictor is a production-ready ML system designed to provide ac
                         └───────────────────────┘
 ```
 
-### Компоненты и их взаимодействие
+### Components and their interaction
 
--   **FastAPI App (`deployment/`)**: Центральный компонент-оркестратор. Он предоставляет REST API для взаимодействия с пользователем, управляет базой данных (метаданные, задачи, результаты) и инициирует задачи (тренировка, тюнинг) в Yandex DataSphere.
--   **ML Module (`plastinka_sales_predictor/`)**: Это не отдельный сервис, а Python-пакет, содержащий всю логику машинного обучения (подготовка данных, архитектура модели TiDE, метрики). Этот код упаковывается и выполняется непосредственно в облачной среде Yandex DataSphere.
--   **Infrastructure (`deployment/infrastructure/`)**: Инфраструктура как код (IaC) на базе Terraform. Эти конфигурации описывают и создают все необходимые облачные ресурсы в Yandex Cloud, включая проект DataSphere и права доступа. Это компонент этапа развертывания.
+-   **FastAPI App (`deployment/`)**: The central orchestrator component. It provides a REST API for user interaction, manages the database (metadata, tasks, results), and initiates tasks (training, tuning) in Yandex DataSphere.
+-   **ML Module (`plastinka_sales_predictor/`)**: This is not a separate service, but a Python package containing all the machine learning logic (data preparation, TiDE model architecture, metrics). This code is packaged and executed directly in the Yandex DataSphere cloud environment.
+- **Infrastructure (`deployment/infrastructure/`)**: Infrastructure as code (IaC) based on Terraform. These configurations describe and create all the necessary cloud resources in Yandex Cloud, including the DataSphere project and access rights. This is a component of the deployment stage.
 
 ---
 
